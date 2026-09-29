@@ -1,0 +1,56 @@
+"""密码哈希与 JWT 签发/校验。
+
+密码哈希用 bcrypt 官方库，不用 passlib：
+passlib 1.7.4（2020 年最后发版）与 bcrypt 4.1+ 存在已知不兼容（读 bcrypt.__about__ 报错），
+直接用 bcrypt 只有三行代码，反而更省事、更没有版本坑。
+"""
+
+from datetime import datetime, timedelta, timezone
+
+import bcrypt
+import jwt
+
+from app.config import settings
+
+# bcrypt 算法本身只取前 72 字节，超长输入会抛错，这里统一截断
+BCRYPT_MAX_BYTES = 72
+
+
+def hash_password(plain_password: str) -> str:
+    """把明文密码转成 bcrypt 哈希。
+
+    gensalt() 每次生成不同的随机盐，所以同一个密码两次哈希结果不同。
+    """
+    raw = plain_password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+    return bcrypt.hashpw(raw, bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain_password: str, password_hash: str) -> bool:
+    """校验明文密码与哈希是否匹配。任何异常一律视为不匹配。"""
+    try:
+        raw = plain_password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+        return bcrypt.checkpw(raw, password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def create_access_token(user_id: int, extra: dict | None = None) -> str:
+    """签发 JWT。
+
+    sub 用字符串（PEP 规范要求 claim 是字符串），额外带上 username / role 方便日志排查。
+    真正判权限时不依赖 payload 里的 role，一定回数据库查（防止角色变更后旧 token 还生效）。
+    """
+    now = datetime.now(timezone.utc)
+    payload: dict = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.JWT_EXPIRE_MINUTES),
+    }
+    if extra:
+        payload.update(extra)
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict:
+    """解码并校验 JWT。签名不对/已过期会抛 jwt.PyJWTError 的子类异常。"""
+    return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
