@@ -1,0 +1,13 @@
+# 接口自测：PyCharm 里点每行左侧的绿色箭头即可发送
+
+### 健康检查（正常应返回 code=0，data.mysql=ok）
+GET http://127.0.0.1:8000/api/health
+Accept: application/json
+
+###
+
+### 故意访问不存在的路由，验证统一错误格式（应返回 code=40400）
+GET http://127.0.0.1:8000/api/not-exist
+Accept: application/json
+
+###

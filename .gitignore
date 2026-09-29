@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 环境变量（含密钥，禁止提交）
+.env
+
+# 日志
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 测试与缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 上传文件与向量库本地数据
+uploads/
+
+
+# 工作区内部记录（含内网 IP、密码等），禁止提交
+.workbuddy/

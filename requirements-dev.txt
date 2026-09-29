@@ -1,0 +1,11 @@
+# Dev/test dependencies only. Install: pip install -r requirements-dev.txt
+# Not needed in production image.
+#
+# NOTE: keep this file pure ASCII. pip decodes requirements files with the
+# system locale encoding (cp936 on Chinese Windows), so non-ASCII comments
+# make it crash with UnicodeDecodeError.
+-r requirements.txt
+
+pytest==8.3.4
+pytest-asyncio==0.25.2
+httpx==0.28.1
