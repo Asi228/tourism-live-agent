@@ -5,7 +5,9 @@
 2. `init_db()` 里导入本包后，Base.metadata 才能拿到全部表定义
 """
 
+from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base_member import KnowledgeBaseMember
 from app.models.role import Role
 from app.models.user import User
 
-__all__ = ["Role", "User"]
+__all__ = ["KnowledgeBase", "KnowledgeBaseMember", "Role", "User"]

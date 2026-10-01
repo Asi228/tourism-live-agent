@@ -25,3 +25,18 @@ class UserOut(BaseModel):
     is_active: bool
     created_at: datetime
     role: RoleOut
+
+
+class UserBrief(BaseModel):
+    """用户列表用的精简结构。
+
+    故意不含 email，也不含 password_hash：这个接口的用途是让管理员拿到 user_id
+    去授权知识库成员，不是把用户资料摊开给前端。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    is_active: bool
+    role: RoleOut

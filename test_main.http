@@ -69,3 +69,100 @@ GET http://127.0.0.1:8000/api/auth/me
 Accept: application/json
 
 ###
+
+# ==================== 知识库（Phase 3）====================
+# 测试顺序：先用 admin 登录拿 token → 建库 → 再用普通员工验证看不到 → 授权 → 再看得到
+
+### admin 登录（用 .env 里配置的 ADMIN_USERNAME / ADMIN_PASSWORD）
+POST http://127.0.0.1:8000/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "把.env里的ADMIN_PASSWORD填这里"
+}
+
+###
+
+### 知识库列表（admin 应看到全部；普通员工只看到被授权的）
+GET http://127.0.0.1:8000/api/knowledge
+Authorization: Bearer 粘贴admin的access_token
+
+###
+
+### 创建知识库（admin，应返回 code=0 且 my_permission=admin）
+POST http://127.0.0.1:8000/api/knowledge
+Content-Type: application/json
+Authorization: Bearer 粘贴admin的access_token
+
+{
+  "name": "技术知识库",
+  "description": "存放研发规范、架构文档",
+  "is_public": false
+}
+
+###
+
+### 创建知识库 —— 普通员工调用（应返回 code=40300 需要管理员权限）
+POST http://127.0.0.1:8000/api/knowledge
+Content-Type: application/json
+Authorization: Bearer 粘贴普通员工的access_token
+
+{
+  "name": "越权测试库"
+}
+
+###
+
+### 知识库详情（把 {kb_id} 换成实际 id）
+GET http://127.0.0.1:8000/api/knowledge/{kb_id}
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 修改知识库
+PUT http://127.0.0.1:8000/api/knowledge/{kb_id}
+Content-Type: application/json
+Authorization: Bearer 粘贴admin的access_token
+
+{
+  "description": "改过的描述"
+}
+
+###
+
+### 成员列表（需该库 admin 权限）
+GET http://127.0.0.1:8000/api/knowledge/{kb_id}/members
+Authorization: Bearer 粘贴admin的access_token
+
+###
+
+### 添加成员 / 改权限（把 user_id 换成员工注册时返回的 id）
+POST http://127.0.0.1:8000/api/knowledge/{kb_id}/members
+Content-Type: application/json
+Authorization: Bearer 粘贴admin的access_token
+
+{
+  "user_id": 2,
+  "permission": "read"
+}
+
+###
+
+### 移除成员
+DELETE http://127.0.0.1:8000/api/knowledge/{kb_id}/members/{user_id}
+Authorization: Bearer 粘贴admin的access_token
+
+###
+
+### 删除知识库
+DELETE http://127.0.0.1:8000/api/knowledge/{kb_id}
+Authorization: Bearer 粘贴admin的access_token
+
+###
+
+### 用户列表（仅系统管理员，用于拿 user_id 去授权）
+GET http://127.0.0.1:8000/api/users?keyword=_p3_emp
+Authorization: Bearer 粘贴admin的access_token
+
+###

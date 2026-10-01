@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, health
+from app.api import auth, health, knowledge, users
 from app.config import check_unknown_env_keys, settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
@@ -61,5 +61,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix=settings.API_PREFIX)
     app.include_router(auth.router, prefix=settings.API_PREFIX)
+    app.include_router(users.router, prefix=settings.API_PREFIX)
+    app.include_router(knowledge.router, prefix=settings.API_PREFIX)
 
     return app

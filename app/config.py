@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
 
+    # ===== 初始管理员 =====
+    # 注册接口默认给 employee 角色，为了让系统里能出现第一个管理员，
+    # init_db() 会按这两项创建一个 admin 账号。留空则跳过（并记 warning）。
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
     # ===== LLM =====
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.deepseek.com"
