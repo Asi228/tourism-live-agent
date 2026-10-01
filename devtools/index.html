@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>企业知识库 — 接口调试台</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    color: #1f2328;
+    background: #f6f7f9;
+  }
+  header {
+    background: #24292f;
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 15px; font-weight: 500; margin: 0; }
+  header .badge {
+    font-size: 12px;
+    background: #3d444d;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  header .spacer { flex: 1; }
+  header .who { font-size: 13px; color: #d0d7de; }
+
+  .notice {
+    background: #fff8c5;
+    border-bottom: 1px solid #eac54f;
+    color: #7d4e00;
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 8px 16px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 460px 1fr;
+    gap: 14px;
+    padding: 14px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+
+  .card {
+    background: #fff;
+    border: 1px solid #d8dee4;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .card > h2 {
+    font-size: 13px;
+    font-weight: 500;
+    margin: 0;
+    padding: 9px 12px;
+    background: #f6f8fa;
+    border-bottom: 1px solid #d8dee4;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card > h2 .spacer { flex: 1; }
+  .card .body { padding: 12px; }
+
+  label { display: block; font-size: 12px; color: #57606a; margin: 8px 0 4px; }
+  input, select, textarea {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    background: #fff;
+    color: inherit;
+  }
+  textarea { font-family: Consolas, Monaco, monospace; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid #0969da33; border-color: #0969da; }
+
+  button {
+    padding: 6px 12px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #f6f8fa;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  button:hover { background: #eef1f4; }
+  button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
+  button.primary:hover { background: #1a7f37; }
+  button.danger { color: #cf222e; }
+  button.tiny { padding: 2px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row.wrap { flex-wrap: wrap; }
+  .mt { margin-top: 8px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #eaeef2; }
+  th { color: #57606a; font-weight: 500; font-size: 12px; }
+  tr.sel td { background: #ddf4ff; }
+  .empty { color: #8c959f; font-size: 13px; padding: 8px 0; }
+
+  .tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: #eaeef2;
+    color: #57606a;
+  }
+  .tag.admin { background: #dafbe1; color: #1a7f37; }
+  .tag.write { background: #fff8c5; color: #7d4e00; }
+  .tag.read { background: #ddf4ff; color: #0969da; }
+
+  .msg { font-size: 12px; padding: 6px 8px; border-radius: 6px; margin-top: 8px; display: none; }
+  .msg.ok { display: block; background: #dafbe1; color: #1a7f37; }
+  .msg.err { display: block; background: #ffebe9; color: #cf222e; }
+
+  pre.resp {
+    margin: 0;
+    padding: 10px;
+    background: #0d1117;
+    color: #e6edf3;
+    border-radius: 6px;
+    font-family: Consolas, Monaco, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    max-height: 460px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .status { font-size: 12px; color: #57606a; margin-bottom: 6px; }
+  .hint { font-size: 12px; color: #8c959f; margin-top: 6px; line-height: 1.6; }
+  code { background: #eaeef2; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>企业知识库 · 接口调试台</h1>
+  <span class="badge">仅开发环境</span>
+  <span class="spacer"></span>
+  <span class="who" id="who">未登录</span>
+  <button class="tiny" id="btnLogout" style="display:none">退出</button>
+</header>
+
+<div class="notice">
+  <b>本机开发调试用，不要对外发布。</b>
+  登录后的 token 存在浏览器 localStorage 里，别在共享电脑上使用。
+  本页仅在 <code>APP_ENV=dev</code> 时挂载；把 <code>APP_HOST</code> 设成 <code>0.0.0.0</code>
+  后同局域网的人也能打开本页，但他们看到的是自己的空 localStorage，拿不到你的 token。
+</div>
+
+<div class="layout">
+
+  <!-- ==================== 左列 ==================== -->
+  <div>
+
+    <!-- 登录 -->
+    <div class="card">
+      <h2>登录 / 注册</h2>
+      <div class="body">
+        <label>后端地址</label>
+        <input id="apiBase" placeholder="http://127.0.0.1:8000">
+
+        <label>用户名</label>
+        <input id="username" placeholder="admin">
+
+        <label>密码</label>
+        <input id="password" type="password" placeholder=".env 里的 ADMIN_PASSWORD">
+
+        <label>邮箱（仅注册时需要）</label>
+        <input id="email" placeholder="someone@example.com">
+
+        <div class="row mt">
+          <button class="primary" id="btnLogin">登录</button>
+          <button id="btnRegister">注册</button>
+        </div>
+        <div class="msg" id="authMsg"></div>
+        <div class="hint">
+          登录成功后 token 会存在浏览器本地，刷新页面不丢。
+          <br>管理员账号由 <code>init_db()</code> 从 <code>.env</code> 自动创建。
+        </div>
+      </div>
+    </div>
+
+    <!-- 知识库 -->
+    <div class="card">
+      <h2>
+        知识库
+        <span class="spacer"></span>
+        <button class="tiny" id="btnRefreshKb">刷新</button>
+      </h2>
+      <div class="body">
+        <div class="row">
+          <input id="kbName" placeholder="新知识库名称">
+          <button class="primary" id="btnCreateKb">创建</button>
+        </div>
+        <div class="row mt">
+          <label style="margin:0"><input type="checkbox" id="kbPublic" style="width:auto"> 公开（所有登录用户可读）</label>
+        </div>
+        <div class="msg" id="kbMsg"></div>
+        <table class="mt">
+          <thead>
+            <tr><th style="width:44px">ID</th><th>名称</th><th style="width:70px">我的权限</th><th style="width:110px">操作</th></tr>
+          </thead>
+          <tbody id="kbTable">
+            <tr><td colspan="4" class="empty">未加载</td></tr>
+          </tbody>
+        </table>
+        <div class="hint">点某一行可以选中它，右侧「成员管理」会跟着切换。</div>
+      </div>
+    </div>
+
+    <!-- 成员 -->
+    <div class="card">
+      <h2>成员管理 <span class="spacer"></span><span class="who" id="memberKbName">未选中知识库</span></h2>
+      <div class="body">
+        <div class="row">
+          <input id="memberUserId" placeholder="用户 ID" type="number" style="flex:1">
+          <select id="memberPerm" style="width:100px">
+            <option value="read">read</option>
+            <option value="write">write</option>
+            <option value="admin">admin</option>
+          </select>
+          <button class="primary" id="btnGrant">授权</button>
+        </div>
+        <div class="msg" id="memberMsg"></div>
+        <table class="mt">
+          <thead>
+            <tr><th style="width:90px">用户 ID</th><th>用户名</th><th style="width:60px">权限</th><th style="width:60px">操作</th></tr>
+          </thead>
+          <tbody id="memberTable">
+            <tr><td colspan="4" class="empty">先选中一个知识库</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ==================== 右列 ==================== -->
+  <div>
+
+    <!-- 万能请求 -->
+    <div class="card">
+      <h2>
+        万能请求
+        <span class="spacer"></span>
+        <button class="tiny" id="btnFillMe">填入 /api/auth/me</button>
+      </h2>
+      <div class="body">
+        <div class="row">
+          <select id="reqMethod" style="width:100px">
+            <option>GET</option><option>POST</option><option>PUT</option>
+            <option>PATCH</option><option>DELETE</option>
+          </select>
+          <input id="reqPath" placeholder="/api/knowledge" style="flex:1">
+          <button class="primary" id="btnSend">发送</button>
+        </div>
+        <label>请求体 JSON（GET/DELETE 可留空）</label>
+        <textarea id="reqBody" rows="5" placeholder='{"name": "技术知识库"}'></textarea>
+        <div class="hint">
+          会自动带上 <code>Authorization: Bearer &lt;token&gt;</code>。<br>
+          请求体留空则不发 body；填了但 JSON 格式错会直接提示，不会发出去。
+        </div>
+      </div>
+    </div>
+
+    <!-- 响应 -->
+    <div class="card">
+      <h2>响应</h2>
+      <div class="body">
+        <div class="status" id="respStatus">尚未发送请求</div>
+        <pre class="resp" id="respBody">—</pre>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ==================== 全局状态 ====================
+var state = {
+  token: localStorage.getItem('ekg_token') || '',
+  apiBase: localStorage.getItem('ekg_api_base') || '',
+  currentKb: null,
+  kbList: []
+};
+
+var $ = function (id) { return document.getElementById(id); };
+
+function showMsg(el, text, ok) {
+  el.textContent = text;
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+  if (ok) { setTimeout(function () { el.className = 'msg'; }, 3000); }
+}
+
+function apiBase() {
+  var v = ($('apiBase').value || '').trim().replace(/\/+$/, '');
+  return v || 'http://127.0.0.1:8000';
+}
+
+// ==================== 统一请求 ====================
+async function call(method, path, body, opts) {
+  opts = opts || {};
+  var headers = {};
+  if (state.token) { headers['Authorization'] = 'Bearer ' + state.token; }
+  if (body !== undefined && body !== null) { headers['Content-Type'] = 'application/json'; }
+
+  var res, text;
+  try {
+    res = await fetch(apiBase() + path, {
+      method: method,
+      headers: headers,
+      body: (body === undefined || body === null) ? undefined : JSON.stringify(body)
+    });
+    text = await res.text();
+  } catch (e) {
+    return { status: 0, data: { code: -1, message: '请求发不出去：' + e.message + '（后端起来了吗？）' } };
+  }
+
+  var data;
+  try { data = JSON.parse(text); } catch (e) { data = text; }
+
+  if (!opts.silent) { renderResponse(res.status, data); }
+  return { status: res.status, data: data };
+}
+
+function renderResponse(status, data) {
+  var s = $('respStatus');
+  if (status === 0) {
+    s.textContent = '❌ 网络错误';
+  } else {
+    var code = (data && typeof data === 'object' && data.code !== undefined) ? data.code : '—';
+    s.textContent = 'HTTP ' + status + '   |  业务 code = ' + code;
+  }
+  $('respBody').textContent =
+    (typeof data === 'string') ? data : JSON.stringify(data, null, 2);
+}
+
+// ==================== 登录 / 注册 ====================
+async function doLogin() {
+  var r = await call('POST', '/api/auth/login', {
+    username: $('username').value.trim(),
+    password: $('password').value
+  });
+  if (r.data && r.data.code === 0) {
+    state.token = r.data.data.access_token;
+    localStorage.setItem('ekg_token', state.token);
+    showMsg($('authMsg'), '登录成功', true);
+    refreshWho();
+    loadKbList();
+  } else {
+    showMsg($('authMsg'), (r.data && r.data.message) || '登录失败', false);
+  }
+}
+
+async function doRegister() {
+  var r = await call('POST', '/api/auth/register', {
+    username: $('username').value.trim(),
+    email: $('email').value.trim(),
+    password: $('password').value
+  });
+  if (r.data && r.data.code === 0) {
+    showMsg($('authMsg'), '注册成功，默认角色 employee。现在可以登录了。', true);
+  } else {
+    showMsg($('authMsg'), (r.data && r.data.message) || '注册失败', false);
+  }
+}
+
+function logout() {
+  state.token = '';
+  localStorage.removeItem('ekg_token');
+  state.kbList = [];
+  state.currentKb = null;
+  refreshWho();
+  resetTable($('kbTable'), 4, '未加载');
+  resetTable($('memberTable'), 4, '先选中一个知识库');
+  renderResponse(0, '已退出登录');
+}
+
+async function refreshWho() {
+  if (!state.token) {
+    $('who').textContent = '未登录';
+    $('btnLogout').style.display = 'none';
+    return;
+  }
+  var r = await call('GET', '/api/auth/me', null, { silent: true });
+  if (r.data && r.data.code === 0) {
+    var u = r.data.data;
+    $('who').textContent = u.username + '（' + u.role.name + '）';
+    $('btnLogout').style.display = '';
+  } else {
+    state.token = '';
+    localStorage.removeItem('ekg_token');
+    $('who').textContent = '登录已失效';
+    $('btnLogout').style.display = 'none';
+  }
+}
+
+// ==================== 知识库 ====================
+async function loadKbList() {
+  if (!state.token) { showMsg($('kbMsg'), '请先登录', false); return; }
+  var r = await call('GET', '/api/knowledge', null, { silent: true });
+  if (!r.data || r.data.code !== 0) {
+    var tb = $('kbTable');
+    tb.innerHTML = '';
+    tb.appendChild(emptyRow(4, '加载失败：' + ((r.data && r.data.message) || '未知错误')));
+    return;
+  }
+  state.kbList = r.data.data;
+  if (state.currentKb) {
+    var still = state.kbList.filter(function (k) { return k.id === state.currentKb.id; });
+    state.currentKb = still.length ? still[0] : null;
+  }
+  renderKbTable();
+  renderMemberArea();
+}
+
+function renderKbTable() {
+  var tb = $('kbTable');
+  tb.innerHTML = '';
+  if (!state.kbList.length) {
+    tb.appendChild(emptyRow(4, '还没有可见的知识库（普通员工需要被授权后才会出现）'));
+    return;
+  }
+  state.kbList.forEach(function (kb) {
+    var tr = document.createElement('tr');
+    if (state.currentKb && state.currentKb.id === kb.id) { tr.className = 'sel'; }
+
+    tr.appendChild(textCell(kb.id));
+    tr.appendChild(textCell(kb.name));
+    tr.appendChild(permCell(kb.my_permission));
+
+    var tdOp = document.createElement('td');
+    var btn = document.createElement('button');
+    btn.className = 'tiny danger';
+    btn.textContent = '删除';
+    btn.onclick = function (ev) {
+      ev.stopPropagation();
+      deleteKb(kb.id);
+    };
+    tdOp.appendChild(btn);
+    tr.appendChild(tdOp);
+
+    tr.onclick = function () {
+      state.currentKb = kb;
+      renderKbTable();
+      renderMemberArea();
+    };
+    tb.appendChild(tr);
+  });
+}
+
+async function createKb() {
+  var name = $('kbName').value.trim();
+  if (!name) { showMsg($('kbMsg'), '请填知识库名称', false); return; }
+  var r = await call('POST', '/api/knowledge', {
+    name: name,
+    is_public: $('kbPublic').checked
+  });
+  if (r.data && r.data.code === 0) {
+    showMsg($('kbMsg'), '创建成功', true);
+    $('kbName').value = '';
+    $('kbPublic').checked = false;
+    loadKbList();
+  } else {
+    showMsg($('kbMsg'), (r.data && r.data.message) || '创建失败（创建知识库需要系统管理员）', false);
+  }
+}
+
+async function deleteKb(id) {
+  if (!confirm('确定删除知识库 id=' + id + '？成员记录会一起删除。')) { return; }
+  var r = await call('DELETE', '/api/knowledge/' + id);
+  if (r.data && r.data.code === 0) {
+    showMsg($('kbMsg'), '已删除', true);
+    if (state.currentKb && state.currentKb.id === id) { state.currentKb = null; }
+    loadKbList();
+  } else {
+    showMsg($('kbMsg'), (r.data && r.data.message) || '删除失败（仅系统管理员可删）', false);
+  }
+}
+
+// ==================== 成员 ====================
+function renderMemberArea() {
+  var kb = state.currentKb;
+  $('memberKbName').textContent = kb ? ('[' + kb.id + '] ' + kb.name) : '未选中知识库';
+  var tb = $('memberTable');
+  tb.innerHTML = '';
+  if (!kb) {
+    tb.appendChild(emptyRow(4, '先选中一个知识库'));
+    return;
+  }
+  loadMembers(kb.id);
+}
+
+async function loadMembers(kbId) {
+  var r = await call('GET', '/api/knowledge/' + kbId + '/members', null, { silent: true });
+  var tb = $('memberTable');
+  tb.innerHTML = '';
+  if (!r.data || r.data.code !== 0) {
+    tb.appendChild(emptyRow(4, '加载失败：' + ((r.data && r.data.message) || '未知错误')));
+    return;
+  }
+  var list = r.data.data;
+  if (!list.length) {
+    tb.appendChild(emptyRow(4, '暂无成员'));
+    return;
+  }
+  list.forEach(function (m) {
+    var tr = document.createElement('tr');
+
+    tr.appendChild(textCell(m.user_id));
+    tr.appendChild(textCell(m.username));
+    tr.appendChild(permCell(m.permission));
+
+    var tdOp = document.createElement('td');
+    var btn = document.createElement('button');
+    btn.className = 'tiny danger';
+    btn.textContent = '移除';
+    btn.onclick = function () { revokeMember(kbId, m.user_id); };
+    tdOp.appendChild(btn);
+    tr.appendChild(tdOp);
+
+    tb.appendChild(tr);
+  });
+}
+
+async function grantMember() {
+  var kb = state.currentKb;
+  if (!kb) { showMsg($('memberMsg'), '先选中一个知识库', false); return; }
+  var uid = Number($('memberUserId').value);
+  if (!uid) { showMsg($('memberMsg'), '请填用户 ID', false); return; }
+  var r = await call('POST', '/api/knowledge/' + kb.id + '/members', {
+    user_id: uid,
+    permission: $('memberPerm').value
+  });
+  if (r.data && r.data.code === 0) {
+    showMsg($('memberMsg'), '授权成功', true);
+    $('memberUserId').value = '';
+    loadMembers(kb.id);
+  } else {
+    showMsg($('memberMsg'), (r.data && r.data.message) || '授权失败', false);
+  }
+}
+
+async function revokeMember(kbId, uid) {
+  var r = await call('DELETE', '/api/knowledge/' + kbId + '/members/' + uid);
+  if (r.data && r.data.code === 0) {
+    showMsg($('memberMsg'), '已移除', true);
+    loadMembers(kbId);
+  } else {
+    showMsg($('memberMsg'), (r.data && r.data.message) || '移除失败', false);
+  }
+}
+
+// ==================== 万能请求 ====================
+async function sendRaw() {
+  var method = $('reqMethod').value;
+  var path = $('reqPath').value.trim();
+  if (!path) { renderResponse(0, '请填路径，例如 /api/health'); return; }
+  if (path.charAt(0) !== '/') { path = '/' + path; }
+
+  var raw = $('reqBody').value.trim();
+  var body;
+  if (!raw) {
+    body = null;
+  } else {
+    try {
+      body = JSON.parse(raw);
+    } catch (e) {
+      renderResponse(0, '请求体不是合法 JSON：' + e.message);
+      return;
+    }
+  }
+  await call(method, path, body);
+}
+
+// ==================== DOM 构建工具 ====================
+// 安全约定（重要）：
+//   渲染服务端数据一律走下面的工具函数（textContent / 白名单 className），
+//   禁止用 innerHTML 拼服务端数据。原因：这个页面的 localStorage 里存着登录 token，
+//   一旦 innerHTML 拼进未转义的字符串，属性注入或标签注入就能偷走它。
+//   本页曾经在 permission 字段上犯过这个错（class 属性和文本各拼一次），已改成 DOM API。
+
+function textCell(value) {
+  var td = document.createElement('td');
+  td.textContent = value;
+  return td;
+}
+
+// 只允许三个合法档位当 CSS class，其余一律不带 class：
+// 即使库里存了脏值，也没法从 class 属性里逃逸出去
+var PERM_CLASSES = { read: 1, write: 1, admin: 1 };
+
+function permCell(permission) {
+  var td = document.createElement('td');
+  var span = document.createElement('span');
+  var cls = PERM_CLASSES[permission] ? permission : '';
+  span.className = 'tag' + (cls ? ' ' + cls : '');
+  span.textContent = permission;
+  td.appendChild(span);
+  return td;
+}
+
+function emptyRow(colspan, text) {
+  var tr = document.createElement('tr');
+  var td = document.createElement('td');
+  td.colSpan = colspan;
+  td.className = 'empty';
+  td.textContent = text;
+  tr.appendChild(td);
+  return tr;
+}
+
+function resetTable(table, colspan, text) {
+  table.innerHTML = '';
+  table.appendChild(emptyRow(colspan, text));
+}
+
+// ==================== 初始化 ====================
+(function init() {
+  $('apiBase').value = state.apiBase || (location.origin && location.origin.indexOf('http') === 0 ? location.origin : 'http://127.0.0.1:8000');
+  $('apiBase').onchange = function () {
+    localStorage.setItem('ekg_api_base', $('apiBase').value.trim());
+  };
+
+  $('btnLogin').onclick = doLogin;
+  $('btnRegister').onclick = doRegister;
+  $('btnLogout').onclick = logout;
+  $('password').onkeydown = function (e) { if (e.key === 'Enter') { doLogin(); } };
+
+  $('btnRefreshKb').onclick = loadKbList;
+  $('btnCreateKb').onclick = createKb;
+  $('btnGrant').onclick = grantMember;
+
+  $('btnSend').onclick = sendRaw;
+  $('btnFillMe').onclick = function () {
+    $('reqMethod').value = 'GET';
+    $('reqPath').value = '/api/auth/me';
+    $('reqBody').value = '';
+  };
+
+  refreshWho();
+  if (state.token) { loadKbList(); }
+})();
+</script>
+</body>
+</html>

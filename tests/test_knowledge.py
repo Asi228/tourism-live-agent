@@ -454,3 +454,32 @@ def test_list_kbs_does_not_query_members_per_kb(client, make_user, session_facto
     assert set(granted_ids) <= {i["id"] for i in r.json()["data"]}
     # 6 条授权记录：按库查就是 6 次，批量查必须是常数次数
     assert member_queries["n"] <= 3, f"成员表查询次数 {member_queries['n']} 次，出现 N+1"
+
+
+def test_member_list_never_returns_dirty_permission(client, make_user, session_factory):
+    """成员列表不得把库里的非法档位原样吐出去。
+
+    和 _member_perm_map 保持同一口径：非法档位等同于"没有授权记录"，整行略去。
+    之所以要钉死：前端（调试台）会把 permission 渲染成 CSS class 名，
+    原样透出就等于把未受约束的字符串交给模板层。
+    """
+    admin = make_user("admin")
+    emp = make_user("employee")
+    kb_id = _create_kb(client, admin["headers"]).json()["data"]["id"]
+
+    dirty = 'read" onmouseover="window.__x=1'
+    with session_factory() as db:
+        db.add(
+            KnowledgeBaseMember(
+                knowledge_base_id=kb_id, user_id=emp["id"], permission=dirty
+            )
+        )
+        db.commit()
+
+    body = client.get(f"/api/knowledge/{kb_id}/members", headers=admin["headers"]).json()
+    assert body["code"] == 0, body
+
+    perms = [m["permission"] for m in body["data"]]
+    assert dirty not in perms, "脏权限值不能被 API 原样返回"
+    assert all(p in ("read", "write", "admin") for p in perms), perms
+    assert emp["id"] not in [m["user_id"] for m in body["data"]], "非法档位应整行略去"

@@ -221,19 +221,46 @@ def delete_kb(db: Session, kb_id: int) -> None:
 # ==================== 成员管理 ====================
 
 
-def _member_out(member: KnowledgeBaseMember) -> MemberOut:
+def _valid_permission(value: str) -> str | None:
+    """合法档位才返回，否则返回 None。
+
+    与 _member_perm_map 同一口径：库里存了非法档位（人工改库、脚本导入）
+    就等同于"没有这条授权记录"，绝不把它当成合法权限往外吐。
+    """
+    return value if value in PERMISSION_LEVEL else None
+
+
+def _member_out(member: KnowledgeBaseMember, permission: str) -> MemberOut:
+    """构造成员响应模型。
+
+    permission 必须由调用方保证合法：
+      读路径先过 _valid_permission 过滤，写路径来自受 Literal 约束的请求体。
+    注意 MemberOut.permission 故意声明成 str 而不是 Literal —— 否则库里一行脏数据
+    会让 pydantic 构造失败并变成 500，而我们想要的是记日志 + 跳过。
+    """
     return MemberOut(
         id=member.id,
         user_id=member.user_id,
         username=member.user.username,
-        permission=member.permission,
+        permission=permission,
         created_at=member.created_at,
     )
 
 
 def list_members(db: Session, user: User, kb_id: int) -> list[MemberOut]:
     ensure_kb_permission(db, user, kb_id, PERM_ADMIN)
-    return [_member_out(m) for m in knowledge_member_repository.list_by_kb(db, kb_id)]
+
+    result: list[MemberOut] = []
+    for member in knowledge_member_repository.list_by_kb(db, kb_id):
+        perm = _valid_permission(member.permission)
+        if perm is None:
+            logger.warning(
+                "成员表存在非法权限值，已从成员列表忽略 member_id=%s kb_id=%s permission=%r",
+                member.id, member.knowledge_base_id, member.permission,
+            )
+            continue
+        result.append(_member_out(member, perm))
+    return result
 
 
 def grant_member(db: Session, user: User, kb_id: int, payload: MemberAdd) -> MemberOut:
@@ -260,7 +287,12 @@ def grant_member(db: Session, user: User, kb_id: int, payload: MemberAdd) -> Mem
         "授权知识库成员 kb_id=%s target=%s perm=%s by=%s",
         kb_id, target.username, payload.permission, user.username,
     )
-    return _member_out(member)
+
+    perm = _valid_permission(member.permission)
+    if perm is None:
+        # 正常走不到：payload.permission 已被 Literal 约束
+        raise AppException(ErrorCode.DB_ERROR, "成员权限数据异常")
+    return _member_out(member, perm)
 
 
 def revoke_member(db: Session, user: User, kb_id: int, target_user_id: int) -> None:
