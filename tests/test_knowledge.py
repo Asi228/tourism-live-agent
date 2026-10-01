@@ -352,10 +352,13 @@ def test_revoke_on_public_kb_still_readable(client, make_user):
     assert emp["id"] not in [m["user_id"] for m in members], "授权记录本身必须真的删掉"
 
 
-def test_write_tier_grants_nothing_extra(client, make_user):
-    """write 目前不带来任何超出 read 的能力（修改知识库要求 admin）。
+def test_write_tier_does_not_grant_kb_metadata_edit(client, make_user):
+    """write 覆盖文档读写，不覆盖"改知识库本身"（那仍要 admin）。
 
-    这条是钉住现状的：Phase 4 给 write 接上"文档写入"之后，这个断言要跟着改。
+    边界与 Phase 4 的接口分工对齐：
+      read  → 看知识库/文档/chunk
+      write → 上传、删除文档（见 test_documents.py 的权限用例）
+      admin → 改知识库元数据、管成员
     """
     admin = make_user("admin")
     emp_read = make_user("employee")

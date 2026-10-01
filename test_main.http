@@ -166,3 +166,61 @@ GET http://127.0.0.1:8000/api/users?keyword=_p3_emp
 Authorization: Bearer 粘贴admin的access_token
 
 ###
+
+### ==================== 文档（Phase 4）====================
+
+### 上传文档（multipart；kb_id 是表单字段，不是查询参数）
+### 需要先在该目录建一个待上传的文件，路径按实际改
+POST http://127.0.0.1:8000/api/documents/upload
+Authorization: Bearer 粘贴admin的access_token
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="kb_id"
+
+1
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="员工手册.txt"
+Content-Type: text/plain
+
+< ./docs/员工手册.txt
+
+--WebAppBoundary--
+
+###
+
+### 文档列表（不传 kb_id = 所有可访问知识库的文档）
+GET http://127.0.0.1:8000/api/documents
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 文档列表（指定知识库）
+GET http://127.0.0.1:8000/api/documents?kb_id={kb_id}
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 文档详情（看 status / chunk_count / error_msg）
+GET http://127.0.0.1:8000/api/documents/{document_id}
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 处理状态（前端轮询用；status: pending/processing/completed/failed）
+GET http://127.0.0.1:8000/api/documents/{document_id}/status
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 切分结果（核对 chunk 与页码，Phase 5 的向量就按这些 chunk 建）
+GET http://127.0.0.1:8000/api/documents/{document_id}/chunks
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 删除文档（需对该知识库有 write 权限；会连带删 chunk 和磁盘文件）
+DELETE http://127.0.0.1:8000/api/documents/{document_id}
+Authorization: Bearer 粘贴access_token
+
+###

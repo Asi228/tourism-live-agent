@@ -1,0 +1,104 @@
+"""文档接口。
+
+权限矩阵（全部继承自所属知识库的权限，文档没有独立权限）：
+  POST   /api/documents/upload           对该库 write
+  GET    /api/documents?kb_id=           对该库 read（不传 kb_id 则列出所有可访问库的）
+  GET    /api/documents/{id}             对该库 read
+  GET    /api/documents/{id}/status      对该库 read（前端轮询用）
+  GET    /api/documents/{id}/chunks      对该库 read
+  DELETE /api/documents/{id}             对该库 write
+
+上传走 BackgroundTasks：接口立刻返回（status=pending），解析在后台做。
+这是需求文档 §10 的 MVP 方案 —— 不引入 Celery/RQ 也能不阻塞请求。
+"""
+
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.core.response import success
+from app.db.session import get_db
+from app.models.user import User
+from app.schemas.document import ChunkOut, DocumentOut, DocumentStatusOut
+from app.services import document_service
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/documents", tags=["文档"])
+
+
+def _doc_out(doc) -> dict:
+    return DocumentOut.model_validate(doc).model_dump(mode="json")
+
+
+@router.post("/upload", summary="上传文档（需对该知识库有 write 权限）")
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    kb_id: int = Form(..., description="目标知识库 id"),
+    file: UploadFile = File(..., description="pdf / txt / md"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = await document_service.upload_document(db, current_user, kb_id, file)
+
+    # 注意：后台任务拿的是 document_id 而不是 ORM 对象 —— 请求结束后这个 session 就关了，
+    # 对象会处于 detached 状态。后台任务自己开新 session 重新查一次。
+    background_tasks.add_task(document_service.process_document, doc.id)
+
+    return success(_doc_out(doc), "上传成功，正在后台解析")
+
+
+@router.get("", summary="文档列表")
+def list_documents(
+    kb_id: int | None = Query(default=None, description="不传则返回所有可访问知识库的文档"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    docs = document_service.list_documents(db, current_user, kb_id)
+    return success([_doc_out(d) for d in docs])
+
+
+@router.get("/{document_id}", summary="文档详情")
+def get_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = document_service.get_document(db, current_user, document_id)
+    return success(_doc_out(doc))
+
+
+@router.get("/{document_id}/status", summary="文档处理状态（轮询用）")
+def get_document_status(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = document_service.get_document(db, current_user, document_id)
+    status = DocumentStatusOut(
+        id=doc.id, status=doc.status, chunk_count=doc.chunk_count, error_msg=doc.error_msg
+    )
+    return success(status.model_dump(mode="json"))
+
+
+@router.get("/{document_id}/chunks", summary="查看切分结果（含页码，用于核对切分效果）")
+def list_chunks(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    chunks = document_service.list_chunks(db, current_user, document_id)
+    # 走 ChunkOut 而不是手写 dict：字段增删只在 schema 里改一处，响应不会和 schema 漂移
+    return success([ChunkOut.model_validate(c).model_dump(mode="json") for c in chunks])
+
+
+@router.delete("/{document_id}", summary="删除文档（需对该知识库有 write 权限）")
+def delete_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    document_service.delete_document(db, current_user, document_id)
+    return success(None, "删除成功")

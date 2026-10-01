@@ -2,11 +2,17 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录（app/config.py 往上两级 = enterprise_knowledge_agent/）
 BASE_DIR = Path(__file__).resolve().parents[1]
 ENV_FILE = BASE_DIR / ".env"
+
+# CHUNK_SIZE 的硬上限（单位：字符）。
+# document_chunks.content 是 MySQL TEXT，容量 65535 字节；utf8mb4 下一个汉字占 3~4 字节，
+# 留一倍余量取 8000 字符。需求里 chunk 是 500~800 token，正常配置离这个上限很远。
+CHUNK_SIZE_HARD_LIMIT = 8000
 
 
 class Settings(BaseSettings):
@@ -73,6 +79,21 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = ""
     ADMIN_PASSWORD: str = ""
 
+    # ===== 文档上传 =====
+    # 落盘根目录。每个知识库一个子目录（uploads/<kb_id>/），
+    # 磁盘上的文件名由 uuid 生成，**绝不使用用户上传的文件名**（防路径穿越/重名覆盖）。
+    UPLOAD_DIR: str = str(BASE_DIR / "uploads")
+    MAX_UPLOAD_SIZE_MB: int = 20
+    ALLOWED_EXTENSIONS: str = "pdf,txt,md,markdown"
+
+    # ===== 文本切分 =====
+    # 单位是**字符**而不是 token。原因：BGE-M3 走 API，本地不装 tokenizer
+    # （transformers + torch 是几百 MB，本机 16G 内存 + 核显扛不住）。
+    # 中文场景 1 个字符 ≤ 1 个 token，按字符切是偏保守（不会超长）的近似。
+    # 将来要精确到 token，只改 app/rag/splitter.py 一个文件即可。
+    CHUNK_SIZE: int = 600
+    CHUNK_OVERLAP: int = 100
+
     # ===== LLM =====
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.deepseek.com"
@@ -83,6 +104,33 @@ class Settings(BaseSettings):
     EMBEDDING_BASE_URL: str = ""
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_DIM: int = 1024
+
+    @model_validator(mode="after")
+    def _check_document_settings(self) -> "Settings":
+        """切分与上传参数在启动时就校验，不留到处理文档时才炸。
+
+        为什么这里是抛错而不是像 check_unknown_env_keys() 那样只告警：
+        那一项拼错只是回退默认值，系统照常能用；而 CHUNK_OVERLAP >= CHUNK_SIZE
+        会让 splitter 每份文档都抛 ValueError，所有文档永远停在 failed ——
+        这种"配置错了整个功能就废"的情况必须当场拦住。
+        """
+        if self.CHUNK_SIZE <= 0:
+            raise ValueError("CHUNK_SIZE 必须大于 0")
+        if self.CHUNK_SIZE > CHUNK_SIZE_HARD_LIMIT:
+            raise ValueError(
+                f"CHUNK_SIZE 不能超过 {CHUNK_SIZE_HARD_LIMIT} 字符："
+                "document_chunks.content 是 MySQL TEXT（65535 字节），"
+                "utf8mb4 下 4 字节一个汉字，再大就会截断报错"
+            )
+        if self.CHUNK_OVERLAP < 0:
+            raise ValueError("CHUNK_OVERLAP 不能为负数")
+        if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
+            raise ValueError("CHUNK_OVERLAP 必须小于 CHUNK_SIZE，否则切分会不收敛")
+        if self.MAX_UPLOAD_SIZE_MB <= 0:
+            raise ValueError("MAX_UPLOAD_SIZE_MB 必须大于 0")
+        if not self.allowed_extensions_set:
+            raise ValueError("ALLOWED_EXTENSIONS 不能为空，否则任何文件都传不上来")
+        return self
 
     @property
     def mysql_url(self) -> str:
@@ -107,6 +155,25 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """把逗号分隔的 CORS_ORIGINS 拆成列表。"""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def upload_path(self) -> Path:
+        """上传目录的绝对路径。
+
+        相对路径一律按**项目根**解析，而不是当前工作目录 ——
+        和 ENV_FILE 同一个理由：从别的目录启动服务时，CWD 相对路径会把文件写飞。
+        """
+        path = Path(self.UPLOAD_DIR)
+        return path if path.is_absolute() else BASE_DIR / path
+
+    @property
+    def allowed_extensions_set(self) -> set[str]:
+        """允许的扩展名（统一小写、不带点）。"""
+        return {
+            e.strip().lower().lstrip(".")
+            for e in self.ALLOWED_EXTENSIONS.split(",")
+            if e.strip()
+        }
 
 
 @lru_cache

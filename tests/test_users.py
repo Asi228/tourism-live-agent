@@ -22,7 +22,10 @@ def test_admin_lists_users_without_secrets(client, make_user):
     admin = make_user("admin")
     emp = make_user("employee")
 
-    r = client.get("/api/users", headers=admin["headers"])
+    # 按用户名精确查，而不是翻第一页找 id：
+    # 测试库是整个 session 共用的，用户会越积越多，而接口有默认 limit=50，
+    # 用全量列表断言会随"别的测试文件先跑了、又多造了几个用户"而随机失败。
+    r = client.get(f"/api/users?keyword={emp['username']}", headers=admin["headers"])
     assert r.json()["code"] == 0, r.json()
     item = next(u for u in r.json()["data"] if u["id"] == emp["id"])
 

@@ -11,3 +11,8 @@ cryptography==44.0.0
 bcrypt==4.2.1
 PyJWT==2.10.1
 email-validator==2.2.0
+
+# document parsing (Phase 4)
+# pypdf is pure python (no native binary), used for PDF text extraction.
+# TXT / Markdown are read with the standard library, no extra package needed.
+pypdf==6.19.0

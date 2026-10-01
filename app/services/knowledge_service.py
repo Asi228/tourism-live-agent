@@ -6,8 +6,12 @@
   ③ knowledge_base_members 记录       → 按记录的 permission（read / write / admin）
   ④ kb.is_public = True              → 所有登录用户至少 read
 
-注意：write 档位当前没有任何接口使用（修改知识库要求 admin），
-它是留给 Phase 4「文档写入」的档位，不是已经生效的写权限。
+档位分工（Phase 4 起 write 已生效）：
+  read  → 看知识库 / 文档 / chunk
+  write → 文档读写：上传、删除文档（documents 接口用这两档）
+  admin → 知识库元数据修改、成员管理
+注意"改知识库本身"（PUT /api/knowledge/{id}）仍要求 admin，不对 write 开放 ——
+write 是"往知识库里写内容"，不是"改这个库的配置"。
 
 对外最重要的两个函数：
   get_accessible_kb_ids()  —— Phase 5 拿它去过滤 Milvus，实现"检索期权限过滤"
@@ -18,12 +22,14 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
 from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_base_member import PERMISSION_LEVEL, KnowledgeBaseMember
 from app.models.user import User
 from app.repositories import (
+    document_repository,
     knowledge_member_repository,
     knowledge_repository,
     user_repository,
@@ -34,6 +40,7 @@ from app.schemas.knowledge import (
     MemberAdd,
     MemberOut,
 )
+from app.utils import file_storage
 
 logger = logging.getLogger(__name__)
 
@@ -202,20 +209,33 @@ def update_kb(
 
 
 def delete_kb(db: Session, kb_id: int) -> None:
-    """删除知识库。
+    """删除知识库：成员记录、文档行、文档的磁盘文件一起清。
 
     权限由接口层的 require_admin 保证 —— 删除被划为**系统管理员专属**操作：
-    它和"创建知识库"是同一级别的生命周期动作，且会级联删掉成员、文档、向量，
-    破坏性最大，不适合下放给库级 admin。
+    它和"创建知识库"是同一级别的生命周期动作，且破坏性最大，不适合下放给库级 admin。
+
+    磁盘文件必须在 ORM 删掉 Document 行**之前**取路径：行一旦删了，
+    file_path 就再也查不到，那些文件会在 uploads/ 里永久变成无主垃圾
+    （对企业知识库来说，"已删除的库内容还在服务器上"是合规问题，不只是脏文件）。
+
+    注意 Phase 5 之后这里还要多清一处：Milvus 里的向量。DB 级联删不到远端数据。
     """
     kb = knowledge_repository.get_by_id(db, kb_id)
     if kb is None:
         raise AppException(ErrorCode.NOT_FOUND, "知识库不存在")
 
     name = kb.name
-    knowledge_repository.delete(db, kb)  # 成员记录由 cascade 一起删
+    # 先取路径再删行：删完就查不到了
+    doc_paths = document_repository.list_file_paths_by_kb(db, kb_id)
+    knowledge_repository.delete(db, kb)  # 成员、文档、chunk 由 cascade 一起删
     db.commit()
-    logger.info("删除知识库 kb_id=%s name=%s", kb_id, name)
+
+    deleted = file_storage.delete_files(doc_paths)
+    file_storage.remove_dir_if_empty(settings.upload_path / str(kb_id))
+    logger.info(
+        "删除知识库 kb_id=%s name=%s | 清理文档文件 %s/%s 个",
+        kb_id, name, deleted, len(doc_paths),
+    )
 
 
 # ==================== 成员管理 ====================

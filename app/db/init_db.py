@@ -17,8 +17,15 @@ from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 # 必须导入模型，它们才会注册到 Base.metadata（否则 create_all 建不出表）
-from app.models import KnowledgeBase, KnowledgeBaseMember, Role, User  # noqa: F401
-from app.repositories import role_repository, user_repository
+from app.models import (  # noqa: F401
+    Document,
+    DocumentChunk,
+    KnowledgeBase,
+    KnowledgeBaseMember,
+    Role,
+    User,
+)
+from app.repositories import document_repository, role_repository, user_repository
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +89,22 @@ def init_db() -> None:
     with SessionLocal() as db:
         created_roles = _seed_roles(db)
         admin_username = _ensure_admin(db)
+        stuck = _count_stuck_documents(db)
 
     logger.info(
         "数据库初始化完成 | 新建角色: %s | 管理员: %s",
         created_roles if created_roles else "无（已存在）",
         admin_username or "无新建",
     )
+    if stuck:
+        # 进程被强杀时，后台解析任务会连同进程一起消失，
+        # 文档就永远停在 pending / processing。这里至少让它被看见。
+        logger.warning(
+            "有 %s 份文档未处理完成（进程中断导致），可重新上传或等待后续阶段提供重试入口",
+            stuck,
+        )
+
+
+def _count_stuck_documents(db) -> int:
+    """统计卡在 pending / processing 的文档数量。"""
+    return len(document_repository.list_unfinished(db))

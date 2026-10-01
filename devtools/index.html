@@ -247,6 +247,41 @@
       </div>
     </div>
 
+    <!-- 文档 -->
+    <div class="card">
+      <h2>
+        文档
+        <span class="spacer"></span>
+        <span class="who" id="docKbName">未选中知识库</span>
+        <button class="tiny" id="btnRefreshDoc">刷新</button>
+      </h2>
+      <div class="body">
+        <div class="row">
+          <input type="file" id="docFile" accept=".pdf,.txt,.md,.markdown" style="flex:1">
+          <button class="primary" id="btnUpload">上传</button>
+        </div>
+        <div class="msg" id="docMsg"></div>
+        <table class="mt">
+          <thead>
+            <tr>
+              <th style="width:40px">ID</th>
+              <th>文件名</th>
+              <th style="width:78px">状态</th>
+              <th style="width:46px">块数</th>
+              <th style="width:140px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="docTable">
+            <tr><td colspan="5" class="empty">先选中一个知识库</td></tr>
+          </tbody>
+        </table>
+        <div class="hint">
+          上传后接口立刻返回（status=pending），解析在后台进行，状态列会自动轮询。
+          点「切块」看切分结果与页码（Phase 5 的向量就按这些块建）。
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ==================== 右列 ==================== -->
@@ -295,8 +330,16 @@ var state = {
   token: localStorage.getItem('ekg_token') || '',
   apiBase: localStorage.getItem('ekg_api_base') || '',
   currentKb: null,
-  kbList: []
+  kbList: [],
+  docList: []
 };
+
+// 文档处理状态轮询：只在有 pending/processing 时才轮询，
+// 并且限制次数 —— 否则后端挂了会变成无限请求。
+var POLL_INTERVAL_MS = 1200;
+var POLL_MAX_TRIES = 25;
+var pollTimer = null;
+var pollTries = 0;
 
 var $ = function (id) { return document.getElementById(id); };
 
@@ -383,10 +426,14 @@ function logout() {
   state.token = '';
   localStorage.removeItem('ekg_token');
   state.kbList = [];
+  state.docList = [];
   state.currentKb = null;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   refreshWho();
   resetTable($('kbTable'), 4, '未加载');
   resetTable($('memberTable'), 4, '先选中一个知识库');
+  resetTable($('docTable'), 5, '先选中一个知识库');
+  $('docKbName').textContent = '未选中知识库';
   renderResponse(0, '已退出登录');
 }
 
@@ -426,6 +473,7 @@ async function loadKbList() {
   }
   renderKbTable();
   renderMemberArea();
+  renderDocArea();
 }
 
 function renderKbTable() {
@@ -458,6 +506,7 @@ function renderKbTable() {
       state.currentKb = kb;
       renderKbTable();
       renderMemberArea();
+      renderDocArea();
     };
     tb.appendChild(tr);
   });
@@ -565,6 +614,146 @@ async function revokeMember(kbId, uid) {
   }
 }
 
+// ==================== 文档 ====================
+var DOC_STATUS_TEXT = {
+  pending: '待处理', processing: '处理中', completed: '已完成', failed: '失败'
+};
+
+function renderDocArea() {
+  var kb = state.currentKb;
+  $('docKbName').textContent = kb ? ('[' + kb.id + '] ' + kb.name) : '未选中知识库';
+  state.docList = [];
+  pollTries = 0;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  if (!kb) { resetTable($('docTable'), 5, '先选中一个知识库'); return; }
+  loadDocList(kb.id);
+}
+
+async function loadDocList(kbId) {
+  var r = await call('GET', '/api/documents?kb_id=' + kbId, null, { silent: true });
+  if (!r.data || r.data.code !== 0) {
+    resetTable($('docTable'), 5, '加载失败：' + ((r.data && r.data.message) || '未知错误'));
+    return;
+  }
+  state.docList = r.data.data;
+  renderDocTable();
+  schedulePoll(kbId);
+}
+
+function renderDocTable() {
+  var tb = $('docTable');
+  tb.innerHTML = '';
+  if (!state.docList.length) {
+    tb.appendChild(emptyRow(5, '这个知识库还没有文档'));
+    return;
+  }
+  state.docList.forEach(function (doc) {
+    var tr = document.createElement('tr');
+
+    tr.appendChild(textCell(doc.id));
+    tr.appendChild(textCell(doc.filename));
+
+    // 状态：文本用 textContent（永不解析成 HTML），失败原因放 title，不塞进 DOM 文本
+    var tdStatus = document.createElement('td');
+    var span = document.createElement('span');
+    span.className = 'tag';
+    span.textContent = DOC_STATUS_TEXT[doc.status] || doc.status;
+    if (doc.error_msg) { span.title = doc.error_msg; }
+    tdStatus.appendChild(span);
+    tr.appendChild(tdStatus);
+
+    tr.appendChild(textCell(doc.chunk_count));
+
+    var tdOp = document.createElement('td');
+    tdOp.appendChild(tinyButton('切块', function () {
+      call('GET', '/api/documents/' + doc.id + '/chunks');
+    }));
+    tdOp.appendChild(tinyButton('状态', function () {
+      call('GET', '/api/documents/' + doc.id + '/status');
+    }));
+    tdOp.appendChild(tinyButton('删除', function () { deleteDoc(doc.id); }, 'tiny danger'));
+    tr.appendChild(tdOp);
+
+    tb.appendChild(tr);
+  });
+}
+
+function tinyButton(text, onClick, className) {
+  var btn = document.createElement('button');
+  btn.className = className || 'tiny';
+  btn.textContent = text;
+  btn.onclick = onClick;
+  return btn;
+}
+
+function schedulePoll(kbId) {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  var running = state.docList.some(function (d) {
+    return d.status === 'pending' || d.status === 'processing';
+  });
+  if (!running) { pollTries = 0; return; }
+  if (pollTries >= POLL_MAX_TRIES) {
+    showMsg($('docMsg'), '查询了 ' + POLL_MAX_TRIES + ' 次仍未处理完，已停止轮询（可点刷新继续看）', false);
+    return;
+  }
+  pollTries += 1;
+  pollTimer = setTimeout(function () { loadDocList(kbId); }, POLL_INTERVAL_MS);
+}
+
+async function uploadDoc() {
+  var kb = state.currentKb;
+  if (!kb) { showMsg($('docMsg'), '请先在左边选中一个知识库', false); return; }
+  var input = $('docFile');
+  if (!input.files || !input.files.length) {
+    showMsg($('docMsg'), '请先选择文件', false);
+    return;
+  }
+
+  var fd = new FormData();
+  fd.append('kb_id', String(kb.id));
+  fd.append('file', input.files[0]);
+
+  showMsg($('docMsg'), '上传中…', true);
+  var res, text;
+  try {
+    res = await fetch(apiBase() + '/api/documents/upload', {
+      method: 'POST',
+      // 不要设 Content-Type：浏览器会自动带上 multipart 的 boundary
+      headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {},
+      body: fd
+    });
+    text = await res.text();
+  } catch (e) {
+    showMsg($('docMsg'), '请求发不出去：' + e.message + '（后端起来了吗？）', false);
+    return;
+  }
+
+  var data;
+  try { data = JSON.parse(text); } catch (e) { data = text; }
+  renderResponse(res.status, data);
+
+  if (data && data.code === 0) {
+    showMsg($('docMsg'), '上传成功，正在后台解析', true);
+    input.value = '';
+    pollTries = 0;
+    loadDocList(kb.id);
+  } else {
+    showMsg($('docMsg'), (data && data.message) || '上传失败', false);
+  }
+}
+
+async function deleteDoc(id) {
+  if (!confirm('确定删除文档 id=' + id + '？它的切分块和磁盘文件会一起删除。')) { return; }
+  var kb = state.currentKb;
+  var r = await call('DELETE', '/api/documents/' + id);
+  if (r.data && r.data.code === 0) {
+    showMsg($('docMsg'), '已删除', true);
+    if (kb) { loadDocList(kb.id); }
+  } else {
+    showMsg($('docMsg'), (r.data && r.data.message) || '删除失败（需要该知识库的 write 权限）', false);
+  }
+}
+
 // ==================== 万能请求 ====================
 async function sendRaw() {
   var method = $('reqMethod').value;
@@ -644,6 +833,13 @@ function resetTable(table, colspan, text) {
   $('btnRefreshKb').onclick = loadKbList;
   $('btnCreateKb').onclick = createKb;
   $('btnGrant').onclick = grantMember;
+
+  $('btnUpload').onclick = uploadDoc;
+  $('btnRefreshDoc').onclick = function () {
+    if (!state.currentKb) { showMsg($('docMsg'), '请先在左边选中一个知识库', false); return; }
+    pollTries = 0;
+    loadDocList(state.currentKb.id);
+  };
 
   $('btnSend').onclick = sendRaw;
   $('btnFillMe').onclick = function () {

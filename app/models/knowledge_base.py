@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.models.document import Document
     from app.models.knowledge_base_member import KnowledgeBaseMember
     from app.models.user import User
 
@@ -44,6 +45,14 @@ class KnowledgeBase(Base):
 
     # 删除知识库时连带删掉成员记录，不留孤儿行
     members: Mapped[list["KnowledgeBaseMember"]] = relationship(
+        back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )
+
+    # 文档同理。这里用 ORM 级联而不是只靠数据库外键的 ON DELETE CASCADE：
+    # 数据库级联只在真正执行 DELETE 时才生效，而 SQLite（测试库）默认不开启外键约束，
+    # 两条路都铺上，行为才在 MySQL 和 SQLite 下一致。
+    documents: Mapped[list["Document"]] = relationship(
         back_populates="knowledge_base",
         cascade="all, delete-orphan",
     )
