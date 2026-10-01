@@ -5,7 +5,12 @@
 
 import uuid
 
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
 from app.core.security import hash_password, verify_password
+from app.models import Role
+from app.repositories import user_repository
 
 
 def _username() -> str:
@@ -100,3 +105,51 @@ def test_register_login_and_me(client):
     assert r.json()["code"] == 40100
     r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}x"})
     assert r.json()["code"] == 40100
+
+
+def test_unhandled_exception_stays_in_envelope(client):
+    """未捕获异常必须走统一响应，不能把 traceback 吐给客户端。
+
+    钉住 create_app() 里的 FastAPI(debug=False)：debug=True 时 Starlette 的
+    ServerErrorMiddleware 会跳过我们注册的 Exception 处理器，直接返 500 + 原始堆栈，
+    既违反"HTTP 统一 200、错误码在 body"的约定，也绕过日志脱敏。
+    """
+
+    @client.app.get("/_boom_for_test")
+    def _boom():
+        raise RuntimeError("内部细节 password=hunter2")
+
+    raw = TestClient(client.app, raise_server_exceptions=False)
+    r = raw.get("/_boom_for_test")
+    assert r.status_code == 200
+    assert r.json()["code"] == 59999
+    assert "hunter2" not in r.text
+    assert "Traceback" not in r.text
+
+
+def test_repository_create_does_not_own_transaction(client, session_factory):
+    """事务边界在 Service 层：Repository 写完不该自己提交。
+
+    证法是"回滚得掉"：如果 Repository 内部提交了，rollback 就无法撤销这行。
+    （不能用"另一个 session 看不见"来证：测试引擎是 StaticPool，
+    所有 session 共用同一条 DBAPI 连接，未提交的数据彼此本来就可见。）
+    client 参数不直接用，只为触发建表。
+    """
+    username = _username()
+    fake_hash = "$2b$12$" + "x" * 53
+
+    with session_factory() as db:
+        role_id = db.scalar(select(Role.id).where(Role.code == "employee"))
+        created = user_repository.create(
+            db,
+            username=username,
+            email=f"{username}@example.com",
+            password_hash=fake_hash,
+            role_id=role_id,
+        )
+        assert created.id is not None                        # flush 后即可拿到自增主键
+        assert db.in_transaction()                           # 事务仍未结束
+        assert user_repository.get_by_username(db, username) is not None
+
+        db.rollback()
+        assert user_repository.get_by_username(db, username) is None

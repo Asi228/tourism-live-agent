@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     # ===== 应用 =====
     APP_NAME: str = "企业知识库智能 Agent"
     APP_ENV: str = "dev"            # dev / test / prod
-    DEBUG: bool = True              # 只控制日志详细度与 FastAPI debug 页
+    # 只控制日志详细度（True=DEBUG 级别，False=INFO）。
+    # 注意 FastAPI 的 debug 页恒为 False，见 app/__init__.py 里的说明：
+    # 一旦打开，Starlette 会跳过我们的全局异常处理器，把原始 traceback 返给客户端，
+    # 既泄漏 SQL 参数和绝对路径，又绕过日志脱敏。
+    DEBUG: bool = True
     API_PREFIX: str = "/api"
 
     # 启动参数（统一加 APP_ 前缀，避免和系统环境变量 HOST / PORT 撞名）

@@ -27,7 +27,12 @@ def create(
     password_hash: str,
     role_id: int,
 ) -> User:
-    """插入用户并返回带 id 的实例。"""
+    """插入用户并返回带 id 的实例。
+
+    只 flush 不 commit：事务边界归 Service 层，Repository 无权结束事务。
+    flush 会把 INSERT 发给数据库并取回自增 id，但事务还没提交，
+    Service 里后续任何一步失败都能把这条记录一起回滚掉。
+    """
     user = User(
         username=username,
         email=email,
@@ -35,6 +40,5 @@ def create(
         role_id=role_id,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)  # 取回数据库生成的 id / created_at
+    db.flush()
     return user

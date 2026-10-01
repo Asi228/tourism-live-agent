@@ -35,10 +35,13 @@ def create_app() -> FastAPI:
             ".env 存在未识别的配置项（拼写错误？已被忽略）: %s", ", ".join(unknown_keys)
         )
 
+    # 恒传 False：Starlette 的 ServerErrorMiddleware 在 debug=True 时会跳过我们注册的
+    # Exception 处理器，直接把原始 traceback 返给客户端（HTTP 500 + 泄漏 SQL 参数/绝对路径），
+    # 同时绕过日志脱敏。完整堆栈由下面的 logger.exception 写进 app.log，开发时看日志即可。
     app = FastAPI(
         title=settings.APP_NAME,
         version="0.1.0",
-        debug=settings.DEBUG,
+        debug=False,
     )
 
     allowed_origins = _resolve_cors_origins()

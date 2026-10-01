@@ -41,6 +41,7 @@ def register(db: Session, payload: RegisterRequest) -> User:
         password_hash=hash_password(payload.password),
         role_id=role.id,
     )
+    db.commit()  # 事务边界在这一层：本业务单元的所有写到这里才一起生效
     logger.info("新用户注册 user_id=%s username=%s", user.id, user.username)
     return user
 

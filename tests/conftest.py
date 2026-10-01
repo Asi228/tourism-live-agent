@@ -48,3 +48,9 @@ def client():
     app.dependency_overrides[get_db] = override_get_db
     # 不用 with，就不会触发 lifespan；建表在真实环境由 main.py 的 init_db() 负责
     return TestClient(app)
+
+
+@pytest.fixture
+def session_factory():
+    """直接拿测试 Session 用，验证事务边界这类不经过 HTTP 的行为。"""
+    return TestSessionLocal
