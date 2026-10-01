@@ -59,10 +59,18 @@ def setup_logging(debug: bool = True) -> None:
     fmt = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
     formatter = RedactingFormatter(fmt)
 
-    # 中文 Windows 下 sys.stdout 默认是 cp936，写 UTF-8 日志会变乱码。
-    # 这里强制 stdout 走 UTF-8（app.log 本来就指定了 utf-8，不受影响）。
+    # 中文 Windows 的控制台默认是 cp936；而 PyCharm 的 Run 窗口 / 重定向场景下
+    # stdout 走的是 locale 编码，接收端却按 UTF-8 读，两边会错位 —— 表现为日志乱码。
+    #
+    # 策略：让 Python 跟随终端，而不是硬性指定编码
+    #   是真实控制台 → 跟随控制台代码页（cp936 就写 cp936，终端解得对）
+    #   被重定向/管道 → 强制 UTF-8（日志收集器、CI 一般都按 UTF-8 读）
+    # errors="replace" 只是防止个别生僻字直接抛 UnicodeEncodeError 中断程序。
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stdout.isatty():
+            sys.stdout.reconfigure(errors="replace")
+        else:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
 
