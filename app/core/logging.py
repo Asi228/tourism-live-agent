@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import sys
 from logging.handlers import RotatingFileHandler
@@ -53,26 +54,45 @@ class RedactingFormatter(logging.Formatter):
         return redact(super().format(record))
 
 
+def _tune_console_encoding() -> None:
+    """让控制台/管道的输出编码与「读它的人」对齐，避免中文乱码。
+
+    实测踩过的坑：上一版对「非 tty」的 stdout 硬改成 UTF-8，结果在代码页 936 的
+    终端里中文全变成「鍏佽潈鏉ユ簮」这种 —— 字节是写对了，可解码方按 GBK 读，照样错位。
+    反过来，PyCharm 的 Run 窗口 / CI 日志收集器是按 UTF-8 读的，那时又确实需要 UTF-8。
+    Python 无法知道对面是谁，所以这里不再替它做主：
+
+      · 默认          → 什么都不改，跟随 Python 启动时的编码
+                        （Windows 上 = 系统 ACP，中文环境通常是 cp936；设了
+                        PYTHONIOENCODING 则按它走）
+      · 需要 UTF-8 的场合（PyCharm / CI / 日志收集器）
+                      → 设环境变量 LOG_CONSOLE_ENCODING=utf-8，或直接用标准的
+                        PYTHONIOENCODING=utf-8
+      · errors="replace" 只是兜底，防止个别生僻字抛 UnicodeEncodeError 把程序打断
+
+    stderr 一起处理：未捕获异常的 traceback 走 stderr，同样会印中文。
+
+    注意：写文件那一路日志（RotatingFileHandler）一直是显式 UTF-8，不受这里影响。
+    """
+    target = (os.getenv("LOG_CONSOLE_ENCODING") or "").strip()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if target:
+                stream.reconfigure(encoding=target, errors="replace")
+            else:
+                stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            # 有些 IDE 会把 stdout 换成非 TextIOWrapper 对象，没有 reconfigure
+            continue
+
+
 def setup_logging(debug: bool = True) -> None:
     """统一日志格式：控制台 + 轮转文件。"""
     level = logging.DEBUG if debug else logging.INFO
     fmt = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
     formatter = RedactingFormatter(fmt)
 
-    # 中文 Windows 的控制台默认是 cp936；而 PyCharm 的 Run 窗口 / 重定向场景下
-    # stdout 走的是 locale 编码，接收端却按 UTF-8 读，两边会错位 —— 表现为日志乱码。
-    #
-    # 策略：让 Python 跟随终端，而不是硬性指定编码
-    #   是真实控制台 → 跟随控制台代码页（cp936 就写 cp936，终端解得对）
-    #   被重定向/管道 → 强制 UTF-8（日志收集器、CI 一般都按 UTF-8 读）
-    # errors="replace" 只是防止个别生僻字直接抛 UnicodeEncodeError 中断程序。
-    try:
-        if sys.stdout.isatty():
-            sys.stdout.reconfigure(errors="replace")
-        else:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError):
-        pass
+    _tune_console_encoding()
 
     root = logging.getLogger()
     root.setLevel(level)
