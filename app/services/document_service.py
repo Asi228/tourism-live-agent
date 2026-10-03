@@ -121,6 +121,15 @@ def process_document(document_id: int) -> None:
                 raise AppException(ErrorCode.FILE_ERROR, "文档切分后没有产生任何内容块")
 
             # 先删后插：让"处理"可以重复执行（重跑不会撞唯一约束）
+            #
+            # 旧 chunk 被换掉的同时，对应的向量也必须一起作废：
+            # Milvus 只按主键（chunk_id）upsert，不会自动清走旧行，
+            # 重跑一次就会留下一批指向旧 chunk_id 的孤儿向量 ——
+            # 它们检索得到、却在 MySQL 里找不到正文，白占 top_k 名额。
+            # 用 _purge_vectors 而不是直接调 vector_store：它吞异常，
+            # 因为 Milvus 不可用不应该让"文档处理"这个功能整个失败；
+            # 真漏掉的向量在下次向量化时会按 document_id 兜底清掉（双层防御）。
+            _purge_vectors(doc.id)
             document_chunk_repository.delete_by_document(db, doc.id)
             document_chunk_repository.bulk_create(db, doc.id, chunks)
 
@@ -218,4 +227,23 @@ def delete_document(db: Session, user: User, document_id: int) -> None:
     # 就会留下一条指向不存在文件的记录，点开就报错
     file_storage.delete_file(file_path)
     file_storage.remove_dir_if_empty(Path(file_path).parent)
+    _purge_vectors(document_id)
     logger.info("删除文档 doc_id=%s filename=%s by=%s", document_id, filename, user.username)
+
+
+def _purge_vectors(document_id: int) -> None:
+    """尽力清掉 Milvus 里属于这份文档的向量。
+
+    **局部 import 是故意的**：文档删除这条链路不该依赖 Milvus。
+    数据库记录和磁盘文件都已经删掉了，此时向量库连不上只能说明它现在不可用，
+    不该让整个删除接口失败（否则会出现"删不掉的文档"）。
+    所以这里吃掉所有异常，只记 warning。
+    """
+    try:
+        from app.rag import vector_store
+
+        removed = vector_store.delete_by_document(document_id)
+        if removed:
+            logger.info("已清理向量 doc_id=%s count=%s", document_id, removed)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("清理向量失败（不影响文档删除）doc_id=%s err=%s", document_id, e)

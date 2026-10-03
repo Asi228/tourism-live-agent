@@ -6,10 +6,14 @@
   GET    /api/documents/{id}             对该库 read
   GET    /api/documents/{id}/status      对该库 read（前端轮询用）
   GET    /api/documents/{id}/chunks      对该库 read
+  POST   /api/documents/{id}/vectorize   对该库 write（把切分块写入 Milvus）
   DELETE /api/documents/{id}             对该库 write
 
 上传走 BackgroundTasks：接口立刻返回（status=pending），解析在后台做。
 这是需求文档 §10 的 MVP 方案 —— 不引入 Celery/RQ 也能不阻塞请求。
+
+向量化（Embedding + 写 Milvus）是**单独一步**，不塞进后台解析任务里：
+它依赖外部服务（硅基流动 API + VM 上的 Milvus），挂掉一个不该让上传功能整体不可用。
 """
 
 import logging
@@ -18,11 +22,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Uplo
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.document import ChunkOut, DocumentOut, DocumentStatusOut
-from app.services import document_service
+from app.schemas.search import VectorizeResult
+from app.services import document_service, vector_service
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,20 @@ def list_chunks(
     chunks = document_service.list_chunks(db, current_user, document_id)
     # 走 ChunkOut 而不是手写 dict：字段增删只在 schema 里改一处，响应不会和 schema 漂移
     return success([ChunkOut.model_validate(c).model_dump(mode="json") for c in chunks])
+
+
+@router.post(
+    "/{document_id}/vectorize",
+    response_model=ApiResponse[VectorizeResult],
+    summary="把该文档的切分块向量化并写入 Milvus",
+)
+def vectorize_document(
+    document_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    data = vector_service.vectorize_document(db, current_user, document_id)
+    return success(data, f"向量化完成，写入 {data['vectorized']} 条")
 
 
 @router.delete("/{document_id}", summary="删除文档（需对该知识库有 write 权限）")

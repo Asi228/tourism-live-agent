@@ -9,6 +9,7 @@
   GET    /api/knowledge/{id}/members        对该库 admin
   POST   /api/knowledge/{id}/members        对该库 admin
   DELETE /api/knowledge/{id}/members/{uid}  对该库 admin
+  POST   /api/knowledge/{id}/vectorize      对该库 write（批量向量化该库所有已完成的文档）
 
 设计取舍：创建 / 删除属于系统级生命周期操作，走 require_admin；
 库内的修改与成员管理下放给库级 admin（owner 天然是库级 admin）。
@@ -20,7 +21,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.knowledge_base import KnowledgeBase
 from app.models.user import User
@@ -30,7 +31,8 @@ from app.schemas.knowledge import (
     KnowledgeBaseUpdate,
     MemberAdd,
 )
-from app.services import knowledge_service
+from app.schemas.search import VectorizeResult
+from app.services import knowledge_service, vector_service
 
 logger = logging.getLogger(__name__)
 
@@ -128,3 +130,17 @@ def revoke_member(
 ):
     knowledge_service.revoke_member(db, current_user, kb_id, target_user_id)
     return success(None, "已移除")
+
+
+@router.post(
+    "/{kb_id}/vectorize",
+    response_model=ApiResponse[VectorizeResult],
+    summary="批量向量化该知识库所有已完成的文档",
+)
+def vectorize_knowledge(
+    kb_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    data = vector_service.vectorize_kb(db, current_user, kb_id)
+    return success(data, f"向量化完成，写入 {data['vectorized']} 条")

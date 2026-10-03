@@ -232,10 +232,28 @@ def delete_kb(db: Session, kb_id: int) -> None:
 
     deleted = file_storage.delete_files(doc_paths)
     file_storage.remove_dir_if_empty(settings.upload_path / str(kb_id))
+    _purge_vectors(kb_id)
     logger.info(
         "删除知识库 kb_id=%s name=%s | 清理文档文件 %s/%s 个",
         kb_id, name, deleted, len(doc_paths),
     )
+
+
+def _purge_vectors(kb_id: int) -> None:
+    """尽力清掉 Milvus 里属于这个知识库的向量。
+
+    不清的话，库删了而向量还在，检索就会命中"孤儿向量"（正文已不存在）。
+    局部 import + 吃掉异常的理由同 document_service._purge_vectors：
+    删知识库不该因为 Milvus 暂时连不上而失败。
+    """
+    try:
+        from app.rag import vector_store
+
+        removed = vector_store.delete_by_kb(kb_id)
+        if removed:
+            logger.info("已清理知识库向量 kb_id=%s count=%s", kb_id, removed)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("清理知识库向量失败（不影响删除）kb_id=%s err=%s", kb_id, e)
 
 
 # ==================== 成员管理 ====================

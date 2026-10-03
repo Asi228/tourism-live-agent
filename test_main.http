@@ -224,3 +224,43 @@ DELETE http://127.0.0.1:8000/api/documents/{document_id}
 Authorization: Bearer 粘贴access_token
 
 ###
+
+### ==================== 向量与检索（Phase 5）====================
+
+### 把某份文档的切分块向量化并写入 Milvus（需该库 write 权限）
+### 注意：会真调用硅基流动的 BGE-M3，比较慢；文档必须先 completed
+POST http://127.0.0.1:8000/api/documents/{document_id}/vectorize
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 批量向量化整个知识库（所有已完成的文档）—— 演示前先把数据灌进去最省事
+POST http://127.0.0.1:8000/api/knowledge/{kb_id}/vectorize
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 向量检索（结果已按当前用户权限过滤，过滤发生在检索阶段）
+POST http://127.0.0.1:8000/api/search
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "年假怎么申请",
+  "top_k": 5
+}
+
+###
+
+### 向量检索 —— 限定知识库（仍会与用户权限取交集，不能用来越权）
+POST http://127.0.0.1:8000/api/search
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "年假怎么申请",
+  "kb_ids": [1],
+  "top_k": 5
+}
+
+###

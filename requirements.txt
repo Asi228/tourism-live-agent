@@ -16,3 +16,10 @@ email-validator==2.2.0
 # pypdf is pure python (no native binary), used for PDF text extraction.
 # TXT / Markdown are read with the standard library, no extra package needed.
 pypdf==6.19.0
+
+# embedding + vector store (Phase 5)
+# langchain-openai: OpenAI-compatible client wrapper, used to call SiliconFlow's
+#   BGE-M3 embedding endpoint (base_url is configurable).
+# pymilvus: Milvus vector database client.
+langchain-openai==1.6.7
+pymilvus==3.0.2

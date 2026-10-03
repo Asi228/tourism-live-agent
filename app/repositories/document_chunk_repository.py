@@ -16,6 +16,18 @@ def list_by_document(db: Session, document_id: int) -> list[DocumentChunk]:
     return list(db.scalars(stmt))
 
 
+def get_by_ids(db: Session, chunk_ids: list[int]) -> list[DocumentChunk]:
+    """按 id 列表批量取回。
+
+    向量检索命中一批 chunk_id 后要用它一次性取回正文 ——
+    逐个 db.get 就是典型 N+1（top_k=5 就是 5 条 SQL）。
+    """
+    if not chunk_ids:
+        return []
+    stmt = select(DocumentChunk).where(DocumentChunk.id.in_(chunk_ids))
+    return list(db.scalars(stmt))
+
+
 def bulk_create(
     db: Session,
     document_id: int,

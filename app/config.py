@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # ===== Milvus =====
     MILVUS_HOST: str = "127.0.0.1"
     MILVUS_PORT: int = 19530
+    # collection 名故意与 MySQL 表 document_chunks 同名：
+    # 两边存的是同一种东西（切分块），名字一致对应关系一眼看得出。
+    MILVUS_COLLECTION: str = "document_chunks"
+    MILVUS_TIMEOUT: float = 10.0
 
     # ===== JWT =====
     JWT_SECRET: str = "change-me"
@@ -104,6 +108,11 @@ class Settings(BaseSettings):
     EMBEDDING_BASE_URL: str = ""
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_DIM: int = 1024
+    # 每次请求送多少条文本去向量化。
+    # 实测（硅基流动 BGE-M3）：单次 200 条仍正常，且**延迟不随条数线性增长**
+    # （100 条一批约 2 秒，逐条送则约 100 秒，差 50 倍）。
+    # 默认 64 是折中：批量收益已基本饱和，而单次失败要重试的数据量还不大。
+    EMBEDDING_BATCH_SIZE: int = 64
 
     @model_validator(mode="after")
     def _check_document_settings(self) -> "Settings":

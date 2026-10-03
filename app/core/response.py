@@ -46,4 +46,10 @@ class ErrorCode:
     MILVUS_ERROR = 50004         # Milvus 异常
     LLM_ERROR = 50005            # LLM 异常
     TOOL_ERROR = 50006           # Tool 异常
+    EMBEDDING_ERROR = 50007      # Embedding 异常
     UNKNOWN = 59999              # 未知异常兜底
+
+    # 说明：EMBEDDING 单独一个码，是因为它和 LLM 是**两家服务商、两套 key**
+    # （DeepSeek 提供对话，硅基流动提供 BGE-M3）。
+    # 只给一个 50005 的话，看错误码分不清该去查哪个 key。
+    # 这也符合本段"按依赖组件细分"的既有规则（文件/DB/Redis/Milvus/LLM/Tool）。

@@ -24,6 +24,13 @@ def list_all(db: Session) -> list[Document]:
     return list(db.scalars(select(Document).order_by(Document.id.desc())))
 
 
+def get_by_ids(db: Session, document_ids: list[int]) -> list[Document]:
+    """按 id 批量取（检索结果要显示文件名，用它一次取完，避免 N+1）。"""
+    if not document_ids:
+        return []
+    return list(db.scalars(select(Document).where(Document.id.in_(document_ids))))
+
+
 def list_by_kb_ids(db: Session, kb_ids: list[int]) -> list[Document]:
     """按知识库 id 列表查（空列表直接返回，避免生成 IN () 这种非法 SQL）。"""
     if not kb_ids:

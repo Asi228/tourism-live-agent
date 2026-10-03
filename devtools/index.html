@@ -287,6 +287,29 @@
   <!-- ==================== 右列 ==================== -->
   <div>
 
+    <!-- 向量检索 -->
+    <div class="card">
+      <h2>
+        向量检索
+        <span class="spacer"></span>
+        <button class="tiny" id="btnVectorCheck">向量自检</button>
+      </h2>
+      <div class="body">
+        <div class="row">
+          <input id="searchQuery" placeholder="例如：年假可以休几天" style="flex:1">
+          <input id="searchTopK" type="number" value="5" min="1" max="50" style="width:70px">
+          <button class="primary" id="btnSearch">检索</button>
+        </div>
+        <div class="hint">
+          结果会被后端按当前用户的权限过滤（检索阶段就过滤，不是查完再筛）。<br>
+          想限定某个知识库，展开下面的「万能请求」用 <code>/api/search</code> 传 <code>kb_ids</code>。<br>
+          「向量自检」需要管理员权限：显示 Milvus 版本、collection 状态、向量条数，
+          以及**孤儿向量**（所属知识库已删、却还留在 Milvus 里的那些 —— 它们会被检索命中却没有正文）。<br>
+          原始 JSON 显示在下面「响应」区。
+        </div>
+      </div>
+    </div>
+
     <!-- 万能请求 -->
     <div class="card">
       <h2>
@@ -668,6 +691,7 @@ function renderDocTable() {
     tdOp.appendChild(tinyButton('切块', function () {
       call('GET', '/api/documents/' + doc.id + '/chunks');
     }));
+    tdOp.appendChild(tinyButton('向量化', function () { vectorizeDoc(doc.id); }));
     tdOp.appendChild(tinyButton('状态', function () {
       call('GET', '/api/documents/' + doc.id + '/status');
     }));
@@ -742,8 +766,18 @@ async function uploadDoc() {
   }
 }
 
+async function vectorizeDoc(id) {
+  showMsg($('docMsg'), '向量化中（会真的调用嵌入接口，稍等）…', true);
+  var r = await call('POST', '/api/documents/' + id + '/vectorize');
+  if (r.data && r.data.code === 0) {
+    showMsg($('docMsg'), '向量化完成，写入 ' + r.data.data.vectorized + ' 条', true);
+  } else {
+    showMsg($('docMsg'), (r.data && r.data.message) || '向量化失败', false);
+  }
+}
+
 async function deleteDoc(id) {
-  if (!confirm('确定删除文档 id=' + id + '？它的切分块和磁盘文件会一起删除。')) { return; }
+  if (!confirm('确定删除文档 id=' + id + '？它的切分块、磁盘文件和已写入的向量会一起删除。')) { return; }
   var kb = state.currentKb;
   var r = await call('DELETE', '/api/documents/' + id);
   if (r.data && r.data.code === 0) {
@@ -752,6 +786,19 @@ async function deleteDoc(id) {
   } else {
     showMsg($('docMsg'), (r.data && r.data.message) || '删除失败（需要该知识库的 write 权限）', false);
   }
+}
+
+// ==================== 向量检索 ====================
+async function doSearch() {
+  var q = $('searchQuery').value.trim();
+  if (!q) { renderResponse(0, '请先填查询内容'); return; }
+  var k = parseInt($('searchTopK').value, 10);
+  if (!k || k < 1) { k = 5; }
+  await call('POST', '/api/search', { query: q, top_k: k });
+}
+
+async function vectorSelfCheck() {
+  await call('GET', '/api/vector/health');
 }
 
 // ==================== 万能请求 ====================
@@ -835,6 +882,9 @@ function resetTable(table, colspan, text) {
   $('btnGrant').onclick = grantMember;
 
   $('btnUpload').onclick = uploadDoc;
+  $('btnSearch').onclick = doSearch;
+  $('btnVectorCheck').onclick = vectorSelfCheck;
+  $('searchQuery').onkeydown = function (e) { if (e.key === 'Enter') { doSearch(); } };
   $('btnRefreshDoc').onclick = function () {
     if (!state.currentKb) { showMsg($('docMsg'), '请先在左边选中一个知识库', false); return; }
     pollTries = 0;
