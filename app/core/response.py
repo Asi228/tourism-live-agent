@@ -37,6 +37,7 @@ class ErrorCode:
     FORBIDDEN = 40300            # 对应 HTTP 403 无权限
     NOT_FOUND = 40400            # 对应 HTTP 404 资源不存在
     METHOD_NOT_ALLOWED = 40500   # 对应 HTTP 405 方法不允许
+    TOO_MANY_REQUESTS = 42900    # 对应 HTTP 429 请求过于频繁（限流）
 
     # ===== 5xxxx：服务端 =====
     SERVER_ERROR = 50000         # 对应 HTTP 500 服务端通用错误
@@ -46,10 +47,13 @@ class ErrorCode:
     MILVUS_ERROR = 50004         # Milvus 异常
     LLM_ERROR = 50005            # LLM 异常
     TOOL_ERROR = 50006           # Tool 异常
-    EMBEDDING_ERROR = 50007      # Embedding 异常
+    # 硅基流动侧的调用失败：Embedding（BGE-M3）**与 Rerank（BGE-Reranker）共用这一个码**
+    # —— 它们同一家服务商、同一个 key，拆成两个码反而让排障更绕。
+    # 看到 50007 就去查 EMBEDDING_API_KEY / EMBEDDING_BASE_URL 那一套配置。
+    EMBEDDING_ERROR = 50007      # 硅基流动侧调用失败（embedding / rerank）
     UNKNOWN = 59999              # 未知异常兜底
 
-    # 说明：EMBEDDING 单独一个码，是因为它和 LLM 是**两家服务商、两套 key**
-    # （DeepSeek 提供对话，硅基流动提供 BGE-M3）。
+    # 说明：它和 LLM 分开，是因为两边是**两家服务商、两套 key**
+    # （DeepSeek 提供对话，硅基流动提供 BGE-M3 / BGE-Reranker）。
     # 只给一个 50005 的话，看错误码分不清该去查哪个 key。
     # 这也符合本段"按依赖组件细分"的既有规则（文件/DB/Redis/Milvus/LLM/Tool）。

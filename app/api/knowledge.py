@@ -20,7 +20,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user, rate_limit, require_admin
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.knowledge_base import KnowledgeBase
@@ -139,6 +139,7 @@ def revoke_member(
 )
 def vectorize_knowledge(
     kb_id: int,
+    _: None = Depends(rate_limit("vectorize")),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

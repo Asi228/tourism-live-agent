@@ -122,6 +122,26 @@ class Settings(BaseSettings):
     # 引用列表里每条展示的正文摘要长度
     RAG_SNIPPET_CHARS: int = 120
 
+    # ===== Rerank 重排（Phase 7）=====
+    # 开关：rerank 只是「让排序更准」，不是必需品，所以给一个能一键退回纯向量检索的开关。
+    RAG_RERANK_ENABLED: bool = True
+    # 初筛候选数：向量检索先多召回一些（保**召回率**），再交给 reranker 精排（保**精度**）。
+    # 实测 100 条候选一次调用约 1.7 秒，20 条很轻松。必须 >= RAG_TOP_K，否则精排没意义。
+    RAG_CANDIDATE_K: int = 20
+    # 实测可用（2026-10-04）：同服务商下还有 Pro/BAAI/bge-reranker-v2-m3 与 Qwen3-Reranker 系列
+    RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    RERANK_TIMEOUT: float = 30.0
+
+    # ===== 限流（临时：进程内固定窗口，接 Redis 后替换）=====
+    # 限流保护的是"钱"：一次 /api/chat 要打 rerank + LLM 两个付费上游，
+    # 而 Phase 8 的 Agent 会自己决定调几次工具 —— 所以它不该等到安全加固阶段才做。
+    # ⚠️ 只在单进程下准确（uvicorn --workers > 1 会放大 N 倍），见 app/core/limiter.py
+    RATE_LIMIT_ENABLED: bool = True
+    # 每个用户每分钟的配额，**0 表示该类型不限流**
+    RATE_LIMIT_CHAT_PER_MINUTE: int = 20       # 最贵，掐最紧
+    RATE_LIMIT_SEARCH_PER_MINUTE: int = 60
+    RATE_LIMIT_VECTORIZE_PER_MINUTE: int = 5   # 一次可能打几百条 embedding
+
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = ""
@@ -179,6 +199,14 @@ class Settings(BaseSettings):
             raise ValueError("RAG_TOP_K 必须大于 0")
         if self.RAG_SNIPPET_CHARS <= 0:
             raise ValueError("RAG_SNIPPET_CHARS 必须大于 0")
+        if self.RAG_CANDIDATE_K <= 0:
+            raise ValueError("RAG_CANDIDATE_K 必须大于 0")
+        if self.RAG_RERANK_ENABLED and self.RAG_CANDIDATE_K < self.RAG_TOP_K:
+            raise ValueError(
+                "开启重排时 RAG_CANDIDATE_K 必须不小于 RAG_TOP_K："
+                f"当前候选 {self.RAG_CANDIDATE_K} < 最终要 {self.RAG_TOP_K} 条，"
+                "精排就没有挑选余地了（重排的意义就是「多召回、再精选」）"
+            )
         return self
 
     @property

@@ -301,6 +301,9 @@ def test_search_skips_orphan_vectors(
         out = vector_service.search(db, user, "任何问题")
 
     assert out["results"] == []
+    # 跳过数必须报出来：孤儿会白占 top_k 名额、让用户拿到的结果变少，
+    # 而这个数字以前只体现在日志里（实测为排查它花过不少时间）
+    assert out["skipped_orphans"] == 1
 
 
 # ==================== 向量化 ====================

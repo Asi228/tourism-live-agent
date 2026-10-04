@@ -13,7 +13,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, rate_limit
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
@@ -32,6 +32,9 @@ router = APIRouter(prefix="/chat", tags=["问答"])
 )
 def chat(
     payload: ChatRequest,
+    # 限流放最前面：它比后续的检索/生成便宜得多，应当最先拦。
+    # 配额是最紧的一档 —— 一次问答要打 rerank + LLM 两个付费上游。
+    _: None = Depends(rate_limit("chat")),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

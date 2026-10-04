@@ -44,12 +44,14 @@ def _snippet(text: str) -> str:
     return flat if len(flat) <= limit else flat[:limit] + "…"
 
 
-def _no_hit(query: str, scope: list[int] | None) -> dict:
+def _no_hit(query: str, scope: list[int] | None, found: dict | None = None) -> dict:
     """没有可用资料时的统一返回 —— **不调用大模型**。
 
     两条路径共用：检索一条都没返回；或返回了但一条都拼不进上下文。
     共用是为了保证两者的响应形状完全一致（前端只看 hit 就够，不用区分）。
+    `found` 是检索层的原始返回，用来把"没重排的原因""跳过的孤儿数"一并带出去。
     """
+    found = found or {}
     return {
         "query": query,
         "answer": prompt.NO_HIT_ANSWER,
@@ -59,6 +61,9 @@ def _no_hit(query: str, scope: list[int] | None) -> dict:
         "model": None,          # 没调用模型，所以是 null 而不是模型名
         "usage": None,
         "finish_reason": None,
+        "reranked": False,
+        "rerank_skipped_reason": found.get("rerank_skipped_reason"),
+        "skipped_orphans": found.get("skipped_orphans", 0),
     }
 
 
@@ -72,14 +77,17 @@ def answer(
     """一次问答。返回值结构与 schemas/chat.py 的 ChatResponse 对应。"""
     top_k = top_k or settings.RAG_TOP_K
 
-    found = vector_service.search(db, user, query, kb_ids=kb_ids, top_k=top_k)
+    # rerank=True：问答这一侧默认走「多召回 + 精排」（Phase 7）。
+    # 是否真的重排还取决于 settings.RAG_RERANK_ENABLED，且重排失败会自动降级 ——
+    # 结果里带 reranked 字段，能看出这次到底排没排。
+    found = vector_service.search(db, user, query, kb_ids=kb_ids, top_k=top_k, rerank=True)
     results = found["results"]
     scope = found["searched_kb_ids"]
 
     # 没检索到 → 不调大模型（见文件头第 2 条）
     if not results:
         logger.info("RAG 未命中，跳过 LLM user=%s query=%r", user.username, query[:50])
-        return _no_hit(query, scope)
+        return _no_hit(query, scope, found)
 
     context, adopted = prompt.build_context(results, settings.RAG_MAX_CONTEXT_CHARS)
 
@@ -91,7 +99,7 @@ def answer(
             "检索到 %s 条但上下文为空，跳过 LLM user=%s RAG_MAX_CONTEXT_CHARS=%s",
             len(results), user.username, settings.RAG_MAX_CONTEXT_CHARS,
         )
-        return _no_hit(query, scope)
+        return _no_hit(query, scope, found)
 
     got = llm.chat(prompt.SYSTEM_PROMPT, prompt.build_user_message(query, context))
 
@@ -112,11 +120,12 @@ def answer(
     ]
 
     logger.info(
-        "RAG 问答完成 user=%s scope=%s hits=%s adopted=%s answer_len=%s total_tokens=%s",
+        "RAG 问答完成 user=%s scope=%s hits=%s adopted=%s reranked=%s answer_len=%s total_tokens=%s",
         user.username,
         "ALL" if scope is None else scope,
         len(results),
         len(adopted),
+        found["reranked"],
         len(got["answer"]),
         (got["usage"] or {}).get("total_tokens"),
     )
@@ -129,4 +138,7 @@ def answer(
         "model": settings.LLM_MODEL,
         "usage": got["usage"],
         "finish_reason": got["finish_reason"],
+        "reranked": found["reranked"],
+        "rerank_skipped_reason": found.get("rerank_skipped_reason"),
+        "skipped_orphans": found.get("skipped_orphans", 0),
     }

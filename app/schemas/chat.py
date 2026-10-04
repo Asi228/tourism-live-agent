@@ -57,3 +57,15 @@ class ChatResponse(BaseModel):
     model: str | None = Field(default=None, description="未命中时为 null（没有调用模型）")
     usage: ChatUsage | None = None
     finish_reason: str | None = None
+    reranked: bool = Field(
+        default=False,
+        description="检索结果是否经过重排（Phase 7）。false 时原因看 rerank_skipped_reason",
+    )
+    rerank_skipped_reason: str | None = Field(
+        default=None,
+        description="没重排的原因：disabled=本次未启用（含全局开关关闭）／no_scope=没有可访问的知识库／"
+                    "single_candidate=候选不足 2 条／failed=重排服务失败已降级。reranked=true 时为 null",
+    )
+    skipped_orphans: int = Field(
+        default=0, description="因命中孤儿向量而被跳过的条数（不为 0 说明检索结果被吃掉了几条）"
+    )

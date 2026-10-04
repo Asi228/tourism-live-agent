@@ -37,13 +37,18 @@ def rag(monkeypatch):
     """替掉检索与 LLM，并把调用记录暴露给用例。"""
     box: dict = {"results": [], "search": [], "chat": [], "chat_error": None}
 
-    def fake_search(db, user, query, kb_ids=None, top_k=5):
-        box["search"].append({"query": query, "kb_ids": kb_ids, "top_k": top_k})
+    def fake_search(db, user, query, kb_ids=None, top_k=5, rerank=False):
+        # rerank 从 Phase 7 起由 /api/chat 显式传 True，这里原样记下来供断言
+        box["search"].append(
+            {"query": query, "kb_ids": kb_ids, "top_k": top_k, "rerank": rerank}
+        )
         return {
             "query": query,
             "top_k": top_k,
             "searched_kb_ids": kb_ids if kb_ids is not None else [1],
             "results": box["results"],
+            "reranked": False,
+            "candidate_k": top_k,
         }
 
     def fake_chat(system, user_msg):
@@ -193,6 +198,16 @@ def test_empty_context_never_calls_llm(client, make_user, rag, monkeypatch):
     assert data["model"] is None
     assert data["sources"] == []
     assert rag["chat"] == []          # ← 本用例的核心断言
+
+
+def test_chat_asks_for_rerank(client, make_user, rag):
+    """Phase 7：问答这一侧要显式要求重排（/api/search 那边默认仍是纯向量）。"""
+    admin = make_user("admin")
+    rag["results"] = [_hit()]
+
+    client.post("/api/chat", json={"query": "问"}, headers=admin["headers"])
+
+    assert rag["search"][0]["rerank"] is True
 
 
 def test_rag_context_floor_is_enforced_at_startup():

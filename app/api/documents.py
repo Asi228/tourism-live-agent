@@ -21,7 +21,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, rate_limit
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
@@ -106,6 +106,7 @@ def list_chunks(
 )
 def vectorize_document(
     document_id: int,
+    _: None = Depends(rate_limit("vectorize")),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

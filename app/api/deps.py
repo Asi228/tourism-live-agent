@@ -64,3 +64,22 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         logger.warning("越权访问 user_id=%s role=%s", current_user.id, current_user.role.code)
         raise AppException(ErrorCode.FORBIDDEN, "需要管理员权限")
     return current_user
+
+
+def rate_limit(kind: str):
+    """限流依赖工厂，按"账号 + 用途"计。用法：
+
+        def api(_: None = Depends(rate_limit("chat")), ...):
+
+    放在依赖层而不是中间件，是因为配额要按**接口的贵贱**分档
+    （chat 一次打两个付费上游、vectorize 一次可能打几百条 embedding），
+    中间件只能按路径前缀拍脑袋。
+
+    实现是**进程内固定窗口**，只在单进程下准确，详见 app/core/limiter.py。
+    """
+    from app.core.limiter import limiter  # 局部 import：避免 core→api 的反向依赖
+
+    def _dep(current_user: User = Depends(get_current_user)) -> None:
+        limiter.check(kind, current_user.id)
+
+    return _dep

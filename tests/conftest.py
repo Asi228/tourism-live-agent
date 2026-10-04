@@ -58,6 +58,20 @@ def session_factory():
     return TestSessionLocal
 
 
+@pytest.fixture(autouse=True)
+def _disable_rate_limit(monkeypatch):
+    """默认关掉限流。
+
+    绝大多数用例验证的是别的行为，不该被"每分钟 N 次"的配额干扰
+    （测试会反复调 /api/chat，很容易撞上限）。
+    专测限流的用例自己把开关和配额打开 —— 见 tests/test_limiter.py。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    yield
+
+
 @pytest.fixture
 def make_user(client):
     """造一个用户并返回它的登录凭据。

@@ -852,8 +852,14 @@ function renderChat(resp) {
 
   var meta = document.createElement('div');
   meta.className = 'hint';
+  var rerankText = data.reranked
+    ? '已重排'
+    : ('未重排' + (data.rerank_skipped_reason ? '（' + data.rerank_skipped_reason + '）' : ''));
   meta.textContent = 'hit=' + data.hit
     + '   model=' + (data.model || '未调用（检索无结果）')
+    + '   重排=' + rerankText
+    // 不为 0 说明结果被孤儿向量吃掉了几条 —— 这正是以前只能翻日志才知道的事
+    + (data.skipped_orphans ? '   ⚠ 跳过孤儿向量 ' + data.skipped_orphans + ' 条' : '')
     + (data.usage ? '   tokens=' + data.usage.total_tokens : '');
   srcBox.appendChild(meta);
 

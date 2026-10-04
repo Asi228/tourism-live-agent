@@ -25,7 +25,7 @@ from app.core.response import ErrorCode
 from app.models.document import STATUS_COMPLETED
 from app.models.document_chunk import DocumentChunk
 from app.models.user import User
-from app.rag import embedding, vector_store
+from app.rag import embedding, reranker, vector_store
 from app.repositories import (
     document_chunk_repository,
     document_repository,
@@ -161,14 +161,20 @@ def _resolve_search_scope(
     return sorted(allowed_set)
 
 
-def _hydrate(db: Session, hits: list[vector_store.SearchHit]) -> list[dict]:
+def _hydrate(db: Session, hits: list[vector_store.SearchHit]) -> tuple[list[dict], int]:
     """用 Milvus 命中的 chunk_id 回 MySQL 取正文和文件名。
 
-    Milvus 里刻意不存正文（大文本不适合放向量库），所以这一步是必要的。
-    批量取，避免 N+1。
+    返回 `(结果列表, 被跳过的孤儿数)`。
+
+    **为什么要返回孤儿数**：孤儿向量会白占 top_k 名额，让用户拿到的结果**变少**
+    ——而这一点以前只体现在日志里。实测踩过一次：为了查"为什么只返回 1 条"
+    把 limit、索引、一致性、加载状态全查了一遍，最后才发现是别的知识库的孤儿向量
+    在占名额。有了这个计数，那次排查就变成看一个数字。
+
+    Milvus 里刻意不存正文（大文本不适合放向量库），所以必须要回库取。批量取，避免 N+1。
     """
     if not hits:
-        return []
+        return [], 0
 
     chunk_ids = [h.chunk_id for h in hits]
     doc_ids = sorted({h.document_id for h in hits})
@@ -176,13 +182,15 @@ def _hydrate(db: Session, hits: list[vector_store.SearchHit]) -> list[dict]:
     doc_map = {d.id: d for d in document_repository.get_by_ids(db, doc_ids)}
 
     results: list[dict] = []
+    skipped = 0
     for hit in hits:
         chunk = chunk_map.get(hit.chunk_id)
         if chunk is None:
             # Milvus 里还有、MySQL 里已经没了 = 孤儿向量。
-            # 正常不该出现（删文档会同步删向量），出现说明有一次清理失败，
-            # 记一条日志但不要让它把整个检索搞崩。
+            # 正常不该出现（删文档会同步删向量），出现说明有一次清理没跑完，
+            # 记一条日志、计数一个，但不要让它把整个检索搞崩。
             logger.warning("检索命中孤儿向量 chunk_id=%s（MySQL 中已不存在）", hit.chunk_id)
+            skipped += 1
             continue
         doc = doc_map.get(hit.document_id)
         results.append(
@@ -196,7 +204,44 @@ def _hydrate(db: Session, hits: list[vector_store.SearchHit]) -> list[dict]:
                 "content": chunk.content,
             }
         )
-    return results
+    return results, skipped
+
+
+# "没重排"的原因。排障时这三者的含义差别很大，所以显式给出来而不是只给一个 false：
+#   全局开关关掉 / 只有一条候选（排序无意义）/ 重排服务失败已降级
+RERANK_SKIP_DISABLED = "disabled"
+RERANK_SKIP_NO_SCOPE = "no_scope"
+RERANK_SKIP_SINGLE = "single_candidate"
+RERANK_SKIP_FAILED = "failed"
+
+
+def _apply_rerank(query: str, results: list[dict], top_k: int) -> tuple[list[dict], str | None]:
+    """用 reranker 重排候选，返回 `(新顺序的结果, 未重排的原因)`。
+
+    **失败必须降级，不能抛错**：rerank 是"锦上添花"，服务抖一下绝不能让整个问答答不出来。
+    这与 embedding 的处理**相反** —— 那边拿不到查询向量就根本无法检索，所以必须失败。
+
+    降级后仍是可用的检索结果（只是顺序回到向量分数），所以对用户表现为"答案略差"，
+    而不是"功能坏了"。成功时原因返回 None。
+    """
+    try:
+        pairs = reranker.rerank(query, [r["content"] for r in results], top_n=top_k)
+    except AppException as exc:
+        logger.warning("重排失败，降级为向量分数顺序：%s", exc.message)
+        return results[:top_k], RERANK_SKIP_FAILED
+
+    if not pairs:
+        logger.warning("重排未返回结果，降级为向量分数顺序")
+        return results[:top_k], RERANK_SKIP_FAILED
+
+    out: list[dict] = []
+    for index, score in pairs:
+        item = dict(results[index])
+        # 同时保留向量相似度：调试台/接口上能直接看出"重排到底改变了什么"
+        item["vector_score"] = results[index]["score"]
+        item["score"] = score
+        out.append(item)
+    return out, None
 
 
 def search(
@@ -205,26 +250,51 @@ def search(
     query: str,
     kb_ids: list[int] | None = None,
     top_k: int = 5,
+    rerank: bool = False,
 ) -> dict:
-    """向量检索：算权限 → 向量化查询 → 带 filter 检索 → 回库取正文。"""
+    """向量检索：算权限 → 向量化查询 → 带 filter 检索 → 回库取正文 →（可选）重排。
+
+    `rerank=True` 时走**两段式**：先多召回 `RAG_CANDIDATE_K` 条（保召回率），
+    再由 reranker 精排到 top_k（保精度）。默认关 —— 所以 `/api/search` 仍是纯向量检索，
+    正好可以和自己对比"重排到底有没有用"；`/api/chat` 显式开启。
+    """
     scope = _resolve_search_scope(db, user, kb_ids)
 
     if scope == []:
         # 一个可访问的库都没有：直接返回空。
         # 这里绝对不能"省略 filter 去搜全库"——那就是越权。
         logger.info("检索范围为空，直接返回 query=%r", query[:50])
-        return {"query": query, "top_k": top_k, "searched_kb_ids": [], "results": []}
+        return {
+            "query": query, "top_k": top_k, "searched_kb_ids": [], "results": [],
+            "reranked": False, "rerank_skipped_reason": RERANK_SKIP_NO_SCOPE,
+            "candidate_k": 0, "skipped_orphans": 0,
+        }
+
+    use_rerank = bool(rerank) and settings.RAG_RERANK_ENABLED
+    skip_reason = None if use_rerank else RERANK_SKIP_DISABLED
+    candidate_k = max(top_k, settings.RAG_CANDIDATE_K) if use_rerank else top_k
 
     vector = embedding.embed_query(query)
-    hits = vector_store.search(vector, scope, top_k)
-    results = _hydrate(db, hits)
+    hits = vector_store.search(vector, scope, candidate_k)
+    results, skipped_orphans = _hydrate(db, hits)
 
-    # 顺手把**分数分布**打进日志：RAG 是否需要相似度阈值（RAG_MIN_SCORE）现在定不了
+    reranked = False
+    if use_rerank:
+        if len(results) > 1:
+            results, skip_reason = _apply_rerank(query, results, top_k)
+            reranked = skip_reason is None
+        else:
+            # 只有一条（或没有）就无所谓排序，不必白花一次重排调用
+            skip_reason = RERANK_SKIP_SINGLE
+    results = results[:top_k]
+
+    # 顺手把**分数分布**打进日志：RAG 要不要相似度阈值（RAG_MIN_SCORE）现在定不了
     # —— 样本太少，设高了会漏掉本该命中的资料，比噪声更糟。先攒数据，
     # 攒够一批「问题 -> 命中分数」再回来看分布。一行日志，不建表、不落库。
     logger.info(
-        "向量检索 user=%s scope=%s hits=%s top_scores=%s",
-        user.username, "ALL" if scope is None else scope, len(results),
+        "向量检索 user=%s scope=%s 候选=%s hits=%s reranked=%s 跳过的孤儿=%s top_scores=%s",
+        user.username, "ALL" if scope is None else scope, candidate_k, len(results),
+        reranked, skipped_orphans,
         "/".join("%.3f" % r["score"] for r in results[:5]) or "-",
     )
     return {
@@ -232,6 +302,12 @@ def search(
         "top_k": top_k,
         "searched_kb_ids": scope,
         "results": results,
+        "reranked": reranked,
+        # 没重排时给出原因（disabled / no_scope / single_candidate / failed）
+        "rerank_skipped_reason": skip_reason,
+        # 因为 Milvus 里残留孤儿而被跳过的条数：不为 0 说明检索结果被"吃掉"了几条
+        "skipped_orphans": skipped_orphans,
+        "candidate_k": candidate_k,
     }
 
 
@@ -260,6 +336,7 @@ def self_check(db: Session) -> dict:
         return {"available": False, "reason": exc.message}
 
     orphans = _orphan_kb_ids(db)
+    missing = _documents_without_vectors(db)
     return {
         "available": True,
         "server_version": info["server_version"],
@@ -270,7 +347,36 @@ def self_check(db: Session) -> dict:
         "kb_ids_in_vector_store": vector_store.list_kb_ids(),
         "orphan_kb_ids": orphans,
         "orphan_vector_count": sum(vector_store.count([k]) for k in orphans),
+        # 与孤儿向量配对的反向问题：文档处理好了，但一条向量都没有 → 永远检索不到
+        "documents_without_vectors": len(missing),
+        "documents_without_vectors_sample": missing[:10],
     }
+
+
+def _documents_without_vectors(db: Session) -> list[dict]:
+    """已处理完成、却一条向量都没有的文档。
+
+    这是孤儿向量的**镜像问题**：
+      · 孤儿向量 = 向量多出来了 → 白占 top_k 名额，让用户的检索结果变少
+      · 向量缺失 = 向量少了     → 文档**根本检索不到**，答案里永远引用不到它
+    两种都会静默改变检索结果，而 `documents` 表里没有任何向量相关字段，
+    从文档列表和接口上都看不出来 —— 所以放进维护接口，让管理员能查。
+
+    代价说清楚：它要把 Milvus 里出现过的 document_id 都取回来（去重），
+    数据量大时开销高，因此**只挂在维护接口上，不进请求链路**。
+    """
+    indexed = set(vector_store.list_document_ids())
+    missing: list[dict] = []
+    for doc in document_repository.list_all(db):
+        if doc.status == STATUS_COMPLETED and doc.id not in indexed:
+            missing.append(
+                {
+                    "id": doc.id,
+                    "filename": doc.filename,
+                    "knowledge_base_id": doc.knowledge_base_id,
+                }
+            )
+    return missing
 
 
 def purge_orphans(db: Session) -> dict:

@@ -253,6 +253,29 @@ def list_kb_ids() -> list[int]:
     return sorted({int(r[F_KB]) for r in rows if r.get(F_KB) is not None})
 
 
+def list_document_ids() -> list[int]:
+    """列出 collection 里出现过的所有 document_id（去重）。
+
+    **同样只给维护/自检用**（理由同 list_kb_ids：要把行取回来才能去重）。
+    用途是反向的：找出"文档已经 completed、chunk 也在，但向量一条都没有"的那些文档
+    —— 它们检索不到，而从接口和列表上都看不出来。这跟孤儿向量是一对：
+    孤儿是"向量多出来了"，这个是"向量缺了"，两种都会静默改变检索结果。
+    """
+    client = get_client()
+    try:
+        rows = client.query(
+            collection_name=settings.MILVUS_COLLECTION,
+            filter="",
+            output_fields=[F_DOC],
+            consistency_level=CONSISTENCY_LEVEL,
+            limit=16384,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 document_id 列表失败 err=%s", exc)
+        return []
+    return sorted({int(r[F_DOC]) for r in rows if r.get(F_DOC) is not None})
+
+
 # ==================== 检索 ====================
 
 
