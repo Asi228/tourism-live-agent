@@ -26,6 +26,11 @@ htmlcov/
 # 上传文件与向量库本地数据
 uploads/
 
+# 前端（依赖与构建产物都不进仓库）
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 
 # 工作区内部记录（含内网 IP、密码等），禁止提交
 .workbuddy/

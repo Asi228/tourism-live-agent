@@ -35,7 +35,7 @@
 | 对话模型 | DeepSeek `deepseek-flash`（强制关闭思考模式，见下文） |
 | 向量 / 重排 | BGE-M3（1024 维）、BGE-Reranker-v2-M3，均通过第三方兼容 API 调用 |
 | 编排 | LangGraph（Agent 状态机）、LangChain（仅用于模型客户端封装） |
-| 前端 | 后端调试台（单文件 HTML，开发自测用）；正式前端 Vue3 + Vite + Element Plus（规划中） |
+| 前端 | Vue3 + Vite + Element Plus + Pinia + Vue Router（`frontend/`）；另有单文件后端调试台 `devtools/` |
 
 ---
 
@@ -88,8 +88,31 @@ python main.py                         # 或 uvicorn main:app --reload
 
 首次启动会**自动建表**、初始化角色与 `.env` 中配置的初始管理员（幂等，重复启动不会覆盖已有密码）。
 
+**启动前端**（另开一个终端）：
+
+```bash
+cd frontend
+npm ci                                 # 按 lockfile 精确安装（版本已固定，可重现）
+npm run dev                            # http://127.0.0.1:5173
+```
+
+> **装不上时看这里**：项目 `.npmrc` 把源指向了 `registry.npmmirror.com`（国内快）。
+> 但镜像偶尔会缺某个新版本包（实测踩过一次：`@babel/parser@7.29.9` 在镜像上还没有），
+> 此时会报 `ETARGET: No matching version found`。**加一个参数走官方源即可**：
+>
+> ```bash
+> npm ci --registry=https://registry.npmjs.org
+> ```
+>
+> （注意 `npm ci` 同样会受 `.npmrc` 影响 —— npm 的 `replace-registry-host` 默认会把
+> lockfile 里的 registry 地址替换成当前配置的源，所以不能指望靠 lockfile 绕开镜像。）
+
+前端把 `/api` 通过 Vite 代理转发到 `127.0.0.1:8000` —— **走的是同源调用，后端不需要配 CORS**，
+而且和将来的生产部署（同域反代）形态一致。生产构建用 `npm run build`。
+
+- 正式前端：`http://127.0.0.1:5173`（`vite.config.js` 里显式绑了 IPv4 的 `127.0.0.1`）
 - 接口文档：`http://127.0.0.1:8000/docs`
-- 开发调试台：`http://127.0.0.1:8000/devtools/`（登录 / 知识库 / 文档 / 向量检索 / 问答 / Agent 轨迹）
+- 后端调试台：`http://127.0.0.1:8000/devtools/`（单文件、直接打接口，排障用）
 
 **测试**：
 
@@ -234,7 +257,13 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 │   ├── db/                 # Engine、Session、建表与初始化
 │   ├── core/               # 配置、异常与错误码、统一响应、日志、限流
 │   └── utils/              # 文件落盘与校验
-├── devtools/index.html     # 单文件调试台（开发自测）
+├── frontend/               # 正式前端（Vue3 + Vite + Element Plus）
+│   ├── src/api/            #   接口封装（路径只在这里出现一次）
+│   ├── src/stores/         #   Pinia（登录态）
+│   ├── src/router/         #   路由 + 登录守卫
+│   ├── src/views/          #   登录 / 知识库 / 文档 / 智能问答
+│   └── src/layouts/        #   侧边栏 + 顶栏
+├── devtools/index.html     # 单文件后端调试台（开发自测）
 ├── tests/                  # 单元测试 + 可选的真实 Milvus 集成测试
 ├── .env.example            # 配置模板（只放占位符）
 └── requirements.txt
@@ -250,5 +279,7 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 | 会话与记忆 | 尚未实现多轮对话与用户长期记忆，问答目前是**无状态**的 |
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布 |
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
-| 正式前端 | 当前只有后端调试台；Vue3 前端待做 |
+| 流式输出 | 问答接口是**非流式**的（一问一答返回整段）；改流式只需要前端一个页面加 SSE 处理 |
+| 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期 |
+| 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
 | Rerank | 已接入。`/chat` 默认开启，`/search` 默认关闭以便对比效果 |
