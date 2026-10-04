@@ -23,3 +23,10 @@ pypdf==6.19.0
 # pymilvus: Milvus vector database client.
 langchain-openai==1.6.7
 pymilvus==3.0.2
+
+# agent / state machine (Phase 8)
+# langgraph: graph orchestration for the multi-step QA agent
+#   (decide-whether-to-retrieve -> retrieve -> judge -> maybe-retrieve-again -> generate).
+# Note: it pulls in langgraph-checkpoint / langgraph-sdk / ormsgpack,
+#   and it pins websockets down to 16.x (uvicorn only needs it for WS, which we don't use).
+langgraph==1.2.12

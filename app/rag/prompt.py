@@ -97,3 +97,51 @@ def build_user_message(query: str, context: str) -> str:
         f"问题：{query}\n\n"
         "请依据以上参考资料回答，并标注来源编号。"
     )
+
+
+def _snippet(text: str, limit: int) -> str:
+    """引用摘要：把换行压平，再按配置长度截断。"""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
+def build_sources(adopted: list[dict], snippet_chars: int | None = None) -> list[dict]:
+    """把「实际采用的资料」转成对外的引用列表。
+
+    **必须传 adopted，不能传原始 results** —— 编号是按下标生成的（[1]、[2]…），
+    被上下文截掉的那几条会让编号与引用错位：模型写的 [2] 会指到别的文档。
+    """
+    if snippet_chars is None:
+        from app.config import settings
+
+        snippet_chars = settings.RAG_SNIPPET_CHARS
+
+    return [
+        {
+            "index": index,
+            "chunk_id": item["chunk_id"],
+            "document_id": item["document_id"],
+            "document_name": item["document_name"],
+            "knowledge_base_id": item["knowledge_base_id"],
+            "page_number": item.get("page_number"),
+            "score": item["score"],
+            "snippet": _snippet(item.get("content") or "", snippet_chars),
+        }
+        for index, item in enumerate(adopted, start=1)
+    ]
+
+
+def build_prompt_and_sources(
+    results: list[dict], max_chars: int, snippet_chars: int | None = None
+) -> tuple[str, list[dict], list[dict]]:
+    """拼上下文 + 生成引用列表 —— **全项目只此一份**。
+
+    返回 `(上下文文本, 实际采用的资料, 引用列表)`。`adopted` 为空表示一条都拼不进去
+    （配置过小，或命中的正文全是空白），此时**绝不能去调大模型** —— 那是拿空资料作答。
+
+    为什么抽成一个函数：这段逻辑原先在 `rag_service`（纯 RAG）和 `agent/graph`（Agent）
+    各写了一遍。它同时决定「引用编号对不对」和「会不会拿空资料去调模型」，
+    两处实现必然改一处忘一处 —— 这正是 `agent/tools.py` 头注释里说要避免的那类问题。
+    """
+    context, adopted = build_context(results, max_chars)
+    return context, adopted, build_sources(adopted, snippet_chars)

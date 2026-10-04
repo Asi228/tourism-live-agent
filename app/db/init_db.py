@@ -18,6 +18,7 @@ from app.db.base import Base
 from app.db.session import SessionLocal, engine
 # 必须导入模型，它们才会注册到 Base.metadata（否则 create_all 建不出表）
 from app.models import (  # noqa: F401
+    AgentLog,
     Document,
     DocumentChunk,
     KnowledgeBase,

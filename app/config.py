@@ -142,6 +142,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_SEARCH_PER_MINUTE: int = 60
     RATE_LIMIT_VECTORIZE_PER_MINUTE: int = 5   # 一次可能打几百条 embedding
 
+    # ===== Agent（Phase 8）=====
+    # 开关：Agent 一次问答要多调 2~4 次大模型，出问题能一键退回纯 RAG 的 /api/chat
+    AGENT_ENABLED: bool = True
+    # 最多检索几轮。这是**成本硬闸门**：要不要再检索一次是模型自己决定的，
+    # 没有上限就等于把花费的控制权完全交给它。实测 2 轮已足够覆盖
+    # "换个关键词再找一次"这种最常见的二次尝试。
+    AGENT_MAX_ITERATIONS: int = 2
+
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = ""
@@ -201,6 +209,8 @@ class Settings(BaseSettings):
             raise ValueError("RAG_SNIPPET_CHARS 必须大于 0")
         if self.RAG_CANDIDATE_K <= 0:
             raise ValueError("RAG_CANDIDATE_K 必须大于 0")
+        if self.AGENT_MAX_ITERATIONS < 1:
+            raise ValueError("AGENT_MAX_ITERATIONS 必须至少为 1（否则永远不会检索）")
         if self.RAG_RERANK_ENABLED and self.RAG_CANDIDATE_K < self.RAG_TOP_K:
             raise ValueError(
                 "开启重排时 RAG_CANDIDATE_K 必须不小于 RAG_TOP_K："

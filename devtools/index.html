@@ -329,6 +329,25 @@
       </div>
     </div>
 
+    <!-- Agent 问答（多步决策） -->
+    <div class="card">
+      <h2>Agent 问答（多步决策）</h2>
+      <div class="body">
+        <div class="row">
+          <input id="agentQuery" placeholder="例如：年假可以休几天" style="flex:1">
+          <button class="primary" id="btnAgentAsk">提问</button>
+        </div>
+        <div id="agentAnswer" style="white-space:pre-wrap;line-height:1.7;padding:6px 0;min-height:20px">还没有提问</div>
+        <div id="agentTrace"></div>
+        <div class="hint">
+          与上面的「知识库问答」并存：那条是纯 RAG（一步到位），这条会
+          <b>先判断要不要查库 → 检索 → 判断资料够不够 → 不够就换关键词再检索（有轮数上限）</b>。<br>
+          下面显示执行轨迹（每个节点一步 + 耗时）。对比着用就能看出 Agent 值不值 ——
+          实测：寒暄类问题它更省更自然，而"库里没有的内容"它反而更贵。
+        </div>
+      </div>
+    </div>
+
     <!-- 万能请求 -->
     <div class="card">
       <h2>
@@ -881,6 +900,64 @@ function renderChat(resp) {
   });
 }
 
+// ==================== Agent 问答（多步决策） ====================
+async function doAgentAsk() {
+  var q = $('agentQuery').value.trim();
+  if (!q) { renderResponse(0, '请先填问题'); return; }
+
+  $('agentAnswer').textContent = '执行中…（会真的调大模型，可能要几秒）';
+  $('agentTrace').replaceChildren();
+
+  var r = await call('POST', '/api/agent/chat', { query: q });
+  renderAgentAnswer(r.data);
+}
+
+// 与 renderChat 一样：全部用 textContent / createElement，绝不 innerHTML 拼服务端数据
+function renderAgentAnswer(resp) {
+  var answerBox = $('agentAnswer');
+  var traceBox = $('agentTrace');
+  traceBox.replaceChildren();
+
+  if (!resp || typeof resp !== 'object' || resp.code !== 0) {
+    answerBox.textContent = (resp && resp.message) || '请求失败，详见下方响应区';
+    return;
+  }
+
+  var data = resp.data || {};
+  answerBox.textContent = data.answer || '（空答案）';
+
+  var meta = document.createElement('div');
+  meta.className = 'hint';
+  // answer_mode 比 hit 细：hit=false 时靠它区分「检索了但没资料」和「判定不需要查库」
+  var modeMap = { grounded: '依据资料', no_evidence: '无可用资料', smalltalk: '寒暄直答' };
+  var modeText = modeMap[data.answer_mode] || (data.answer_mode || '—');
+  // searched_kb_ids 是**检索层算出的真实范围**：[] 表示没检索，null 表示管理员不受限
+  var scopeText = Array.isArray(data.searched_kb_ids)
+    ? ('[' + data.searched_kb_ids.join(', ') + ']')
+    : (data.searched_kb_ids === null ? '不受限（管理员）' : '—');
+  meta.textContent = '模式=' + modeText
+    + '   检索轮数=' + data.iterations
+    + '   引用=' + (data.sources || []).length
+    + '   检索范围=' + scopeText
+    + (data.usage ? '   tokens=' + data.usage.total_tokens : '')
+    + '   耗时=' + data.elapsed_ms + 'ms';
+  traceBox.appendChild(meta);
+
+  // 执行轨迹：一眼看出"它绕了几圈、每步多久"
+  (data.steps || []).forEach(function (s) {
+    var row = document.createElement('div');
+    row.style.cssText = 'font-size:12px;line-height:1.6;padding:2px 0 2px 8px;'
+      + 'border-left:2px solid #888;margin:3px 0';
+    var extra = [];
+    Object.keys(s).forEach(function (k) {
+      if (k !== 'node' && k !== 'ms') { extra.push(k + '=' + s[k]); }
+    });
+    row.textContent = s.node + '  ' + s.ms + 'ms'
+      + (extra.length ? '   ' + extra.join('  ') : '');
+    traceBox.appendChild(row);
+  });
+}
+
 // ==================== 万能请求 ====================
 async function sendRaw() {
   var method = $('reqMethod').value;
@@ -967,6 +1044,8 @@ function resetTable(table, colspan, text) {
   $('searchQuery').onkeydown = function (e) { if (e.key === 'Enter') { doSearch(); } };
   $('btnAsk').onclick = doAsk;
   $('chatQuery').onkeydown = function (e) { if (e.key === 'Enter') { doAsk(); } };
+  $('btnAgentAsk').onclick = doAgentAsk;
+  $('agentQuery').onkeydown = function (e) { if (e.key === 'Enter') { doAgentAsk(); } };
   $('btnRefreshDoc').onclick = function () {
     if (!state.currentKb) { showMsg($('docMsg'), '请先在左边选中一个知识库', false); return; }
     pollTries = 0;

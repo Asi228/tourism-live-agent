@@ -69,13 +69,30 @@ def _wrap_error(exc: Exception) -> AppException:
     return AppException(ErrorCode.LLM_ERROR, "大模型调用失败，请稍后重试")
 
 
-def chat(system: str, user: str) -> dict:
+def chat(
+    system: str,
+    user: str,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> dict:
     """一次问答，返回 `{"answer": str, "usage": {...} | None, "finish_reason": str | None}`。
+
+    `max_tokens` / `temperature` 传了就用 `bind()` 覆盖本次调用的参数
+    （客户端是单例，不能为了改两个参数就重建）。Agent 的"决策调用"就靠这个：
+    它只需要回答一个词，把 max_tokens 压到个位数，既省钱又好解析。
 
     不做重试：RAG 的目标是"答不出来就说答不出来"，失败时快速返回并让用户重试，
     比在服务端闷头重试更符合预期（重试还会重复计费）。
     """
     client = _get_client()
+    overrides: dict = {}
+    if max_tokens is not None:
+        overrides["max_tokens"] = max_tokens
+    if temperature is not None:
+        overrides["temperature"] = temperature
+    if overrides:
+        client = client.bind(**overrides)
+
     try:
         message = client.invoke([("system", system), ("human", user)])
     except Exception as exc:  # noqa: BLE001 — 上游异常类型不稳定，统一包装

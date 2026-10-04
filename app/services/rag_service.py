@@ -37,13 +37,6 @@ from app.services import vector_service
 logger = logging.getLogger(__name__)
 
 
-def _snippet(text: str) -> str:
-    """引用摘要：把换行压平，再按配置长度截断。"""
-    flat = " ".join((text or "").split())
-    limit = settings.RAG_SNIPPET_CHARS
-    return flat if len(flat) <= limit else flat[:limit] + "…"
-
-
 def _no_hit(query: str, scope: list[int] | None, found: dict | None = None) -> dict:
     """没有可用资料时的统一返回 —— **不调用大模型**。
 
@@ -89,7 +82,9 @@ def answer(
         logger.info("RAG 未命中，跳过 LLM user=%s query=%r", user.username, query[:50])
         return _no_hit(query, scope, found)
 
-    context, adopted = prompt.build_context(results, settings.RAG_MAX_CONTEXT_CHARS)
+    context, adopted, sources = prompt.build_prompt_and_sources(
+        results, settings.RAG_MAX_CONTEXT_CHARS
+    )
 
     # 检索有结果，但一条都拼不进上下文（RAG_MAX_CONTEXT_CHARS 配得过小、
     # 或所有命中的正文都是空白）。**这时绝不能去调大模型** —— 那是拿空资料作答，
@@ -102,22 +97,6 @@ def answer(
         return _no_hit(query, scope, found)
 
     got = llm.chat(prompt.SYSTEM_PROMPT, prompt.build_user_message(query, context))
-
-    # 引用编号只能从 adopted 里生成 —— 它和拼进 Prompt 的顺序、编号完全一致。
-    # 用原始 results 会错位（被截掉的那几条会让 [2] 指到别的文档）。
-    sources = [
-        {
-            "index": index,
-            "chunk_id": item["chunk_id"],
-            "document_id": item["document_id"],
-            "document_name": item["document_name"],
-            "knowledge_base_id": item["knowledge_base_id"],
-            "page_number": item["page_number"],
-            "score": item["score"],
-            "snippet": _snippet(item["content"]),
-        }
-        for index, item in enumerate(adopted, start=1)
-    ]
 
     logger.info(
         "RAG 问答完成 user=%s scope=%s hits=%s adopted=%s reranked=%s answer_len=%s total_tokens=%s",

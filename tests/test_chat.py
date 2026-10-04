@@ -92,6 +92,58 @@ def test_answer_returns_answer_and_sources(client, make_user, rag):
     assert "带薪年假" in src["snippet"]
 
 
+def test_prompt_numbering_matches_sources_order(client, make_user, rag):
+    """🔴 Prompt 里的 [1] 必须就是 sources 里的第 1 条 —— 重排换了顺序之后也一样。
+
+    这条链是：[重排后的 results] → build_context 生成 [n] 编号 → 模型照着写 [n]
+                              → sources 从 adopted 生成 index → 前端按 index 对应。
+    中间任何一环用错了列表（比如拿原始 results 去生成 sources），
+    用户看到的引用编号就会整体错位 —— 而界面看起来完全正常，没人会发现。
+    所以这里刻意让检索顺序"不像原文顺序"（C 排第一），错位才暴露得出来。
+    """
+    admin = make_user("admin")
+    rag["results"] = [
+        _hit(chunk_id=30, name="C.txt", content="C 的正文：团建活动安排。", score=0.93),
+        _hit(chunk_id=10, name="A.txt", content="A 的正文：年假 5 天。", score=0.50),
+        _hit(chunk_id=20, name="B.txt", content="B 的正文：报销标准。", score=0.48),
+    ]
+
+    data = client.post("/api/chat", json={"query": "年假"}, headers=admin["headers"]).json()["data"]
+
+    # 送进模型的 Prompt：编号顺序必须与检索顺序一致，且正文落在正确的编号下
+    sent = rag["chat"][0]["user"]
+    assert "[1] 来源：C.txt" in sent
+    assert "[2] 来源：A.txt" in sent
+    assert "[3] 来源：B.txt" in sent
+    assert "C 的正文" in sent.split("[2]")[0], "编号 [1] 下面挂的不是第一条资料"
+
+    # 返回的 sources：index 与上面的编号一一对应（错位的话这里会挂）
+    assert [(s["index"], s["document_name"]) for s in data["sources"]] == [
+        (1, "C.txt"), (2, "A.txt"), (3, "B.txt"),
+    ]
+    assert [s["chunk_id"] for s in data["sources"]] == [30, 10, 20]
+
+
+def test_truncated_context_never_leaves_dangling_number(client, make_user, rag, monkeypatch):
+    """上下文放不下时，被丢掉的那几条**不能**出现在 sources 里。
+
+    否则模型写的 [2] 会指到另一个文档 —— 比"少一条引用"严重得多。
+    """
+    monkeypatch.setattr(settings, "RAG_MAX_CONTEXT_CHARS", 500)
+    admin = make_user("admin")
+    rag["results"] = [
+        _hit(chunk_id=1, name="小.txt", content="短正文。" * 5),
+        _hit(chunk_id=2, name="大.txt", content="很长的正文。" * 400),   # 一条就超限
+        _hit(chunk_id=3, name="更后.txt", content="也不会被采用。" * 20),
+    ]
+
+    data = client.post("/api/chat", json={"query": "年假"}, headers=admin["headers"]).json()["data"]
+
+    assert [s["chunk_id"] for s in data["sources"]] == [1]
+    sent = rag["chat"][0]["user"]
+    assert "[2]" not in sent, "把没进上下文的资料也编了号"
+
+
 def test_prompt_gets_sources_with_page_and_number(client, make_user, rag):
     """拼进提示词的资料要带编号、文件名和页码，模型才可能有据可依地引用。"""
     admin = make_user("admin")

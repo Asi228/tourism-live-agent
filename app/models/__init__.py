@@ -5,6 +5,7 @@
 2. `init_db()` 里导入本包后，Base.metadata 才能拿到全部表定义
 """
 
+from app.models.agent_log import AgentLog
 from app.models.document import (
     ALL_STATUSES,
     STATUS_COMPLETED,
@@ -25,6 +26,7 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PENDING",
     "STATUS_PROCESSING",
+    "AgentLog",
     "Document",
     "DocumentChunk",
     "KnowledgeBase",

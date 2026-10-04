@@ -291,3 +291,27 @@ Authorization: Bearer 粘贴access_token
 }
 
 ###
+
+### Agent 问答（Phase 8）—— 多步决策：先判断要不要查库 → 检索 → 判断够不够 → 可能再检索 → 生成
+# 返回里 steps 是执行轨迹（每步节点与耗时），iterations 是真实检索轮数
+# 与 /api/chat 对比着看，就能判断"Agent 到底比纯 RAG 值不值"
+POST http://127.0.0.1:8000/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "年假可以休几天"
+}
+
+###
+
+### Agent 问答 —— 寒暄类问题（应当跳过检索：iterations 会是 0）
+POST http://127.0.0.1:8000/api/agent/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "你好，你能做什么？"
+}
+
+###
