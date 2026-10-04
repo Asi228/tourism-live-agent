@@ -219,9 +219,13 @@ def search(
     hits = vector_store.search(vector, scope, top_k)
     results = _hydrate(db, hits)
 
+    # 顺手把**分数分布**打进日志：RAG 是否需要相似度阈值（RAG_MIN_SCORE）现在定不了
+    # —— 样本太少，设高了会漏掉本该命中的资料，比噪声更糟。先攒数据，
+    # 攒够一批「问题 -> 命中分数」再回来看分布。一行日志，不建表、不落库。
     logger.info(
-        "向量检索 user=%s scope=%s hits=%s",
+        "向量检索 user=%s scope=%s hits=%s top_scores=%s",
         user.username, "ALL" if scope is None else scope, len(results),
+        "/".join("%.3f" % r["score"] for r in results[:5]) or "-",
     )
     return {
         "query": query,

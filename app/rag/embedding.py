@@ -53,7 +53,9 @@ def _get_client() -> OpenAIEmbeddings:
 def reset_client() -> None:
     """丢掉缓存的客户端。
 
-    给"配置变了要重建客户端"的场景用（测试里改完 Settings 调一次）。
+    给"配置变了要重建客户端"的场景用：tests/test_vectors.py 的两个 embedding 用例
+    会用别名调用它（`import app.rag.embedding as emb; emb.reset_client()`）——
+    改了 Settings 之后不重置，_get_client() 会返回旧配置构造的客户端，断言就假通过。
     """
     global _client
     _client = None

@@ -101,7 +101,26 @@ class Settings(BaseSettings):
     # ===== LLM =====
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.deepseek.com"
-    LLM_MODEL: str = "deepseek-chat"
+    # ⚠️ 这个模型**默认开着思考模式**：实测同一个问题的 completion_tokens
+    # 从 6 涨到 36（121 字的思考过程也算 completion token）。
+    # RAG 的上下文比单句长得多，思考只会更长，所以调用时**必须显式关掉**，
+    # 见 app/rag/llm.py 里的 THINKING_DISABLED。
+    LLM_MODEL: str = "deepseek-flash"
+    LLM_TIMEOUT: float = 60.0
+    # 生成答案的长度上限。RAG 答案通常几百字，2048 足够；
+    # 这只是上限，正常不会用满（服务端允许的上限远大于此，无需调大）。
+    LLM_MAX_TOKENS: int = 2048
+    # 0.3：知识库问答要的是"照资料说"，不是创作，低温度更稳。
+    LLM_TEMPERATURE: float = 0.3
+
+    # ===== RAG 问答 =====
+    # 送进 Prompt 的检索条数。条数越多上下文越长越贵，5 条是常见折中。
+    RAG_TOP_K: int = 5
+    # 拼进 Prompt 的上下文**字符**上限（和 CHUNK_SIZE 一样用字符近似 token）。
+    # 超出时从**分数最低**的结果开始丢弃，保证高分内容一定进得去。
+    RAG_MAX_CONTEXT_CHARS: int = 6000
+    # 引用列表里每条展示的正文摘要长度
+    RAG_SNIPPET_CHARS: int = 120
 
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
@@ -139,6 +158,27 @@ class Settings(BaseSettings):
             raise ValueError("MAX_UPLOAD_SIZE_MB 必须大于 0")
         if not self.allowed_extensions_set:
             raise ValueError("ALLOWED_EXTENSIONS 不能为空，否则任何文件都传不上来")
+        return self
+
+    @model_validator(mode="after")
+    def _check_rag_settings(self) -> "Settings":
+        """RAG 参数校验。
+
+        为什么 RAG_MAX_CONTEXT_CHARS 必须有下限：它配得太小时，可能连一条检索结果的
+        「[1] 来源：某文件」标题都放不进去 → 拼出来是空上下文，而 answer() 就会拿着
+        **空资料**去调大模型（白花钱，也违背"答案必须来自文档"的承诺）。
+        rag_service 里已经有运行时守卫，但能在启动时拦住的配置错误，不该留给运行时。
+        500 字符 ≈ 一个来源标题 + 一小段正文，是"至少能答出一句"的下限。
+        """
+        if self.RAG_MAX_CONTEXT_CHARS < 500:
+            raise ValueError(
+                "RAG_MAX_CONTEXT_CHARS 不能小于 500 字符：太小时检索结果一条都拼不进上下文，"
+                "问答会退化成「没有资料却仍去问大模型」"
+            )
+        if self.RAG_TOP_K <= 0:
+            raise ValueError("RAG_TOP_K 必须大于 0")
+        if self.RAG_SNIPPET_CHARS <= 0:
+            raise ValueError("RAG_SNIPPET_CHARS 必须大于 0")
         return self
 
     @property

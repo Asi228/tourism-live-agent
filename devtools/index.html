@@ -310,6 +310,25 @@
       </div>
     </div>
 
+    <!-- 知识库问答（RAG） -->
+    <div class="card">
+      <h2>知识库问答（RAG）</h2>
+      <div class="body">
+        <div class="row">
+          <input id="chatQuery" placeholder="例如：年假可以休几天" style="flex:1">
+          <input id="chatTopK" type="number" value="5" min="1" max="20" style="width:70px">
+          <button class="primary" id="btnAsk">提问</button>
+        </div>
+        <div id="chatAnswer" style="white-space:pre-wrap;line-height:1.7;padding:6px 0;min-height:20px">还没有提问</div>
+        <div id="chatSources"></div>
+        <div class="hint">
+          检索 → 拼提示词 → 大模型生成，答案只能来自知识库内容，不能凭常识发挥。<br>
+          <b>检索不到时不会调用大模型</b>（省 token、也不会瞎编）：此时 <code>hit=false</code>、<code>model=null</code>。<br>
+          答案里的 <code>[1][2]</code> 就是下面引用列表的编号。原始 JSON 在「响应」区。
+        </div>
+      </div>
+    </div>
+
     <!-- 万能请求 -->
     <div class="card">
       <h2>
@@ -801,6 +820,61 @@ async function vectorSelfCheck() {
   await call('GET', '/api/vector/health');
 }
 
+// ==================== 知识库问答（RAG） ====================
+async function doAsk() {
+  var q = $('chatQuery').value.trim();
+  if (!q) { renderResponse(0, '请先填问题'); return; }
+  var k = parseInt($('chatTopK').value, 10);
+  if (!k || k < 1) { k = 5; }
+
+  // 生成可能要几秒，先给个反馈，免得看起来像没反应
+  $('chatAnswer').textContent = '生成中…（会真的调用大模型）';
+  $('chatSources').replaceChildren();
+
+  var r = await call('POST', '/api/chat', { query: q, top_k: k });
+  renderChat(r.data);
+}
+
+// 全部用 textContent / createElement 构建，绝不 innerHTML 拼服务端数据：
+// 这个页面的 localStorage 里存着登录 token，注入进来就能被偷走。
+function renderChat(resp) {
+  var answerBox = $('chatAnswer');
+  var srcBox = $('chatSources');
+  srcBox.replaceChildren();
+
+  if (!resp || typeof resp !== 'object' || resp.code !== 0) {
+    answerBox.textContent = (resp && resp.message) || '请求失败，详见下方响应区';
+    return;
+  }
+
+  var data = resp.data || {};
+  answerBox.textContent = data.answer || '（模型返回了空答案）';
+
+  var meta = document.createElement('div');
+  meta.className = 'hint';
+  meta.textContent = 'hit=' + data.hit
+    + '   model=' + (data.model || '未调用（检索无结果）')
+    + (data.usage ? '   tokens=' + data.usage.total_tokens : '');
+  srcBox.appendChild(meta);
+
+  (data.sources || []).forEach(function (s) {
+    var box = document.createElement('div');
+    box.style.cssText = 'border-left:3px solid #888;padding:4px 8px;margin:6px 0;font-size:12px;line-height:1.6';
+
+    var head = document.createElement('div');
+    head.textContent = '[' + s.index + '] ' + s.document_name
+      + (s.page_number ? '（第 ' + s.page_number + ' 页）' : '')
+      + '　相似度 ' + Number(s.score).toFixed(4);
+
+    var body = document.createElement('div');
+    body.textContent = s.snippet;
+
+    box.appendChild(head);
+    box.appendChild(body);
+    srcBox.appendChild(box);
+  });
+}
+
 // ==================== 万能请求 ====================
 async function sendRaw() {
   var method = $('reqMethod').value;
@@ -885,6 +959,8 @@ function resetTable(table, colspan, text) {
   $('btnSearch').onclick = doSearch;
   $('btnVectorCheck').onclick = vectorSelfCheck;
   $('searchQuery').onkeydown = function (e) { if (e.key === 'Enter') { doSearch(); } };
+  $('btnAsk').onclick = doAsk;
+  $('chatQuery').onkeydown = function (e) { if (e.key === 'Enter') { doAsk(); } };
   $('btnRefreshDoc').onclick = function () {
     if (!state.currentKb) { showMsg($('docMsg'), '请先在左边选中一个知识库', false); return; }
     pollTries = 0;

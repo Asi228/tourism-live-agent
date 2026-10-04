@@ -264,3 +264,30 @@ Authorization: Bearer 粘贴access_token
 }
 
 ###
+
+### 知识库问答（RAG）—— 检索 → 拼提示词 → 大模型生成，答案带引用来源
+# 返回体里：hit=true 才有 sources；answer 里的 [1][2] 对应 sources 的 index
+# model=null 或 hit=false 表示**没有调用大模型**（检索无结果，直接返回提示语）
+POST http://127.0.0.1:8000/api/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "年假可以休几天",
+  "top_k": 5
+}
+
+###
+
+### 知识库问答 —— 限定知识库（同样会与用户权限取交集）
+POST http://127.0.0.1:8000/api/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "出差住宿费能报多少",
+  "kb_ids": [1],
+  "top_k": 3
+}
+
+###
