@@ -101,8 +101,8 @@ def rag(monkeypatch):
     )
     monkeypatch.setattr(
         rag_service.llm, "chat",
-        lambda system, user: {"answer": "答 [1]", "usage": {"total_tokens": 5},
-                              "finish_reason": "stop"},
+        lambda system, user, history=None: {"answer": "答 [1]", "usage": {"total_tokens": 5},
+                                            "finish_reason": "stop"},
     )
 
 

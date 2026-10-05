@@ -150,6 +150,16 @@ class Settings(BaseSettings):
     # "换个关键词再找一次"这种最常见的二次尝试。
     AGENT_MAX_ITERATIONS: int = 2
 
+    # ===== 会话记忆（Phase 9）=====
+    # 带进 Prompt 的历史轮数。1 轮 = 一问一答 = 2 条消息；**0 表示不带历史**
+    # （退化成 Phase 8 的单轮行为，用来对比"多轮到底有没有用"）。
+    #
+    # 别调太大：历史是按字面拼进 Prompt 的，token 随轮数**线性上涨**；
+    # 而且越旧的轮次相关性越差 —— 真正该占上下文的是本轮检索到的资料。
+    # 历史过长时"摘要压缩"是正解（把远期轮次压成一段话），但那是后续的事，
+    # 本轮先用"只带最近 N 轮"这个最简单、也最容易解释清楚的做法。
+    CONVERSATION_MAX_HISTORY_TURNS: int = 5
+
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = ""
@@ -209,6 +219,10 @@ class Settings(BaseSettings):
             raise ValueError("RAG_SNIPPET_CHARS 必须大于 0")
         if self.RAG_CANDIDATE_K <= 0:
             raise ValueError("RAG_CANDIDATE_K 必须大于 0")
+        if self.CONVERSATION_MAX_HISTORY_TURNS < 0:
+            raise ValueError(
+                "CONVERSATION_MAX_HISTORY_TURNS 不能为负数（0 表示不带历史，是合法值）"
+            )
         if self.AGENT_MAX_ITERATIONS < 1:
             raise ValueError("AGENT_MAX_ITERATIONS 必须至少为 1（否则永远不会检索）")
         if self.RAG_RERANK_ENABLED and self.RAG_CANDIDATE_K < self.RAG_TOP_K:

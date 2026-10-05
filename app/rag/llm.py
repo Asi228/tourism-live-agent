@@ -74,12 +74,20 @@ def chat(
     user: str,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    history: list[tuple[str, str]] | None = None,
 ) -> dict:
     """一次问答，返回 `{"answer": str, "usage": {...} | None, "finish_reason": str | None}`。
 
     `max_tokens` / `temperature` 传了就用 `bind()` 覆盖本次调用的参数
     （客户端是单例，不能为了改两个参数就重建）。Agent 的"决策调用"就靠这个：
     它只需要回答一个词，把 max_tokens 压到个位数，既省钱又好解析。
+
+    `history` 是**之前几轮的问答对**，格式 `[("user", 问题), ("assistant", 答案), …]`
+    （Phase 9 的多轮对话）。两个刻意的取舍：
+      · **只带问答对，不带当时检索到的资料** —— 否则每轮的参考资料都会堆进上下文，
+        token 会随轮数平方级上涨；资料本来就该由本轮检索重新提供。
+      · role 用项目统一的 `"user"` / `"assistant"`（见 models/message.py 的 `ROLE_*`）。
+        这里不 import 那个常量：`rag` 与 `models` 是平级模块，不该互相依赖。
 
     不做重试：RAG 的目标是"答不出来就说答不出来"，失败时快速返回并让用户重试，
     比在服务端闷头重试更符合预期（重试还会重复计费）。
@@ -93,8 +101,13 @@ def chat(
     if overrides:
         client = client.bind(**overrides)
 
+    messages: list[tuple[str, str]] = [("system", system)]
+    for role, text in history or []:
+        messages.append(("human" if role == "user" else "ai", text))
+    messages.append(("human", user))
+
     try:
-        message = client.invoke([("system", system), ("human", user)])
+        message = client.invoke(messages)
     except Exception as exc:  # noqa: BLE001 — 上游异常类型不稳定，统一包装
         raise _wrap_error(exc) from exc
 

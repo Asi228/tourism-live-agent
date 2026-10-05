@@ -5,7 +5,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import agent, auth, chat, documents, health, knowledge, search, users, vector
+from app.api import (
+    agent,
+    auth,
+    chat,
+    conversations,
+    documents,
+    health,
+    knowledge,
+    search,
+    users,
+    vector,
+)
 from app.config import BASE_DIR, check_unknown_env_keys, settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
@@ -73,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(vector.router, prefix=settings.API_PREFIX)
     app.include_router(chat.router, prefix=settings.API_PREFIX)
     app.include_router(agent.router, prefix=settings.API_PREFIX)
+    app.include_router(conversations.router, prefix=settings.API_PREFIX)
 
     # 调试台只在 dev 环境挂载：生产环境（APP_ENV=prod）压根不存在这个路径，
     # 外部访问不到。安全靠"默认不挂载"，而不是靠人记得删文件。

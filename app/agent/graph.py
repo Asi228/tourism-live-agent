@@ -290,7 +290,12 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
                 "steps": state.get("steps", []) + [_step("generate", started, mode="上下文为空")],
             }
 
-        out = llm.chat(prompt.SYSTEM_PROMPT, prompt.build_user_message(state["query"], context))
+        # history（会话历史，Phase 9）只给生成节点用；判定节点不看它，见 state.py 的说明。
+        out = llm.chat(
+            prompt.SYSTEM_PROMPT,
+            prompt.build_user_message(state["query"], context),
+            history=state.get("history") or [],
+        )
         return {
             "answer": out["answer"],
             "hit": True,

@@ -21,8 +21,14 @@
    （当时最高分 0.5182，而真正相关的两条是 0.7471 / 0.7717。
    要不要加相似度阈值过滤，见交付说明里的待定项。）
 
-3. **不做多轮、不落库**。会话记忆（conversations / messages 表）是 Phase 9 的活，
-   那张表的设计要跟历史压缩、user_memories 一起定，现在建了也得推倒重来。
+3. **多轮与落库（Phase 9 起）**：每次问答都会落到 `conversations` / `messages`，
+   并把最近 `CONVERSATION_MAX_HISTORY_TURNS` 轮的问答对带进 Prompt。
+   注意**检索范围不跟着会话走** —— `kb_ids` 是"这一问想查哪些库"的意图，
+   用户随时会改（这次只查员工手册、下次查全部），锁在会话上反而会让改了不生效。
+
+   ⚠️ 已知限制：历史只是**照原样拼进 Prompt**，没有做"指代消解"。
+   所以"它的天数是多少"这类省略主语的追问，检索仍然按字面去搜，效果有限。
+   要做对需要先让模型把问题改写完整（query rewriting）再检索 —— 那是后续的事。
 """
 
 import logging
@@ -32,17 +38,25 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.user import User
 from app.rag import llm, prompt
-from app.services import vector_service
+from app.services import conversation_service, vector_service
 
 logger = logging.getLogger(__name__)
 
 
-def _no_hit(query: str, scope: list[int] | None, found: dict | None = None) -> dict:
+def _no_hit(
+    query: str,
+    scope: list[int] | None,
+    found: dict | None = None,
+    conversation_id: int | None = None,
+) -> dict:
     """没有可用资料时的统一返回 —— **不调用大模型**。
 
     两条路径共用：检索一条都没返回；或返回了但一条都拼不进上下文。
     共用是为了保证两者的响应形状完全一致（前端只看 hit 就够，不用区分）。
     `found` 是检索层的原始返回，用来把"没重排的原因""跳过的孤儿数"一并带出去。
+
+    注意：**没命中也会落进会话历史**（见 answer 末尾）—— 用户问过什么，
+    下一轮和刷新后的列表里都该看得到，不能因为"没找到资料"就从记录里消失。
     """
     found = found or {}
     return {
@@ -57,6 +71,7 @@ def _no_hit(query: str, scope: list[int] | None, found: dict | None = None) -> d
         "reranked": False,
         "rerank_skipped_reason": found.get("rerank_skipped_reason"),
         "skipped_orphans": found.get("skipped_orphans", 0),
+        "conversation_id": conversation_id,
     }
 
 
@@ -66,9 +81,19 @@ def answer(
     query: str,
     kb_ids: list[int] | None = None,
     top_k: int | None = None,
+    conversation_id: int | None = None,
 ) -> dict:
-    """一次问答。返回值结构与 schemas/chat.py 的 ChatResponse 对应。"""
+    """一次问答。返回值结构与 schemas/chat.py 的 ChatResponse 对应。
+
+    `conversation_id` 为空时会在本次**隐式新建**一个会话（Phase 9），
+    并把新 id 放进响应；前端后续轮次带上它，就能接着上文问。
+    """
     top_k = top_k or settings.RAG_TOP_K
+
+    # 会话与历史要在检索**之前**准备好：拿了别人的 conversation_id 就该立刻 404，
+    # 不该先白花一次检索和一次生成的价钱。
+    conv = conversation_service.ensure_conversation(db, user, conversation_id, query)
+    history = conversation_service.load_history(db, conv.id)
 
     # rerank=True：问答这一侧默认走「多召回 + 精排」（Phase 7）。
     # 是否真的重排还取决于 settings.RAG_RERANK_ENABLED，且重排失败会自动降级 ——
@@ -80,7 +105,7 @@ def answer(
     # 没检索到 → 不调大模型（见文件头第 2 条）
     if not results:
         logger.info("RAG 未命中，跳过 LLM user=%s query=%r", user.username, query[:50])
-        return _no_hit(query, scope, found)
+        return _persist(db, conv, query, _no_hit(query, scope, found, conv.id))
 
     context, adopted, sources = prompt.build_prompt_and_sources(
         results, settings.RAG_MAX_CONTEXT_CHARS
@@ -94,13 +119,22 @@ def answer(
             "检索到 %s 条但上下文为空，跳过 LLM user=%s RAG_MAX_CONTEXT_CHARS=%s",
             len(results), user.username, settings.RAG_MAX_CONTEXT_CHARS,
         )
-        return _no_hit(query, scope, found)
+        return _persist(db, conv, query, _no_hit(query, scope, found, conv.id))
 
-    got = llm.chat(prompt.SYSTEM_PROMPT, prompt.build_user_message(query, context))
+    # history：最近几轮的问答对（Phase 9）。只带问答本身，不带当时检索到的资料 ——
+    # 否则每轮的参考资料都会堆进上下文，token 会随轮数平方级上涨。
+    got = llm.chat(
+        prompt.SYSTEM_PROMPT,
+        prompt.build_user_message(query, context),
+        history=history,
+    )
 
     logger.info(
-        "RAG 问答完成 user=%s scope=%s hits=%s adopted=%s reranked=%s answer_len=%s total_tokens=%s",
+        "RAG 问答完成 user=%s conv=%s 历史=%s轮 scope=%s hits=%s adopted=%s reranked=%s "
+        "answer_len=%s total_tokens=%s",
         user.username,
+        conv.id,
+        len(history) // 2,
         "ALL" if scope is None else scope,
         len(results),
         len(adopted),
@@ -108,7 +142,7 @@ def answer(
         len(got["answer"]),
         (got["usage"] or {}).get("total_tokens"),
     )
-    return {
+    return _persist(db, conv, query, {
         "query": query,
         "answer": got["answer"],
         "hit": True,
@@ -120,4 +154,38 @@ def answer(
         "reranked": found["reranked"],
         "rerank_skipped_reason": found.get("rerank_skipped_reason"),
         "skipped_orphans": found.get("skipped_orphans", 0),
-    }
+        "conversation_id": conv.id,
+    })
+
+
+def _persist(db: Session, conv, query: str, data: dict) -> dict:
+    """把这一轮问答写进会话并提交（Phase 9）。
+
+    三条返回路径（未命中 / 上下文为空 / 正常生成）都从这里出去 ——
+    它们是"这一问怎么了"，但对会话历史来说都只是**一轮对话**，都该被记下来。
+
+    提交放在这里而不是 repository：事务边界归 service 层（项目硬约定）。
+    反过来，如果生成阶段抛了异常，这个函数根本不会被执行 ——
+    那个只 flush 未提交的新会话会随 session 关闭自动消失，不会留下空壳。
+    """
+    conversation_service.append_turn(
+        db,
+        conv,
+        query,
+        data["answer"],
+        sources=data.get("sources") or [],
+        meta={
+            # source 让前端回放历史时知道这条是哪个接口答的（纯 RAG 没有轨迹，
+            # 渲染方式与 Agent 不同）。两个 service 都写这个字段，口径一致。
+            "source": "rag",
+            "hit": data.get("hit"),
+            "model": data.get("model"),
+            "usage": data.get("usage"),
+            "reranked": data.get("reranked"),
+            "rerank_skipped_reason": data.get("rerank_skipped_reason"),
+            "skipped_orphans": data.get("skipped_orphans", 0),
+            "searched_kb_ids": data.get("searched_kb_ids"),
+        },
+    )
+    db.commit()
+    return data

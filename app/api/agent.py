@@ -44,6 +44,7 @@ def agent_chat(
         query=payload.query,
         kb_ids=payload.kb_ids,
         top_k=payload.top_k,
+        conversation_id=payload.conversation_id,
     )
     message = "检索 %s 轮" % data["iterations"] if data["hit"] else "未使用知识库资料"
     return success(data, message)

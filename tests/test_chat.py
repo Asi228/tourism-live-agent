@@ -51,8 +51,9 @@ def rag(monkeypatch):
             "candidate_k": top_k,
         }
 
-    def fake_chat(system, user_msg):
-        box["chat"].append({"system": system, "user": user_msg})
+    def fake_chat(system, user_msg, history=None):
+        # history 从 Phase 9 起由 rag_service 传进来；记下来供断言"历史到底有没有进 Prompt"
+        box["chat"].append({"system": system, "user": user_msg, "history": history})
         if box["chat_error"] is not None:
             raise box["chat_error"]
         return {

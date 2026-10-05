@@ -15,6 +15,11 @@ class AgentChatRequest(BaseModel):
                     "与 /api/chat、/api/search 一样会与用户实际权限取交集。",
     )
     top_k: int | None = Field(default=None, ge=1, le=20, description="每次检索取几条")
+    conversation_id: int | None = Field(
+        default=None,
+        description="接着哪个会话继续问（Phase 9）。不传＝开启一个新会话。"
+                    "与 /api/chat 共用同一套会话表，所以两边可以轮流问同一段对话。",
+    )
 
 
 class AgentStep(BaseModel):
@@ -57,3 +62,8 @@ class AgentChatResponse(BaseModel):
     steps: list[AgentStep] = Field(default_factory=list, description="执行轨迹，按发生顺序")
     usage: ChatUsage | None = Field(default=None, description="本次**全部** LLM 调用的 token 合计")
     elapsed_ms: int = Field(description="端到端耗时（毫秒）")
+    conversation_id: int | None = Field(
+        default=None,
+        description="本次问答所属的会话 id（Phase 9）。不传 conversation_id 时由后端隐式创建，"
+                    "后续轮次带上它就能接着上文问。",
+    )

@@ -53,3 +53,10 @@ export const chatApi = {
   // 只检索不给模型：用来对比"重排前后"的排序差异
   search: (payload) => http.post('/search', payload),
 }
+
+export const conversationApi = {
+  // 没有"创建会话"接口：首次提问时后端隐式创建，新 id 在 /chat 的响应里
+  list: () => http.get('/conversations'),
+  detail: (id) => http.get(`/conversations/${id}`),
+  remove: (id) => http.delete(`/conversations/${id}`),
+}

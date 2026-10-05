@@ -315,3 +315,45 @@ Authorization: Bearer 粘贴access_token
 }
 
 ###
+
+### 多轮对话（Phase 9）—— 第一次不传 conversation_id，响应里会带回一个新 id
+# 把返回的 conversation_id 填到下面那个请求里，就能"接着上文问"
+POST http://127.0.0.1:8000/api/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "年假可以休几天"
+}
+
+###
+
+### 多轮对话 —— 第二轮：带上上一轮返回的 conversation_id（追问可以省略主语）
+POST http://127.0.0.1:8000/api/chat
+Content-Type: application/json
+Authorization: Bearer 粘贴access_token
+
+{
+  "query": "那病假呢",
+  "conversation_id": 1
+}
+
+###
+
+### 我的会话列表（带消息数，最近活跃在前）
+GET http://127.0.0.1:8000/api/conversations
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 会话详情（全部消息，用于还原界面；拿别人的 id 会返回 40400）
+GET http://127.0.0.1:8000/api/conversations/{conversation_id}
+Authorization: Bearer 粘贴access_token
+
+###
+
+### 删除会话（连带它的全部消息）
+DELETE http://127.0.0.1:8000/api/conversations/{conversation_id}
+Authorization: Bearer 粘贴access_token
+
+###

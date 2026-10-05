@@ -16,6 +16,11 @@ class ChatRequest(BaseModel):
         le=20,
         description="检索条数，不传则用服务端配置 RAG_TOP_K。",
     )
+    conversation_id: int | None = Field(
+        default=None,
+        description="接着哪个会话继续问（Phase 9）。不传＝开启一个新会话，"
+                    "新 id 会在响应里返回，后续轮次带上它即可。",
+    )
 
 
 class SourceItem(BaseModel):
@@ -68,4 +73,9 @@ class ChatResponse(BaseModel):
     )
     skipped_orphans: int = Field(
         default=0, description="因命中孤儿向量而被跳过的条数（不为 0 说明检索结果被吃掉了几条）"
+    )
+    conversation_id: int | None = Field(
+        default=None,
+        description="本次问答所属的会话 id（Phase 9）。首次不传 conversation_id 时由后端隐式创建，"
+                    "把这个 id 存下来、后续轮次带上，就能接着上文问。",
     )

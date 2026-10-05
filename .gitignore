@@ -30,6 +30,9 @@ uploads/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+# vite 在配置热重载时会生成 vite.config.js.timestamp-*.mjs；
+# 进程被强杀时来不及清理，就会留在目录里（实测踩到过两个，被 git 当成新文件）
+frontend/*.timestamp-*.mjs
 
 
 # 工作区内部记录（含内网 IP、密码等），禁止提交

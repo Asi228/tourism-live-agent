@@ -44,6 +44,7 @@ def chat(
         query=payload.query,
         kb_ids=payload.kb_ids,
         top_k=payload.top_k,
+        conversation_id=payload.conversation_id,
     )
     if not data["hit"]:
         # 把"没命中"这件事在 message 里说清楚：

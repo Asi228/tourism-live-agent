@@ -47,9 +47,10 @@ def agent(monkeypatch):
         "chat_error_on": None,     # 让某类节点抛异常，验证降级
     }
 
-    def fake_chat(system, user, max_tokens=None, temperature=None):
+    def fake_chat(system, user, max_tokens=None, temperature=None, history=None):
         box["chat_calls"].append(
-            {"prompt": system[:24], "user": user[:60], "max_tokens": max_tokens}
+            {"prompt": system[:24], "user": user[:60], "max_tokens": max_tokens,
+             "history": history}
         )
         if box["chat_error_on"] and box["chat_error_on"] in system:
             raise AppException(ErrorCode.LLM_ERROR, "大模型调用失败，请稍后重试")

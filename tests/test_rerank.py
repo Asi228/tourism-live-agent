@@ -268,8 +268,8 @@ def test_chat_response_carries_reranked_flag(client, make_user, monkeypatch):
     )
     monkeypatch.setattr(
         rag_service.llm, "chat",
-        lambda system, user: {"answer": "答案 [1]", "usage": {"total_tokens": 12},
-                              "finish_reason": "stop"},
+        lambda system, user, history=None: {"answer": "答案 [1]", "usage": {"total_tokens": 12},
+                                            "finish_reason": "stop"},
     )
 
     admin = make_user("admin")
@@ -379,7 +379,7 @@ def test_prompt_numbering_follows_reranked_order(client, make_user, monkeypatch)
 
     captured: dict = {}
 
-    def fake_chat(system, user):
+    def fake_chat(system, user, history=None):
         captured["user"] = user
         return {"answer": "答 [1]", "usage": {"total_tokens": 9}, "finish_reason": "stop"}
 

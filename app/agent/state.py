@@ -17,6 +17,11 @@ class AgentState(TypedDict, total=False):
     query: str
     kb_ids: list[int] | None
     top_k: int
+    # 会话历史（Phase 9）：[("user", 问题), ("assistant", 答案), …]，由 conversation_service 备好。
+    # ⚠️ 只喂给**生成**节点 —— 判定节点（analyze/evaluate）刻意不看历史：
+    # 它们判的是"这句话本身要不要查库""这批资料够不够答这个问题"，
+    # 混进上文只会让判定变模糊，还多花 token。
+    history: list
 
     # ---------- analyze 节点（LLM 决策）----------
     # 这个问题要不要查知识库？"你好"、"你能做什么"这类不该白跑一次检索
