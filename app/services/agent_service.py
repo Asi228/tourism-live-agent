@@ -48,6 +48,13 @@ def _write_log(db: Session, **fields) -> bool:
 # 多 worker 时各自计时、每小时各清一次：重复执行没有副作用（删的是同一批旧行）。
 _AGENT_LOG_PRUNE_INTERVAL_SECONDS = 3600.0
 
+# ⚠️ 清理**失败**后的重试窗口。失败也推进哨兵，但只推进一个**短窗口**，两个极端都不要：
+#   · 完全不推进 → 失败若是持续性的（表被改名、权限丢了），就变成**每个请求都发一条 DELETE**，
+#     节流等于白做 —— 而这正是当初加节流的原因；
+#   · 推进整个窗口 → 静默停摆一小时。agent 问答是低频路径，可能很久都没人发现。
+# 取"5 分钟后再试"：既不是每请求重试，也不会长时间不试。
+_AGENT_LOG_PRUNE_RETRY_SECONDS = 300.0
+
 # ⚠️ 哨兵必须用 **None**，不能用 0.0。
 #
 # 这里踩过一次真坑：原先写 `_last_prune_at = 0.0` 表示"从未清理过"，
@@ -68,7 +75,12 @@ def _prune_due(now: float, last: "float | None", interval: float) -> bool:
 
 
 def _prune_agent_logs_if_due(db: Session) -> None:
-    """按 `AGENT_LOG_RETENTION_DAYS` 清理过期审计（带节流，失败只 warning）。"""
+    """按 `AGENT_LOG_RETENTION_DAYS` 清理过期审计（带节流，失败只 warning）。
+
+    ⚠️ 哨兵按**结果**推进：成功推进整个节流窗口，失败只推进一个短窗口
+    （见 `_AGENT_LOG_PRUNE_RETRY_SECONDS`）。所以 `prune_older_than` 必须能区分
+    "清完了"（0）与"出错了"（None）—— 两者都返回 0 的话，失败会被当成清完了。
+    """
     global _last_prune_at
 
     days = settings.AGENT_LOG_RETENTION_DAYS
@@ -78,9 +90,18 @@ def _prune_agent_logs_if_due(db: Session) -> None:
     now = time.monotonic()
     if not _prune_due(now, _last_prune_at, _AGENT_LOG_PRUNE_INTERVAL_SECONDS):
         return
-    _last_prune_at = now
 
     removed = agent_log_repository.prune_older_than(db, days)
+
+    if removed is None:
+        # 失败（repo 已吞掉异常并 warning）：把哨兵设成"距窗口结束只剩 RETRY 秒"，
+        # 于是 5 分钟后就会再试，而不是等满一小时、也不是每个请求都试。
+        _last_prune_at = now - (
+            _AGENT_LOG_PRUNE_INTERVAL_SECONDS - _AGENT_LOG_PRUNE_RETRY_SECONDS
+        )
+        return
+
+    _last_prune_at = now
     if removed:
         logger.warning("已清理 %s 条超过 %s 天的 agent_logs", removed, days)
 

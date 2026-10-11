@@ -577,6 +577,64 @@ def test_agent_log_prune_is_throttled(session_factory, monkeypatch):
     assert calls["n"] == 1, "节流没生效"
 
 
+def test_prune_failure_retries_soon_but_not_every_request(session_factory, monkeypatch):
+    """清理**失败**时，哨兵只推进一个**短窗口** —— 两个极端都不要。
+
+    · 完全不推进 → 失败若是持续性的，就变成每个请求都发一条 DELETE（节流白做）；
+    · 推进整个窗口 → 静默停摆一小时（agent 写入是低频路径，很久都不会被发现）。
+
+    判据不碰时钟，只看"下次到期还有多久"。
+    """
+    import time
+
+    from app.repositories import agent_log_repository
+    from app.services import agent_service
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 30)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)   # 放行节流
+    monkeypatch.setattr(agent_log_repository, "prune_older_than", lambda db, days: None)
+
+    with session_factory() as db:
+        agent_service._prune_agent_logs_if_due(db)
+
+    assert agent_service._last_prune_at is not None, (
+        "失败后也要推进哨兵，否则会退化成每请求重试"
+    )
+    due_in = (
+        agent_service._last_prune_at
+        + agent_service._AGENT_LOG_PRUNE_INTERVAL_SECONDS
+        - time.monotonic()
+    )
+    retry = agent_service._AGENT_LOG_PRUNE_RETRY_SECONDS
+    assert 0 < due_in <= retry + 5, (
+        f"失败后要等约 {due_in:.0f} 秒才重试 —— 应当约 {retry:.0f} 秒（既不是整窗口，也不是 0）"
+    )
+
+
+def test_prune_success_advances_the_whole_window(session_factory, monkeypatch):
+    """清理**成功**时推进整个节流窗口 —— 否则"一小时才清一次"就白设了。"""
+    import time
+
+    from app.repositories import agent_log_repository
+    from app.services import agent_service
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 30)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)
+    monkeypatch.setattr(agent_log_repository, "prune_older_than", lambda db, days: 3)
+
+    with session_factory() as db:
+        agent_service._prune_agent_logs_if_due(db)
+
+    due_in = (
+        agent_service._last_prune_at
+        + agent_service._AGENT_LOG_PRUNE_INTERVAL_SECONDS
+        - time.monotonic()
+    )
+    assert due_in > agent_service._AGENT_LOG_PRUNE_INTERVAL_SECONDS - 5, (
+        f"成功后只隔了约 {due_in:.0f} 秒就能再清 —— 应当等满整个窗口"
+    )
+
+
 def test_prune_sentinel_is_safe_right_after_boot():
     """**回归用例**：进程刚启动时，第一次写审计必须真的执行清理。
 

@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, knowledgeApi } from '../api'
+import { chatApi, conversationApi, knowledgeApi, memoryApi } from '../api'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -19,6 +19,13 @@ const convLoading = ref(false)
 const convHasMore = ref(false)
 // 一页 50 条（后端上限 100）。列表是拿到更早会话的唯一入口，所以必须能继续往下翻。
 const CONV_PAGE_SIZE = 50
+
+// ---- 长期记忆（Phase 11）----
+// 与会话内的"上文"不是一回事：它是**跨会话**仍然成立的事实（"我在财务部"）。
+// 写入必须显式（后端不做自动提炼），所以这里只给一个输入框 + 列表 + 删除。
+const memories = ref([])
+const memDraft = ref('')
+const memSaving = ref(false)
 
 // 后端 `answer_mode` 的三种取值 → 标签样式与话术
 const ANSWER_MODE = {
@@ -135,6 +142,48 @@ function formatTime(s) {
   return sameDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : `${d.getMonth() + 1}/${d.getDate()}`
 }
 
+// ==================== 长期记忆 ====================
+
+async function loadMemories() {
+  try {
+    const body = await memoryApi.list()
+    memories.value = body.data || []
+  } catch {
+    memories.value = []
+  }
+}
+
+async function addMemory() {
+  const text = memDraft.value.trim()
+  if (!text || memSaving.value) return
+  memSaving.value = true
+  try {
+    const body = await memoryApi.create(text)
+    // 后端按"最近更新在前"返回，新写的排最前，与列表顺序一致
+    memories.value = [body.data, ...memories.value]
+    memDraft.value = ''
+    ElMessage.success('已记住')
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    memSaving.value = false
+  }
+}
+
+async function removeMemory(memory) {
+  try {
+    await ElMessageBox.confirm('删除这条长期记忆？', '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await memoryApi.remove(memory.id)
+    memories.value = memories.value.filter((m) => m.id !== memory.id)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
 // ==================== 提问 ====================
 
 function buildPayload() {
@@ -190,7 +239,7 @@ function scorePercent(score) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadKbList(), loadConversations()])
+  await Promise.all([loadKbList(), loadConversations(), loadMemories()])
 })
 </script>
 
@@ -222,6 +271,38 @@ onMounted(async () => {
           :loading="convLoading"
           @click="loadConversations({ append: true })"
         >加载更多</el-button>
+      </div>
+
+      <!-- 长期记忆（跨会话）。写进去就存下了；会不会拼进提示词由服务端开关决定。 -->
+      <div class="mem-block">
+        <div class="mem-head">
+          <span>我的记忆</span>
+          <span class="mem-count" v-if="memories.length">{{ memories.length }}</span>
+        </div>
+        <div class="mem-add">
+          <el-input
+            v-model="memDraft"
+            size="small"
+            placeholder="记住一件事，如：我在财务部"
+            maxlength="200"
+            @keyup.enter="addMemory"
+          />
+          <el-button
+            size="small"
+            :disabled="!memDraft.trim()"
+            :loading="memSaving"
+            @click="addMemory"
+          >记住</el-button>
+        </div>
+        <div class="mem-list">
+          <div v-for="m in memories" :key="m.id" class="mem-item">
+            <span class="mem-text" :title="m.content">{{ m.content }}</span>
+            <span class="mem-del" title="删除" @click="removeMemory(m)">×</span>
+          </div>
+          <div v-if="!memories.length" class="mem-empty">
+            还没有记忆。写一条会在后续问答里作为背景带上（需服务端开启长期记忆开关）
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -446,6 +527,78 @@ onMounted(async () => {
 }
 .conv-empty {
   padding: 12px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+
+/* ---- 长期记忆 ---- */
+.mem-block {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.mem-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+}
+
+.mem-count {
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+
+.mem-add {
+  display: flex;
+  gap: 6px;
+}
+
+.mem-list {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.mem-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 记忆可能很长，列表里最多显示两行；完整内容靠 title 悬浮看 */
+.mem-text {
+  flex: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.mem-del {
+  flex: none;
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+}
+
+.mem-del:hover {
+  color: var(--el-color-danger);
+}
+
+.mem-empty {
+  padding: 6px 2px;
   font-size: 12px;
   line-height: 1.7;
   color: var(--el-text-color-secondary);

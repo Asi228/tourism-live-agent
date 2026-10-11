@@ -62,3 +62,11 @@ export const conversationApi = {
   detail: (id) => http.get(`/conversations/${id}`),
   remove: (id) => http.delete(`/conversations/${id}`),
 }
+
+export const memoryApi = {
+  // 长期记忆（跨会话）：写入是**显式**的 —— 用户自己说"记住这件事"，后端不做自动提炼。
+  // 注意：写进去就会存下来；但它**会不会拼进提示词**由服务端开关 USER_MEMORY_ENABLED 决定。
+  list: () => http.get('/memories'),
+  create: (content) => http.post('/memories', { content }),
+  remove: (id) => http.delete(`/memories/${id}`),
+}

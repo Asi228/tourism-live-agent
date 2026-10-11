@@ -63,8 +63,13 @@ def create(
         return None
 
 
-def prune_older_than(db: Session, days: int) -> int:
-    """删掉 N 天前的执行记录，返回删除条数；`days <= 0` 表示不清理。
+def prune_older_than(db: Session, days: int) -> "int | None":
+    """删掉 N 天前的执行记录，返回删除条数；`days <= 0` 表示不清理、返回 0。
+
+    ⚠️ **失败返回 `None`，不是 0。** 调用方（`agent_service._prune_agent_logs_if_due`）
+    靠这个区别决定"下一次什么时候再试"：0 表示"清完了、按正常节流走"，
+    `None` 表示"出错了、过一会儿再来"。两者都返回 0 的话，一次失败会被当成清理成功，
+    于是要空等一整个节流窗口（一小时）才会重试。
 
     表结构上 `created_at` 有索引，所以这条范围删除是走索引的。
 
@@ -97,5 +102,5 @@ def prune_older_than(db: Session, days: int) -> int:
             removed = result.rowcount or 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理过期 agent_logs 失败（不影响本次回答）：%s", str(exc)[:200])
-        return 0
+        return None
     return removed
