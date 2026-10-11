@@ -487,6 +487,77 @@ def test_history_skips_turns_without_evidence(client, make_user, chat_env):
     ], "无依据的轮次应当整轮丢掉（包括它自己那个问题）"
 
 
+# ==================== 数据保留 ====================
+
+
+def test_conversation_quota_rejects_new_conversation(client, make_user, chat_env, monkeypatch):
+    """到配额就**拒绝新建并提示**，而不是悄悄删掉最旧的会话。
+
+    另外要确认它只拦"新建"：接着已有会话继续问必须照常 ——
+    否则用户会被卡在"什么都干不了"的状态里，那比配额本身更糟。
+    """
+    admin = make_user("admin")
+    first = _ask(client, admin, "第一问")["data"]["conversation_id"]
+
+    # 用"当前实际条数"当配额，避免依赖"每个用例拿到全新用户"这个假设
+    existing = len(
+        client.get("/api/conversations?limit=100", headers=admin["headers"]).json()["data"]
+    )
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_PER_USER", existing)
+
+    body = _ask(client, admin, "想新开一段")
+    assert body["code"] == ErrorCode.RESOURCE_LIMIT_EXCEEDED, body
+    assert "上限" in body["message"]
+
+    assert _ask(client, admin, "第二问", conversation_id=first)["code"] == 0
+
+
+def test_message_cap_trims_oldest_whole_turns(client, make_user, chat_env, monkeypatch):
+    """超上限时按**整轮**删最旧的（一轮 = 一问一答）。"""
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_MESSAGES", 4)
+    admin = make_user("admin")
+
+    conv_id = _ask(client, admin, "第1问")["data"]["conversation_id"]
+    for i in (2, 3, 4):
+        _ask(client, admin, "第%d问" % i, conversation_id=conv_id)
+
+    detail = client.get(f"/api/conversations/{conv_id}", headers=admin["headers"]).json()["data"]
+    assert len(detail["messages"]) == 4, "没裁到上限（或多裁了）"
+    assert [m["role"] for m in detail["messages"]] == ["user", "assistant", "user", "assistant"], \
+        "留下了没有对应问题的孤立消息"
+    assert detail["messages"][0]["content"] == "第3问", "删掉的不是最旧的那一轮"
+
+
+def test_message_cap_rounds_to_whole_turn(client, make_user, chat_env, monkeypatch):
+    """上限是奇数时**宁可少留一条**，也要保持整轮。
+
+    删到 5 条会留下一个落单的消息；存库的形态和喂模型的形态该是同一套标准。
+    """
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_MESSAGES", 5)
+    admin = make_user("admin")
+
+    conv_id = _ask(client, admin, "第1问")["data"]["conversation_id"]
+    for i in (2, 3):
+        _ask(client, admin, "第%d问" % i, conversation_id=conv_id)
+
+    detail = client.get(f"/api/conversations/{conv_id}", headers=admin["headers"]).json()["data"]
+    assert len(detail["messages"]) == 4, "奇数上限应当向下取到整轮"
+
+
+def test_retention_off_keeps_everything(client, make_user, chat_env, monkeypatch):
+    """0 = 不限，一项关掉不影响另一项。"""
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_MESSAGES", 0)
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_PER_USER", 0)
+    admin = make_user("admin")
+
+    conv_id = _ask(client, admin, "第1问")["data"]["conversation_id"]
+    for i in range(2, 6):
+        _ask(client, admin, "第%d问" % i, conversation_id=conv_id)
+
+    detail = client.get(f"/api/conversations/{conv_id}", headers=admin["headers"]).json()["data"]
+    assert len(detail["messages"]) == 10, "上限关掉之后不该删任何东西"
+
+
 def test_history_backfills_past_no_evidence_turns(client, make_user, chat_env, monkeypatch):
     """最近几轮都没依据时要**继续往前取**，而不是把历史交白卷。
 

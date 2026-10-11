@@ -91,6 +91,25 @@ def get_client() -> MilvusClient:
     return _client
 
 
+def probe(timeout_seconds: float) -> None:
+    """健康检查专用的**短超时**探活。通不过就抛异常。
+
+    为什么不能直接复用 `get_client()`（这里踩过一个很难看的坑）：
+      · 共享单例的超时是 `MILVUS_TIMEOUT`（默认 **10 秒**）；
+      · 而且它**失败时不缓存**（except 里把 `_client` 置回 None），所以每次调用都会重试。
+      两件事叠加的结果是：VM 一关机，**每一次探活都要等满 10 秒**。
+      探活要回答的是"通不通"，不是"等到服务端回话" —— 10 秒的探测会让探活脚本先超时，
+      于是"Milvus 挂了"被误报成"/health 无响应"，等于把故障换了个说法。
+
+    所以这里**另建一个一次性客户端**、只给它这么点超时，用完即弃：
+      · 不碰共享单例（绝不能为了探活去调低全局 MILVUS_TIMEOUT，那是检索路径的超时）；
+      · 调用方（api/health.py）有结果缓存，所以"每次新建客户端"的开销可以接受。
+    """
+    uri = f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
+    client = MilvusClient(uri=uri, timeout=timeout_seconds)
+    client.get_server_version()
+
+
 def health() -> dict:
     """自检用：服务端版本 + collection 列表 + 本 collection 是否存在。
 

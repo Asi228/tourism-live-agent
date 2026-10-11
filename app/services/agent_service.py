@@ -37,7 +37,52 @@ def _write_log(db: Session, **fields) -> bool:
     repo 内部已吞掉异常并返回 None（写不进去也不会让用户拿不到答案），
     失败时它自己 rollback 清毒，所以调用方可以安全地接着写对话历史。
     """
-    return agent_log_repository.create(db, **fields) is not None
+    ok = agent_log_repository.create(db, **fields) is not None
+    if ok:
+        _prune_agent_logs_if_due(db)
+    return ok
+
+
+# 过期审计清理的节流窗口。项目里没有调度器，所以清理只能"机会式"地挂在写入路径上；
+# 没有节流的话就变成**每次提问都发一条 DELETE** —— 那是拿日常性能换一个低频需求。
+# 多 worker 时各自计时、每小时各清一次：重复执行没有副作用（删的是同一批旧行）。
+_AGENT_LOG_PRUNE_INTERVAL_SECONDS = 3600.0
+
+# ⚠️ 哨兵必须用 **None**，不能用 0.0。
+#
+# 这里踩过一次真坑：原先写 `_last_prune_at = 0.0` 表示"从未清理过"，
+# 而 `time.monotonic()` **不是墙上时钟，是"开机以来的秒数"** ——
+# 机器刚起时它可能**小于** 3600，于是首次判断 `now - 0.0 < 3600` 成立，
+# "从未清理过"被误判成"刚清理过"：**清理静默失效，一直要等到开机满 1 小时**。
+# 更恶心的是它不报错、不告警，而且测试会"随机器开机时长时绿时红"（开久了的机器上一直是绿的）。
+_last_prune_at: "float | None" = None
+
+
+def _prune_due(now: float, last: "float | None", interval: float) -> bool:
+    """是否该清理了。`last is None` = 从未清理过 → **一定要清**。
+
+    抽成纯函数是为了能被直接测：节流规则里"None 与 0.0 不等价"这件事
+    很难靠集成测试钉住（它依赖机器开机时长），但在这里一行就能钉死。
+    """
+    return last is None or now - last >= interval
+
+
+def _prune_agent_logs_if_due(db: Session) -> None:
+    """按 `AGENT_LOG_RETENTION_DAYS` 清理过期审计（带节流，失败只 warning）。"""
+    global _last_prune_at
+
+    days = settings.AGENT_LOG_RETENTION_DAYS
+    if days <= 0:
+        return
+
+    now = time.monotonic()
+    if not _prune_due(now, _last_prune_at, _AGENT_LOG_PRUNE_INTERVAL_SECONDS):
+        return
+    _last_prune_at = now
+
+    removed = agent_log_repository.prune_older_than(db, days)
+    if removed:
+        logger.warning("已清理 %s 条超过 %s 天的 agent_logs", removed, days)
 
 
 def answer(

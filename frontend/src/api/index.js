@@ -56,7 +56,9 @@ export const chatApi = {
 
 export const conversationApi = {
   // 没有"创建会话"接口：首次提问时后端隐式创建，新 id 在 /chat 的响应里
-  list: () => http.get('/conversations'),
+  // params 传 { limit, offset } 翻页；不传就用后端默认（limit=50, offset=0）。
+  // 这个接口是拿到更早会话的**唯一**入口，不翻页的话第 51 条之后就永远看不到。
+  list: (params) => http.get('/conversations', { params }),
   detail: (id) => http.get(`/conversations/${id}`),
   remove: (id) => http.delete(`/conversations/${id}`),
 }

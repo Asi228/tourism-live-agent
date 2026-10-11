@@ -37,6 +37,10 @@ class ErrorCode:
     FORBIDDEN = 40300            # 对应 HTTP 403 无权限
     NOT_FOUND = 40400            # 对应 HTTP 404 资源不存在
     METHOD_NOT_ALLOWED = 40500   # 对应 HTTP 405 方法不允许
+    # 资源配额到顶：例如会话数已达 CONVERSATION_MAX_PER_USER。
+    # 用 409（Conflict）而不是 429 —— 429 的语义是"单位时间内请求太多，等会儿再来"，
+    # 而这里是"存量到顶了，得先删掉一些"，重试再多次也没用，两者提示语完全不同。
+    RESOURCE_LIMIT_EXCEEDED = 40900   # 对应 HTTP 409 资源配额已达上限
     TOO_MANY_REQUESTS = 42900    # 对应 HTTP 429 请求过于频繁（限流）
 
     # ===== 5xxxx：服务端 =====

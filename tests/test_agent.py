@@ -13,6 +13,12 @@ from app.agent import graph as graph_mod
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.services import agent_service
+
+# 模块导入时的节流哨兵初值。pytest 会在跑**任何**用例之前把所有测试模块导入完，
+# 所以这里拿到的就是"进程刚启动、一次清理都没跑过"时的真实值 ——
+# 下面用它来钉住"初值必须安全"这件事（否则那两条集成用例会把它覆盖掉，等于没测）。
+_PRUNE_SENTINEL_AT_IMPORT = agent_service._last_prune_at
 
 
 def _hit(chunk_id: int = 1, name: str = "员工手册.txt",
@@ -463,3 +469,109 @@ def test_repository_does_not_finish_the_transaction(session_factory, monkeypatch
     assert got is not None
     assert calls["flush"] == 1, "repo 应当只 flush"
     assert calls["commit"] == 0, "repository 不应自己结束事务"
+
+
+# ==================== 审计保留（Phase 10）====================
+
+
+def test_old_agent_logs_are_pruned(client, make_user, agent, session_factory, monkeypatch):
+    """超过保留期的审计会被清掉。
+
+    项目里没有调度器，所以清理是**机会式**的 —— 挂在"写审计"这条路径上，
+    这条用例就是在证明"它真的会被跑到"，而不是写了个没人调的函数。
+    """
+    from datetime import datetime, timedelta
+
+    from app.models import AgentLog
+    from app.services import agent_service
+
+    admin = make_user("admin")
+
+    old = AgentLog(
+        user_id=admin["id"], query="很久以前的问题", hit=False, source_count=0,
+        iterations=0, steps=None, total_tokens=0, elapsed_ms=0,
+    )
+    old.created_at = datetime.now() - timedelta(days=40)
+    with session_factory() as db:
+        db.add(old)
+        db.commit()
+        old_id = old.id
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 30)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)   # None = 从未清理过   # 放行节流
+
+    _ask(client, admin)
+
+    with session_factory() as db:
+        assert db.get(AgentLog, old_id) is None, "过期的审计没有被清掉"
+        left = db.query(AgentLog).filter(AgentLog.user_id == admin["id"]).all()
+    assert len(left) == 1, "应当只清过期的，别把刚写的那条也带上"
+
+
+def test_agent_log_prune_is_throttled(session_factory, monkeypatch):
+    """清理要**节流**，否则每次提问都会顺手发一条 DELETE。"""
+    from app.repositories import agent_log_repository
+    from app.services import agent_service
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 30)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)   # None = 从未清理过
+
+    calls = {"n": 0}
+
+    def counting_prune(db, days):
+        calls["n"] += 1
+        return 0
+
+    monkeypatch.setattr(agent_log_repository, "prune_older_than", counting_prune)
+
+    with session_factory() as db:
+        for _ in range(5):
+            agent_service._prune_agent_logs_if_due(db)
+
+    assert calls["n"] == 1, "节流没生效"
+
+
+def test_prune_sentinel_is_safe_right_after_boot():
+    """**回归用例**：进程刚启动时，第一次写审计必须真的执行清理。
+
+    背景：`time.monotonic()` 是"开机以来的秒数"，不是墙上时钟。
+    原先哨兵写 0.0 表示"从未清理过"，于是机器开机不满 1 小时时
+    `now - 0.0 < 3600` 成立 → "从未清理过"被误判成"刚清理过"，清理静默失效
+    （实测开机 1732 秒时中招）。更麻烦的是：开机一整天的机器上永远看不出来，
+    所以这种错只靠集成用例盯不住。
+
+    这条**不碰数据库、不碰全局时钟、也不依赖用例执行顺序**：
+    它把「哨兵的声明初值」和「刚开机（monotonic=100s）」这两个事实拼在一起判 ——
+    这正是 bug 真实发作的那个组合。哨兵被改回 0.0 时它会立刻挂。
+    """
+    from app.services.agent_service import _prune_due
+
+    interval = agent_service._AGENT_LOG_PRUNE_INTERVAL_SECONDS
+
+    # ① 规则本身：None 与 0.0 不等价
+    assert _prune_due(100.0, None, interval) is True
+    assert _prune_due(100.0, 0.0, interval) is False, "0.0 会被当成'刚清理过'"
+    assert _prune_due(5000.0, 3000.0, interval) is False, "窗口内不该重复清理"
+    assert _prune_due(7000.0, 3000.0, interval) is True, "超过窗口就该清理"
+
+    # ② 声明初值 × 刚开机场景
+    assert _prune_due(100.0, _PRUNE_SENTINEL_AT_IMPORT, interval) is True, (
+        "哨兵初值在'进程刚启动'时必须判定为要清理；"
+        "实际初值是 %r（0.0 会导致清理在开机头一小时静默失效）" % (_PRUNE_SENTINEL_AT_IMPORT,)
+    )
+
+
+def test_retention_zero_disables_pruning(session_factory, monkeypatch):
+    """0 = 不清理（旧数据要留着分析时用得上）。"""
+    from app.repositories import agent_log_repository
+    from app.services import agent_service
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 0)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)   # None = 从未清理过
+    monkeypatch.setattr(
+        agent_log_repository, "prune_older_than",
+        lambda db, days: pytest.fail("关掉之后不该调用清理"),
+    )
+
+    with session_factory() as db:
+        agent_service._prune_agent_logs_if_due(db)

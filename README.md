@@ -119,7 +119,14 @@ npm run dev                            # http://127.0.0.1:5173
 
 ```bash
 pytest -q                                          # 单元测试（不打任何真实外部接口）
-RUN_MILVUS_INTEGRATION=1 pytest tests/test_vectors_integration.py -v   # 连真实 Milvus 的集成测试
+
+# 集成测试默认全部跳过（它们依赖 VM 上的 Milvus / Redis，放进主测试集会因为
+# "服务没开机"变成一片红，别人 clone 下来第一件事就是测试全挂）。两个开关分别打开：
+RUN_MILVUS_INTEGRATION=1 pytest tests/test_vectors_integration.py -v    # 连真实 Milvus
+RUN_REDIS_INTEGRATION=1  pytest tests/test_limiter_integration.py -v    # 连真实 Redis
+
+# 两个一起开（需要两台服务都在跑）
+RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 pytest -v
 ```
 
 ---
@@ -145,7 +152,38 @@ RUN_MILVUS_INTEGRATION=1 pytest tests/test_vectors_integration.py -v   # 连真�
 | POST | `/agent/chat` | **Agent 问答**：额外返回执行轨迹、检索轮数与答案性质 |
 | GET · DELETE | `/conversations` · `/conversations/{id}` | 会话列表（`?limit=` 默认 50、`?offset=` 翻页）/ 详情（含全部消息）/ 删除。**没有"创建"接口** —— 首次提问时隐式建 |
 | GET | `/vector/health` · POST `/vector/purge-orphans` | 向量自检 / 清理孤儿向量（管理员） |
-| GET | `/health` | 健康检查（MySQL / Milvus / Redis） |
+| GET | `/health` | 健康检查（MySQL / Milvus / Redis），逐项 `ok/fail`；3 秒内复用结果 |
+
+### 错误码分段
+
+HTTP 状态码恒为 200，业务结果看 `code`。**`4xxxx` = HTTP 状态码 × 100**，
+`5xxxx` 按依赖组件细分（这是刻意的：LLM 与 Embedding 是**两家服务商两套 key**，
+共用一个码时分不清该查哪一个）。
+
+| code | 含义 | 备注 |
+|---|---|---|
+| 40000 | 参数错误 | 含请求体校验失败 |
+| 40100 | 未认证 | 缺 / 无效 token、已过期 |
+| 40300 | 无权限 | 已登录但对该资源权限不足 |
+| 40400 | 不存在 | **也用于"不是你的"** —— 见下方说明 |
+| 40500 | 方法不允许 | |
+| 40900 | 资源配额已达上限 | 例如会话数达到 `CONVERSATION_MAX_PER_USER` |
+| 42900 | 请求过于频繁 | 触发了限流 |
+| 50000 | 服务端通用错误 | |
+| 50001 | 文件处理失败 | 解析 / 落盘 |
+| 50002 | MySQL 异常 | |
+| 50003 | Redis 异常 | |
+| 50004 | Milvus 异常 | |
+| 50005 | LLM 调用失败 | 对话模型（DeepSeek） |
+| 50006 | 工具调用失败 | Agent 侧 |
+| 50007 | Embedding / Rerank 失败 | 向量模型（硅基流动，与 LLM 不是同一家） |
+| 59999 | 未知错误 | |
+
+> 40400 为什么也用来表示"无权访问"：如果"不存在"和"不归你"给不同的码或不同的文案，
+> 遍历 id 比对响应就能探出系统里有哪些资源。同理，会话接口对别人的 id 一律报
+> 「会话不存在」。**这是刻意的省略，不是漏了 40300。**
+
+以 `app/core/response.py` 的 `ErrorCode` 与 `exceptions._HTTP_STATUS_TO_ERROR_CODE` 为准。
 
 ---
 
@@ -285,6 +323,10 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
   反复喂回模型，模型会顺着那个口径走（越沿用越错）。判据取 `meta.hit`（寒暄直答同样排除），
   实现上"多取几倍再筛"，保证筛完之后仍凑得满配置的轮数。
 
+⚠️ 别把两件事混为一谈：`CONVERSATION_MAX_HISTORY_TURNS` 管的是**送进 Prompt 的范围**
+（数据仍在库里、随时回看，**可逆**）；`CONVERSATION_MAX_MESSAGES` 管的是**库里留多少**
+（真的删，**不可逆**）。前者替代不了后者，反之亦然。
+
 会话是**隐式创建**的：前端直接开问，后端建好并把新 id 放回响应，下一轮带上即可 ——
 少一个"新建会话"按钮，也少一次可能失败的请求。
 
@@ -304,10 +346,10 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 
 | 项 | 现状 |
 |---|---|
-| 限流 | 当前是**进程内**固定窗口实现，单进程下准确；多 worker 部署时会各自计数（已替换点标注在代码与配置中） |
+| 限流 | 已是**基于 Redis 的跨进程固定窗口**，`--workers N` 下配额也准（维度是登录用户）。降级方向是**放行**：Redis 不可用时不再计数，代价是那段时间额度失控 —— 所以 `/health` 会把 `redis` 单独报出来 |
 | 会话记忆 | 已有：**同一段对话内**记得上文（最近 5 轮）。**跨会话的长期记忆未实现** —— `user_memories` 表还没建 |
 | 权限撤销与历史 | 已实现**回放脱敏**：引用了「此刻已无权访问」的知识库的答案，在会话详情里**整条隐藏**（正文与引用一起换成提示语）。口径是**收回资料、不收回用户自己敲的字** —— 用户自己的提问与会话标题仍然保留。⚠️ 残留：未脱敏的消息仍会回显当时的 `searched_kb_ids`（只有库 id，不含内容） |
-| 数据保留 | **既没有条数上限，也没有保留期**：`messages.content` 是 TEXT、`sources`/`meta` 是 JSON，单个会话会无限增长；用户能建的会话数同样无上限（列表的 `?limit=` 只限制一次返回多少，不限制存量）。`agent_logs` 从 Phase 8 起也只写不清。清理口径（每会话最多 N 条 / 活跃 M 天后归档）留到 Phase 10 连同调度一起定 |
+| 数据保留 | 已有上限，三个独立的开关（0 = 不限）：会话数 `CONVERSATION_MAX_PER_USER`（超了**拒绝新建并提示**，不静默丢）、单会话消息数 `CONVERSATION_MAX_MESSAGES`（超了按**整轮**删最旧的）、`agent_logs` 保留 `AGENT_LOG_RETENTION_DAYS` 天。**没有调度器**，都在写入时机会式执行（审计清理按小时节流），每次真删都打 WARNING 带条数 |
 | 追问指代 | 没做 query 改写。省略主语的追问（"那它有几天"）检索按字面搜，效果有限 |
 | 历史压缩 | 只截最近 N 轮，没有摘要压缩。长对话里更早的内容会被直接丢掉 |
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布 |

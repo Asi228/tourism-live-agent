@@ -132,10 +132,11 @@ class Settings(BaseSettings):
     RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"
     RERANK_TIMEOUT: float = 30.0
 
-    # ===== 限流（临时：进程内固定窗口，接 Redis 后替换）=====
+    # ===== 限流（Redis 跨进程固定窗口）=====
     # 限流保护的是"钱"：一次 /api/chat 要打 rerank + LLM 两个付费上游，
     # 而 Phase 8 的 Agent 会自己决定调几次工具 —— 所以它不该等到安全加固阶段才做。
-    # ⚠️ 只在单进程下准确（uvicorn --workers > 1 会放大 N 倍），见 app/core/limiter.py
+    # 计数落在 Redis（连接参数见上面的 REDIS_*），`--workers N` 下也准；
+    # ⚠️ Redis 不可用时**放行**（降级），代价见 app/core/rate_limit_redis.py 的文件头。
     RATE_LIMIT_ENABLED: bool = True
     # 每个用户每分钟的配额，**0 表示该类型不限流**
     RATE_LIMIT_CHAT_PER_MINUTE: int = 20       # 最贵，掐最紧
@@ -159,6 +160,22 @@ class Settings(BaseSettings):
     # 历史过长时"摘要压缩"是正解（把远期轮次压成一段话），但那是后续的事，
     # 本轮先用"只带最近 N 轮"这个最简单、也最容易解释清楚的做法。
     CONVERSATION_MAX_HISTORY_TURNS: int = 5
+
+    # ===== 数据保留（Phase 10）=====
+    # 上限分三类，**每个都支持 0 = 不限**（关掉某一项不影响其它项）。
+    # 口径：这三条治的是"只增不减"，而不是"喂给模型多少" —— 后者是上面那个
+    # CONVERSATION_MAX_HISTORY_TURNS 管的（那个只影响 Prompt，不动库里数据）。
+    #
+    # ⚠️ 后两条是**不可逆**的删除，只在写入时机会式执行（没有调度器），
+    #    每次真删都会打 WARNING 带条数，便于事后追溯。
+    #
+    # 每用户最多保留多少个会话。超了**拒绝新建并提示去删旧会话**，不静默丢数据。
+    CONVERSATION_MAX_PER_USER: int = 200
+    # 每个会话最多保留多少条消息（**按整轮删最旧的**：一轮 = 一问一答 = 2 条，
+    # 只删到整轮边界，不留下"没有对应问题的孤立答案"）。
+    CONVERSATION_MAX_MESSAGES: int = 100
+    # agent_logs 保留天数（纯排障数据，只写不清会一直涨）。
+    AGENT_LOG_RETENTION_DAYS: int = 30
 
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
@@ -223,6 +240,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONVERSATION_MAX_HISTORY_TURNS 不能为负数（0 表示不带历史，是合法值）"
             )
+        if self.CONVERSATION_MAX_PER_USER < 0:
+            raise ValueError("CONVERSATION_MAX_PER_USER 不能为负数（0 表示不限）")
+        if self.CONVERSATION_MAX_MESSAGES < 0:
+            raise ValueError("CONVERSATION_MAX_MESSAGES 不能为负数（0 表示不限）")
+        if self.AGENT_LOG_RETENTION_DAYS < 0:
+            raise ValueError("AGENT_LOG_RETENTION_DAYS 不能为负数（0 表示不限）")
         if self.AGENT_MAX_ITERATIONS < 1:
             raise ValueError("AGENT_MAX_ITERATIONS 必须至少为 1（否则永远不会检索）")
         if self.RAG_RERANK_ENABLED and self.RAG_CANDIDATE_K < self.RAG_TOP_K:

@@ -15,6 +15,10 @@ const scroller = ref()
 // ---- 会话（Phase 9）----
 const conversations = ref([])
 const currentConvId = ref(null) // null = 还没开始（或刚点了"新对话"），后端会在首次提问时建
+const convLoading = ref(false)
+const convHasMore = ref(false)
+// 一页 50 条（后端上限 100）。列表是拿到更早会话的唯一入口，所以必须能继续往下翻。
+const CONV_PAGE_SIZE = 50
 
 // 后端 `answer_mode` 的三种取值 → 标签样式与话术
 const ANSWER_MODE = {
@@ -42,12 +46,29 @@ async function loadKbList() {
 
 // ==================== 会话列表 ====================
 
-async function loadConversations() {
+/**
+ * 拉会话列表。
+ *
+ * `append=true` 是"加载更多"：按当前条数当 offset 往后接。
+ * 不做 append 时**整表重来**（重置成第一页）—— 提问后标题/活跃时间都会变，
+ * 局部更新反而容易出现"顺序错了但看着正常"的问题。
+ */
+async function loadConversations({ append = false } = {}) {
+  if (convLoading.value) return
+  convLoading.value = true
   try {
-    const body = await conversationApi.list()
-    conversations.value = body.data || []
+    const offset = append ? conversations.value.length : 0
+    const body = await conversationApi.list({ limit: CONV_PAGE_SIZE, offset })
+    const rows = body.data || []
+    conversations.value = append ? [...conversations.value, ...rows] : rows
+    // 后端没有返回 total，用"这页是否装满"当依据：装满就认为可能还有下一页。
+    // 代价是多一次必然为空的请求，换来的是不必为了一个 total 再加一次 count 查询。
+    convHasMore.value = rows.length === CONV_PAGE_SIZE
   } catch {
-    conversations.value = []
+    if (!append) conversations.value = []
+    convHasMore.value = false
+  } finally {
+    convLoading.value = false
   }
 }
 
@@ -193,6 +214,14 @@ onMounted(async () => {
           </div>
         </div>
         <div v-if="!conversations.length" class="conv-empty">还没有对话，直接在右边提问即可</div>
+        <el-button
+          v-if="convHasMore"
+          text
+          size="small"
+          class="conv-more"
+          :loading="convLoading"
+          @click="loadConversations({ append: true })"
+        >加载更多</el-button>
       </div>
     </aside>
 
@@ -419,6 +448,11 @@ onMounted(async () => {
   padding: 12px 10px;
   font-size: 12px;
   line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+.conv-more {
+  width: 100%;
+  margin-top: 4px;
   color: var(--el-text-color-secondary);
 }
 

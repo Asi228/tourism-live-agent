@@ -48,6 +48,17 @@ def list_by_user(
     return [(row[0], row[1]) for row in db.execute(stmt).all()]
 
 
+def count_by_user(db: Session, user_id: int) -> int:
+    """某个用户现有多少个会话（数据保留的配额判断用）。
+
+    注意它和 `list_by_user` 不是一回事：那个是**带分页的展示查询**，
+    这里要的是**总数**，不能被 limit 影响。
+    """
+    return db.scalar(
+        select(func.count()).select_from(Conversation).where(Conversation.user_id == user_id)
+    ) or 0
+
+
 def create(db: Session, user_id: int, title: str) -> Conversation:
     conv = Conversation(user_id=user_id, title=title)
     db.add(conv)

@@ -30,3 +30,9 @@ pymilvus==3.0.2
 # Note: it pulls in langgraph-checkpoint / langgraph-sdk / ormsgpack,
 #   and it pins websockets down to 16.x (uvicorn only needs it for WS, which we don't use).
 langgraph==1.2.12
+
+# rate limiting (Phase 10)
+# redis: cross-process fixed-window rate limiter. The counters live in Redis so the
+#   quota is NOT multiplied by the number of uvicorn workers.
+#   Also used by GET /health to probe Redis connectivity.
+redis==8.1.0

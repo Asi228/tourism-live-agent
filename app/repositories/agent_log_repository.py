@@ -1,11 +1,13 @@
 """agent_logs 的数据访问。
 
-刻意只提供 `create`：写入是本阶段唯一真实需要的操作。
+只有两个函数，都是**写入生命周期**上的：`create` 写、`prune_older_than` 清。
 （读的那一侧等真有"查看执行历史"的接口时再加 —— 先写个没人调的查询函数只会变成死代码。）
 """
 
 import logging
+from datetime import datetime, timedelta
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.models.agent_log import AgentLog
@@ -59,3 +61,28 @@ def create(
         db.rollback()
         logger.warning("写入 agent_logs 失败（不影响本次回答）：%s", str(exc)[:200])
         return None
+
+
+def prune_older_than(db: Session, days: int) -> int:
+    """删掉 N 天前的执行记录，返回删除条数；`days <= 0` 表示不清理。
+
+    表结构上 `created_at` 有索引，所以这条范围删除是走索引的。
+
+    **不 commit**：口径与 `create` 一致 —— 事务边界归 service 层。
+
+    ⚠️ 失败时**只记 warning、不 rollback**。这一点和 `create` 刻意不同：
+    `create` 失败时 session 已经被搞脏、必须清毒，而它此刻还没来得及写业务数据；
+    而这里（留存的清理）跑在"这一轮问答已经写了一半"的事务里，
+    一旦 rollback 就会把**本轮刚写好的审计与对话一起丢掉** —— 那比"少清几条旧日志"严重得多。
+    所以宁可让它在最终 commit 时按普通 DB 错误暴露出来。
+    """
+    if days <= 0:
+        return 0
+    cutoff = datetime.now() - timedelta(days=days)
+    try:
+        result = db.execute(delete(AgentLog).where(AgentLog.created_at < cutoff))
+        db.flush()
+        return result.rowcount or 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理过期 agent_logs 失败（不影响本次回答）：%s", str(exc)[:200])
+        return 0

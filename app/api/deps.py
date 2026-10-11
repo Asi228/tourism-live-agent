@@ -75,9 +75,10 @@ def rate_limit(kind: str):
     （chat 一次打两个付费上游、vectorize 一次可能打几百条 embedding），
     中间件只能按路径前缀拍脑袋。
 
-    实现是**进程内固定窗口**，只在单进程下准确，详见 app/core/limiter.py。
+    实现是**基于 Redis 的跨进程固定窗口**（`--workers N` 也准），详见 app/core/rate_limit_redis.py。
+    那里同时写明了"Redis 挂了就放行"这个降级选择与它的代价。
     """
-    from app.core.limiter import limiter  # 局部 import：避免 core→api 的反向依赖
+    from app.core.rate_limit_redis import limiter  # 局部 import：避免 core→api 的反向依赖
 
     def _dep(current_user: User = Depends(get_current_user)) -> None:
         limiter.check(kind, current_user.id)

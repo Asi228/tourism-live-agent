@@ -66,10 +66,31 @@ def ensure_conversation(
     这样 LLM 失败时不会留下空会话。
     """
     if conversation_id is None:
+        _ensure_room_for_new_conversation(db, user)
         conv = conversation_repository.create(db, user.id, _make_title(first_query))
         logger.info("新建会话 user=%s conv_id=%s", user.username, conv.id)
         return conv
     return get_owned(db, user, conversation_id)
+
+
+def _ensure_room_for_new_conversation(db: Session, user: User) -> None:
+    """新建会话前先看配额，超了**拒绝并提示**。
+
+    为什么不是"悄悄删掉最旧的会话"：那等于替用户决定"哪段对话可以不要了"。
+    用户对历史对话的预期是只增不减，静默删除比让他自己面对 200 个旧会话糟糕得多
+    —— 前者是数据损坏，后者只是麻烦。所以这里选"明确的失败"，不选"顺滑的丢失"。
+    """
+    cap = settings.CONVERSATION_MAX_PER_USER
+    if cap <= 0:
+        return
+
+    used = conversation_repository.count_by_user(db, user.id)
+    if used >= cap:
+        logger.warning("会话数已达上限 user=%s used=%s cap=%s", user.username, used, cap)
+        raise AppException(
+            ErrorCode.RESOURCE_LIMIT_EXCEEDED,
+            "会话数量已达上限（%d 个），请先删除一些旧会话再继续提问" % cap,
+        )
 
 
 # 取历史时"多取几倍再筛"的倍数。无依据的轮次会被丢掉，只取 turns*2 条的话，
@@ -140,6 +161,45 @@ def append_turn(
     message_repository.create(db, conv.id, ROLE_USER, query)
     message_repository.create(db, conv.id, ROLE_ASSISTANT, answer, sources=sources, meta=meta)
     conversation_repository.touch(db, conv)
+    _trim_messages(db, conv)
+
+
+def _trim_messages(db: Session, conv: Conversation) -> None:
+    """把会话里的消息裁到 `CONVERSATION_MAX_MESSAGES` 以内（**按整轮**，从最旧的丢）。
+
+    两条口径：
+
+    · **按整轮删，不截半条**。一轮 = 一问一答 = 2 条；删到奇数条会留下"没有对应问题的
+      孤立答案"，而历史拼装那边一直在避免这种东西 —— 存库的形态和喂模型的形态
+      不该是两套标准。（`excess` 为奇数时多删一条，凑成整轮。）
+    · **不可逆，所以每次真删都打 WARNING 并带上条数**。这类"悄悄减少用户数据"的动作
+      必须有据可查，否则将来只会看到"我的对话怎么短了"。
+
+    ⚠️ 失败只记 warning、**不 rollback**：它跑在"本轮问答已写了一半"的事务里，
+    rollback 会把刚写好的这一轮一起丢掉 —— 那比少清理几条消息严重得多。
+
+    与 `CONVERSATION_MAX_HISTORY_TURNS` 的分工要说清：那个管的是**送进 Prompt 的范围**
+    （数据仍在库里，随时回看）；这里管的是**库里留多少**。前者可逆，后者不可逆。
+    """
+    cap = settings.CONVERSATION_MAX_MESSAGES
+    if cap <= 0:
+        return
+
+    try:
+        total = message_repository.count_by_conversation(db, conv.id)
+        excess = total - cap
+        if excess <= 0:
+            return
+        if excess % 2:  # 凑成整轮
+            excess += 1
+        removed = message_repository.delete_oldest(db, conv.id, excess)
+        if removed:
+            logger.warning(
+                "会话消息超出上限，已删除最旧的 %s 条 conv=%s 上限=%s（按整轮删）",
+                removed, conv.id, cap,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话消息保留清理失败（不影响本次问答）conv=%s: %s", conv.id, str(exc)[:200])
 
 
 def list_conversations(
