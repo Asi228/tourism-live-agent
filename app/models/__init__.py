@@ -21,10 +21,12 @@ from app.models.knowledge_base_member import KnowledgeBaseMember
 from app.models.message import ALL_ROLES, ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.role import Role
 from app.models.user import User
+from app.models.user_memory import CONTENT_MAX_LENGTH as MEMORY_MAX_LENGTH, UserMemory
 
 __all__ = [
     "ALL_ROLES",
     "ALL_STATUSES",
+    "MEMORY_MAX_LENGTH",
     "ROLE_ASSISTANT",
     "ROLE_USER",
     "STATUS_COMPLETED",
@@ -41,4 +43,5 @@ __all__ = [
     "Message",
     "Role",
     "User",
+    "UserMemory",
 ]

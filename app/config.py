@@ -177,6 +177,24 @@ class Settings(BaseSettings):
     # agent_logs 保留天数（纯排障数据，只写不清会一直涨）。
     AGENT_LOG_RETENTION_DAYS: int = 30
 
+    # ===== 长期记忆（Phase 11）=====
+    # 跨会话记住"关于用户的稳定事实"（"我在财务部""报销截止是每月 25 号"）。
+    # **默认关**：它等于给每次问答多塞一段上下文，得先有开/关两组数据才谈得上值不值 ——
+    # 和 RAG_RERANK_ENABLED、CONVERSATION_MAX_HISTORY_TURNS=0 是同一个习惯。
+    # 关掉时行为与上一阶段**逐字一致**（提示词不多一个字符）。
+    USER_MEMORY_ENABLED: bool = False
+    # 存量上限：每用户最多存多少条（**0 = 不限**）。超了**拒绝写入并提示**，
+    # 不静默删最旧的 —— 静默删用户数据是数据损坏，让他自己删只是麻烦。
+    # ⚠️ 这一项管的是**库里存多少**（不可逆），与下面两项"送进提示词多少"是两回事。
+    USER_MEMORY_MAX_PER_USER: int = 200
+    # 送进提示词最多几条（按最近更新倒序；**0 = 不带记忆**）。
+    # ⚠️ 取的是**最近更新的前 N 条**，**不是"最相关的 N 条"** —— 不查向量、不做相关性排序。
+    #    这是刻意的：可预测、每次问答不多花一次检索；代价是第 N+1 条之后即使更相关也进不去。
+    #    真需要按相关性选，那是另一件事（记忆也要建索引 + 检索），别在这里顺手改。
+    USER_MEMORY_MAX_ITEMS: int = 20
+    # 记忆段的字符预算（超出时**从最旧的开始丢**），防止它把本轮检索到的资料挤出上下文。
+    USER_MEMORY_MAX_CHARS: int = 1000
+
     # ===== Embedding =====
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = ""
@@ -246,6 +264,12 @@ class Settings(BaseSettings):
             raise ValueError("CONVERSATION_MAX_MESSAGES 不能为负数（0 表示不限）")
         if self.AGENT_LOG_RETENTION_DAYS < 0:
             raise ValueError("AGENT_LOG_RETENTION_DAYS 不能为负数（0 表示不限）")
+        if self.USER_MEMORY_MAX_PER_USER < 0:
+            raise ValueError("USER_MEMORY_MAX_PER_USER 不能为负数（0 表示不限）")
+        if self.USER_MEMORY_MAX_ITEMS < 0:
+            raise ValueError("USER_MEMORY_MAX_ITEMS 不能为负数（0 表示不带记忆）")
+        if self.USER_MEMORY_MAX_CHARS < 0:
+            raise ValueError("USER_MEMORY_MAX_CHARS 不能为负数（0 表示不带记忆）")
         if self.AGENT_MAX_ITERATIONS < 1:
             raise ValueError("AGENT_MAX_ITERATIONS 必须至少为 1（否则永远不会检索）")
         if self.RAG_RERANK_ENABLED and self.RAG_CANDIDATE_K < self.RAG_TOP_K:

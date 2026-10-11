@@ -36,6 +36,7 @@ from app.agent.state import AgentState
 from app.config import settings
 from app.models.user import User
 from app.rag import llm, prompt
+from app.services import memory_service
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +292,11 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             }
 
         # history（会话历史，Phase 9）只给生成节点用；判定节点不看它，见 state.py 的说明。
+        # 长期记忆（Phase 11）同源复用 memory_service —— 与纯 RAG 走同一份拼装逻辑，
+        # 都在"真要调模型之前"才取，判定/空检索的路径不白查库。
+        memory = memory_service.section_for_prompt(db, user)
         out = llm.chat(
-            prompt.SYSTEM_PROMPT,
+            prompt.build_system_prompt(memory),
             prompt.build_user_message(state["query"], context),
             history=state.get("history") or [],
         )

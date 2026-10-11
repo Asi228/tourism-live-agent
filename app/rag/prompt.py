@@ -29,6 +29,14 @@ NO_HIT_ANSWER = (
     "请确认相关文档已上传并完成向量化，或换一种问法再试。"
 )
 
+# 长期记忆段的表头（Phase 11）。措辞刻意与「参考资料」划清界限：
+# 记忆是"关于用户的背景"，不是公司制度原文 —— 模型不能拿它当依据去标注来源编号，
+# 否则会出现"答案引用了 [1]，但 [1] 其实是用户自己说过的一句话"这种错。
+MEMORY_HEADER = (
+    "以下是一些关于当前用户的已知信息（仅用于理解其背景，"
+    "不能当作公司制度依据，也不要为它们标注来源编号）："
+)
+
 
 def _page_text(page_number: int | None) -> str:
     """页码后缀。纯文本文档（txt/md）没有页码（用 None 表示），此时不显示。
@@ -145,3 +153,48 @@ def build_prompt_and_sources(
     """
     context, adopted = build_context(results, max_chars)
     return context, adopted, build_sources(adopted, snippet_chars)
+
+
+def build_memory_section(memories: list[str], max_chars: int) -> str:
+    """把长期记忆拼成系统提示词里的一段（Phase 11）。**没有可用记忆时返回空串。**
+
+    截断方向与 `build_context` 一致：传入的列表按「最近更新的在前」，
+    放不下时**从最旧的开始丢**，保证新事实一定进得去。
+    `max_chars <= 0` 表示不要记忆（与 `CONVERSATION_MAX_HISTORY_TURNS=0` 同一个习惯）。
+    """
+    if max_chars <= 0:
+        return ""
+
+    lines: list[str] = []
+    used = 0
+    for item in memories:
+        text = " ".join((item or "").split())   # 压平换行：一条记忆占一行，好读也好截
+        if not text:
+            continue
+        line = f"- {text}"
+        if used + len(line) + 1 > max_chars:
+            if lines:
+                logger.info(
+                    "长期记忆超限，丢弃较旧的条目：采用 %s 条 / 共 %s 条，已用 %s 字",
+                    len(lines), len(memories), used,
+                )
+                break
+            line = line[:max_chars]   # 第一条就超长：截断它，保证至少有一条记忆可用
+        lines.append(line)
+        used += len(line) + 1
+
+    if not lines:
+        return ""
+    return MEMORY_HEADER + "\n" + "\n".join(lines)
+
+
+def build_system_prompt(memory_section: str = "") -> str:
+    """完整系统提示词 = 规则 +（可选）长期记忆段 —— **全项目唯一出口**。
+
+    为什么不让调用方自己拼：纯 RAG 与 Agent 两条路都要用它，
+    两处各拼一次必然改一处忘一处（`build_prompt_and_sources` 已经踩过这个坑）。
+    没有记忆时原样返回 `SYSTEM_PROMPT`，不打任何补丁 —— 关掉开关就必须与从前逐字一致。
+    """
+    if not memory_section:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n" + memory_section + "\n"

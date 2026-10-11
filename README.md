@@ -20,7 +20,7 @@
 | 检索 | **两段式**：向量多召回 → BGE-Reranker 精排；**权限过滤在检索阶段完成** |
 | RAG 问答 | 检索 → 拼提示词（资料带 `[1][2]` 编号）→ 生成 → 返回答案 + 引用（文件名 / 页码 / 相似度 / 摘要） |
 | Agent 问答 | 状态机多步决策（要不要查 → 查 → 够不够 → 换词再查 → 生成），返回每步节点、耗时与决策 |
-| 会话记忆 | 问答落 `conversations` / `messages`，最近 N 轮带进提示词 —— 可以追问「那病假呢」；会话列表可翻回历史继续问 |
+| 会话记忆 · 长期记忆 | **会话内**：问答落 `conversations` / `messages`，最近 N 轮带进提示词 —— 可以追问「那病假呢」，会话列表可翻回历史继续问。**跨会话**：`user_memories` + `/api/memories` 由用户**显式**写入（默认关，见 `USER_MEMORY_ENABLED`） |
 | 可观测性 | 执行轨迹落库（`agent_logs`）、token 统计、向量自检（孤儿向量、「已解析但未向量化」的文档清单） |
 | 成本与安全 | 按用户 + 接口类型的限流；提示词反幻觉规则；错误响应不泄露上游细节与内部地址 |
 
@@ -84,10 +84,15 @@ python -m venv .venv
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
 cp .env.example .env                   # 然后填写数据库、Milvus 与两个 API Key
+alembic upgrade head                   # 建表（**必须**，详见下面第 8 节）
 python main.py                         # 或 uvicorn main:app --reload
 ```
 
-首次启动会**自动建表**、初始化角色与 `.env` 中配置的初始管理员（幂等，重复启动不会覆盖已有密码）。
+**建表由迁移负责**（`alembic upgrade head`）：空库能一路建到底，老库因为版本已 stamp 在基线上
+不会被重复建。启动时只**校验**表齐不齐 —— 缺表会明确报错并提示先跑迁移，而不是偷偷
+`create_all`（理由见第 8 节）。角色与 `.env` 里配置的初始管理员仍由启动流程幂等播种。
+
+**启动前端**（另开一个终端）：
 
 **启动前端**（另开一个终端）：
 
@@ -120,13 +125,14 @@ npm run dev                            # http://127.0.0.1:5173
 ```bash
 pytest -q                                          # 单元测试（不打任何真实外部接口）
 
-# 集成测试默认全部跳过（它们依赖 VM 上的 Milvus / Redis，放进主测试集会因为
-# "服务没开机"变成一片红，别人 clone 下来第一件事就是测试全挂）。两个开关分别打开：
+# 集成测试默认全部跳过（它们依赖 VM 上的 Milvus / Redis、或本机 MySQL，放进主测试集
+# 会因为"服务没开机"变成一片红，别人 clone 下来第一件事就是测试全挂）。三个开关分别打开：
 RUN_MILVUS_INTEGRATION=1 pytest tests/test_vectors_integration.py -v    # 连真实 Milvus
 RUN_REDIS_INTEGRATION=1  pytest tests/test_limiter_integration.py -v    # 连真实 Redis
+RUN_MYSQL_INTEGRATION=1  pytest tests/test_migrations.py -v             # 迁移 drift 检查（连真实 MySQL）
 
-# 两个一起开（需要两台服务都在跑）
-RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 pytest -v
+# 一起开（需要两台 VM 都在跑）
+RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest -v
 ```
 
 ---
@@ -151,6 +157,7 @@ RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 pytest -v
 | POST | `/chat` | **RAG 问答**：返回答案 + 引用来源；带 `conversation_id` 即接着上文问 |
 | POST | `/agent/chat` | **Agent 问答**：额外返回执行轨迹、检索轮数与答案性质 |
 | GET · DELETE | `/conversations` · `/conversations/{id}` | 会话列表（`?limit=` 默认 50、`?offset=` 翻页）/ 详情（含全部消息）/ 删除。**没有"创建"接口** —— 首次提问时隐式建 |
+| GET · POST · DELETE | `/memories` · `/memories/{id}` | **长期记忆**：跨会话记住的事实（列表 / 写入 / 删除）。归属校验同会话：别人的 id 一律 404 |
 | GET | `/vector/health` · POST `/vector/purge-orphans` | 向量自检 / 清理孤儿向量（管理员） |
 | GET | `/health` | 健康检查（MySQL / Milvus / Redis），逐项 `ok/fail`；3 秒内复用结果 |
 
@@ -305,7 +312,9 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 │   └── src/layouts/        #   侧边栏 + 顶栏
 ├── devtools/index.html     # 单文件后端调试台（开发自测）
 ├── docs/                   # 设计与实验记录（benchmarks/ 存对照实验的语料、数据与结论）
-├── tests/                  # 单元测试 + 可选的真实 Milvus 集成测试
+├── tests/                  # 单元测试 + 可选的集成测试（Milvus / Redis / MySQL）
+├── migrations/             # Alembic 迁移脚本（全新环境也要靠它，见下）
+├── alembic.ini             # Alembic 配置（连接串不写这里，由 migrations/env.py 从 .env 读）
 ├── pytest.ini              # pytest 配置
 ├── .env.example            # 配置模板（只放占位符）
 └── requirements.txt
@@ -344,12 +353,57 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 
 ---
 
+### 8. 数据库结构只有一条权威：Alembic 迁移
+
+`create_all()` 只会**建表**，不会改表 —— 加个字段、改个类型，它一点忙都帮不上。
+所以 Phase 11 引入了 Alembic，并且**没有留第二条路**：建表与改表都走迁移。
+
+```
+alembic revision --autogenerate -m "说明"   # 改了模型之后
+alembic upgrade head                         # 应用
+```
+
+启动流程（`app/db/init_db.py::_ensure_schema`）只**校验**表齐不齐，缺表就报错提示先跑迁移。
+
+> 为什么**不**保留 `create_all` 兜底（哪怕是给 dev 用）：曾经按 `APP_ENV` 门控过——dev/test
+> 建表、其余校验。但 `create_all` 造出来的库**没有 `alembic_version` 记录**，
+> 于是之后第一次 `alembic upgrade head` 必然撞 `table already exists`：
+> 等于亲手把"两个权威"的架吵起来，正是引入 Alembic 想避免的事。一条路最省心。
+
+⚠️ **改了模型却忘了生成迁移**，`autogenerate` 的 diff 仍然显示"已同步"（它比的是「库 vs 模型」，
+不是「迁移 vs 模型」），迁移于是变成摆设，直到在别人的机器上炸开。`tests/test_migrations.py`
+钉这件事（drift 比对要连真实 MySQL，**默认跳过**）：
+
+```bash
+RUN_MYSQL_INTEGRATION=1 pytest tests/test_migrations.py -v
+```
+
+两个实测踩到的坑，都写进了代码注释：
+
+1. **基线必须带真实建表语句，不能只 `stamp`。** 最初 9 张表先于 Alembic 存在，
+   所以基线做成了空迁移 + `stamp head`。它在老库上没问题，但**在真正的空库上会失败**——
+   下一份迁移给 `user_memories` 建外键时找不到 `users`（实测
+   `(1824, Failed to open the referenced table 'users')`），也就是"clone 下来先跑
+   `alembic upgrade head`"根本走不通。现在基线带上了那 9 张表的完整 DDL：
+   老库版本号已 stamp 在它上面（不会重跑），空库能一路建到底。**已用一个临时空库验过
+   `upgrade head`（11 张表）与 `downgrade base`（只剩 `alembic_version`）的完整往返。**
+2. **自动生成的 `downgrade()` 在 MySQL 上可能是坏的。** autogenerate 会写成
+   「先 `drop_index(ix_user_memories_user_id)`、再 `drop_table`」，而那条索引正是外键
+   `user_memories.user_id → users.id` 在用的索引，MySQL 直接拒绝
+   （`1553, Cannot drop index ... : needed in a foreign key constraint`）——
+   `alembic downgrade` 必然失败，还会把 `alembic_version` 卡在一个跑不完的迁移上。
+   **删表本身会连带删掉它的索引与外键**，所以 `downgrade()` 里一行 `op.drop_table(...)` 就够。
+   （通用经验：**外键列上的索引，MySQL 不允许单独 drop**。每份新迁移的 `downgrade()`
+   都值得实测一次往返。）
+
+---
+
 ## 已知限制与后续计划
 
 | 项 | 现状 |
 |---|---|
 | 限流 | 已是**基于 Redis 的跨进程固定窗口**，`--workers N` 下配额也准（维度是登录用户）。降级方向是**放行**：Redis 不可用时不再计数，代价是那段时间额度失控 —— 所以 `/health` 会把 `redis` 单独报出来 |
-| 会话记忆 | 已有：**同一段对话内**记得上文（最近 5 轮）。**跨会话的长期记忆未实现** —— `user_memories` 表还没建 |
+| 会话记忆 | 两套并存。**会话内**：最近 5 轮进提示词（`CONVERSATION_MAX_HISTORY_TURNS`）。**跨会话长期记忆**已实现（`user_memories` 表 + `/api/memories`），但 **`USER_MEMORY_ENABLED` 默认关** —— 它等于给每次问答多塞一段上下文，得先有开/关两组数据才谈得上值不值。写入是**显式**的（用户主动"记住这件事"）；**没做**"每轮自动提炼"——那要多花一次模型调用，而且会把"刚才在聊什么"这类一次性内容也塞进长期记忆，越攒越脏 |
 | 权限撤销与历史 | 已实现**回放脱敏**：引用了「此刻已无权访问」的知识库的答案，在会话详情里**整条隐藏**（正文与引用一起换成提示语）。口径是**收回资料、不收回用户自己敲的字** —— 用户自己的提问与会话标题仍然保留。⚠️ 残留：未脱敏的消息仍会回显当时的 `searched_kb_ids`（只有库 id，不含内容） |
 | 数据保留 | 已有上限，三个独立的开关（0 = 不限）：会话数 `CONVERSATION_MAX_PER_USER`（超了**拒绝新建并提示**，不静默丢）、单会话消息数 `CONVERSATION_MAX_MESSAGES`（超了按**整轮**删最旧的）、`agent_logs` 保留 `AGENT_LOG_RETENTION_DAYS` 天。**没有调度器**，都在写入时机会式执行（审计清理按小时节流），每次真删都打 WARNING 带条数 |
 | 追问指代 | **做过对照实验，结论是不做 query 改写**。用 8 篇同质文档（全都含"申请/审批/天"）测 14 组省略主语的追问：原话与人工补全的话各跑一次检索（`rerank=true`），**原话 top1 命中 13/14、改写 14/14 —— 只多 1 组，而有效样本（原话判错的组）只有 1/14，低于事前定下的门槛**，所以这个实验**不足以证明改写有价值**（这也是不做的主要理由，不是"改写没用"）。稳定成立的差别在**分数**：原话的 top1 相关分趋近 0（0.0074 ~ 0.24），改写后 0.66 ~ 0.99 —— "名次对了但依据几乎为零"，语料一变大就会失守。结论：当前规模下改写**不改变命中、只提高分数**，不值得为它多付一次模型调用与一次往返延迟；等语料变大、top1 真开始失准再回来做。**8 篇语料、14 组追问、两版完整结果与判定线见 `docs/benchmarks/query-rewrite.md`** |

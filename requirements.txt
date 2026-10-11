@@ -36,3 +36,10 @@ langgraph==1.2.12
 #   quota is NOT multiplied by the number of uvicorn workers.
 #   Also used by GET /health to probe Redis connectivity.
 redis==8.1.0
+
+# migrations (Phase 11)
+# alembic: schema migrations. create_all() only ever CREATES tables - it cannot
+#   alter them, so every future column change would otherwise be a hand-written
+#   DDL with no rollback. Baseline is stamped on the existing database, see
+#   migrations/env.py. Pulls in Mako + MarkupSafe (pure python).
+alembic==1.20.0
