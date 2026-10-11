@@ -157,15 +157,33 @@ def append_turn(
     answer: str,
     sources: list | None = None,
     meta: dict | None = None,
+    *,
+    defer_maintenance: bool = False,
 ) -> None:
     """把一轮问答写进会话。只 flush，提交由调用方决定。
 
     ⚠️ **摘要要在裁剪之前做**：`_trim_messages` 会把超出上限的最旧消息**永久删掉**，
     而摘要正是"旧轮次唯一的底"。反过来的顺序会让"还没进摘要就被删"的那几轮彻底消失。
+
+    `defer_maintenance`：**流式路径**把"摘要 + 裁剪"推迟到 `done` 事件之后单独做
+    （见 `rag_service._maintain_after_stream`）—— 因为摘要是同步的模型调用，
+    放在收尾前会让用户"最后一个字吐完了、光标还在转"。
+    ⚠️ 要推迟就**两步一起推迟**：只推迟摘要、照常裁剪，就会踩中上面那条
+    "还没进摘要就被删"的静默丢数据。
     """
     message_repository.create(db, conv.id, ROLE_USER, query)
     message_repository.create(db, conv.id, ROLE_ASSISTANT, answer, sources=sources, meta=meta)
     conversation_repository.touch(db, conv)
+    if defer_maintenance:
+        return
+    run_maintenance(db, conv)
+
+
+def run_maintenance(db: Session, conv: Conversation) -> None:
+    """摘要 + 裁剪 —— `append_turn` 的"收尾段"，单独拆出来给流式路径复用。
+
+    与 `append_turn` 守的是**同一条顺序不变量**：先摘要、后裁剪（理由见上）。
+    """
     maybe_refresh_summary(db, conv)
     _trim_messages(db, conv)
 

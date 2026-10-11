@@ -9,6 +9,7 @@
 """
 
 import pytest
+from sqlalchemy import select
 
 from app.config import settings
 from app.core.exceptions import AppException
@@ -35,7 +36,11 @@ def _hit(chunk_id: int = 1, kb_id: int = 1, page: int | None = None,
 @pytest.fixture
 def rag(monkeypatch):
     """替掉检索与 LLM，并把调用记录暴露给用例。"""
-    box: dict = {"results": [], "search": [], "chat": [], "chat_error": None}
+    box: dict = {
+        "results": [], "search": [], "chat": [], "chat_error": None,
+        # 让用例能改"这次调用是怎么结束的" —— 见 test_truncated_turn_is_visible_in_history
+        "finish_reason": "stop",
+    }
 
     def fake_search(db, user, query, kb_ids=None, top_k=5, rerank=False):
         # rerank 从 Phase 7 起由 /api/chat 显式传 True，这里原样记下来供断言
@@ -59,7 +64,7 @@ def rag(monkeypatch):
         return {
             "answer": "入职满一年可享受带薪年假 [1]。",
             "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
-            "finish_reason": "stop",
+            "finish_reason": box["finish_reason"],
         }
 
     monkeypatch.setattr(vector_service, "search", fake_search)
@@ -370,3 +375,40 @@ def test_conversations_tables_untouched(client, make_user, rag, session_factory)
 
     with session_factory() as db:
         assert db.query(User).count() == user_count_before
+
+
+def test_truncated_turn_is_visible_in_history(client, make_user, rag, session_factory):
+    """`finish_reason == "length"` 必须跟着落进 `messages.meta`。
+
+    这是"答案被 max_tokens 截断"唯一的持久化通道。只在当场提示一次的话，
+    刷新页面、或翻历史回放时提示就消失了 —— 而"这条答案其实是半截的"恰恰
+    是回放时才最容易察觉（当场用户只当它答完了）。
+
+    前端回放把 meta 展开进 `data`，所以当场答的与翻出来的老消息共用
+    一个判据（`finish_reason === 'length'`）—— 这里钉的是它的源头。
+    """
+    from app.models import Message
+
+    admin = make_user("admin")
+    rag["results"] = [_hit()]
+    rag["finish_reason"] = "length"
+
+    data = client.post(
+        "/api/chat", json={"query": "年假"}, headers=admin["headers"]
+    ).json()["data"]
+    assert data["finish_reason"] == "length", "响应里没带 finish_reason，前端无从判断"
+
+    with session_factory() as db:
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.conversation_id == data["conversation_id"])
+                .order_by(Message.id)
+            )
+            .scalars()
+            .all()
+        )
+    assistant = [m for m in rows if m.role == "assistant"][-1]
+    assert assistant.meta["finish_reason"] == "length", (
+        "finish_reason 没进 meta —— 历史回放里的截断提示会静默失效"
+    )

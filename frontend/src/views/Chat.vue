@@ -1,8 +1,8 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, knowledgeApi, memoryApi } from '../api'
+import { chatApi, conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -84,7 +84,21 @@ async function loadConversations({ append = false } = {}) {
   }
 }
 
+// 进行中的流式请求（AbortController）。切换/新建会话、组件卸载时中止它 ——
+// 这不是"能不能停止生成"的观感问题，是正确性问题：旧流的 done 回调会把
+// conversation_id 写回 currentConvId，用户刚点开的空白界面会被后台那条旧流
+// 顶回上一个会话，下一问就进了错误的会话。
+let streamAbort = null
+
+function abortStream() {
+  if (streamAbort) {
+    streamAbort.abort()
+    streamAbort = null
+  }
+}
+
 function newConversation() {
+  abortStream()
   currentConvId.value = null
   messages.value = []
   convHasOlder.value = false
@@ -233,10 +247,10 @@ async function removeMemory(memory) {
 
 // ==================== 提问 ====================
 
-function buildPayload() {
+function buildPayload(text) {
   // 刻意**不传 top_k**：让后端的 RAG_TOP_K 配置生效。
   // 前端写死一个默认值等于把配置项架空 —— 之后在 .env 里改了它却不生效，还很难查出原因。
-  const payload = { query: query.value.trim() }
+  const payload = { query: text }
   // ⚠️ 关键：没选库时**不要**传 kb_ids=[]。
   // 后端把"空数组"理解为"允许范围为空"→ 直接返回空结果（这是防越权的设计）；
   // 不传该字段才是"用我全部可访问的库"。这两个含义完全不同。
@@ -246,31 +260,167 @@ function buildPayload() {
   return payload
 }
 
+// 流式渲染的节流间隔：token 来得很密，每块都写进响应式对象会让 Vue 不停重渲染；
+// 攒一小会儿再刷一次，肉眼看不出差别，渲染次数却能降一个数量级。
+const STREAM_FLUSH_MS = 50
+
 async function ask() {
   if (!canAsk.value) return
   const text = query.value.trim()
   messages.value.push({ role: 'user', content: text })
+  // ⚠️ 先组 payload、再清空输入框：buildPayload 读的正是 query.value，
+  // 顺序反了发出去的就是空问题（后端 min_length=1 直接 40000）。
+  const payload = buildPayload(text)
   query.value = ''
   asking.value = true
   await scrollToBottom()
 
   try {
-    const body = mode.value === 'agent' ? await chatApi.askAgent(buildPayload()) : await chatApi.ask(buildPayload())
-    const data = body.data
-    messages.value.push({ role: 'assistant', data, mode: mode.value })
-
-    // 后端可能在这次提问时刚建了会话 —— 记下来，并刷新列表（标题来自首问、活跃时间也变了）
-    if (data.conversation_id) {
-      currentConvId.value = data.conversation_id
-      await loadConversations()
-    }
-  } catch {
-    // 失败也留一条痕迹，否则用户会以为没发出去
-    messages.value.push({ role: 'assistant', error: true, content: '请求失败，请稍后重试' })
+    if (mode.value === 'agent') await askOnce(payload)
+    else await askStream(payload)
   } finally {
     asking.value = false
     await scrollToBottom()
   }
+}
+
+/** Agent 侧仍走**非流式**：它的价值在"多步决策"，逐字输出体现不出来（见 README）。 */
+async function askOnce(payload) {
+  let ok = false
+  try {
+    const body = await chatApi.askAgent(payload)
+    const data = body.data
+    messages.value.push({ role: 'assistant', data, mode: 'agent' })
+
+    // 后端可能在这次提问时刚建了会话 —— 记下来
+    if (data.conversation_id) currentConvId.value = data.conversation_id
+    ok = true
+  } catch {
+    // 失败也留一条痕迹，否则用户会以为没发出去
+    messages.value.push({ role: 'assistant', error: true, content: '请求失败，请稍后重试' })
+  }
+  // 刷新列表放 try/catch 外（它自己有 catch）：放里面的话，刷新一旦出错
+  // 会被当成"请求失败"，在已经答成功的消息下面再叠一条错误提示。
+  if (ok) await loadConversations()
+}
+
+/**
+ * 纯 RAG 走 SSE：先占一条空消息，再往里面逐块追加。
+ *
+ * 必须处理的细节：
+ *  1. **节流**（见 `STREAM_FLUSH_MS`）：新到的字先攒在普通变量里，定时器统一刷进响应式对象。
+ *  2. **以 `done.answer` 为准**：逐块渲染可能因节流丢帧，服务端拼好的那段才是完整答案，
+ *     最后覆盖一次 —— 保证"界面上看到的"与"历史里存的"逐字一致。
+ *  3. **中断时留住已生成的部分**：直接换成错误提示会让内容"闪一下消失"，用户以为白等了。
+ *     保留正文 + 一行说明，并**明说这次没进历史**。
+ *  4. **每次请求一个 AbortController**：新建/删除会话、组件卸载时中止旧流，
+ *     防止它的 done 回调把会话 id 写回一个用户已经离开的地方。
+ */
+async function askStream(payload) {
+  const slot = reactive({
+    role: 'assistant',
+    mode: 'rag',
+    data: { answer: '', sources: [], hit: null, reranked: null },
+    streaming: true,
+  })
+  messages.value.push(slot)
+
+  const controller = new AbortController()
+  streamAbort = controller
+
+  let pending = ''
+  let timer = null
+  let lastScrollAt = 0
+
+  const flush = () => {
+    if (pending) {
+      slot.data.answer += pending
+      pending = ''
+    }
+  }
+  const stopTimer = () => {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+
+  let ok = false
+  // 流一旦开始，后端就**可能已经落库**了（落库发生在 `yield done` 之前，与客户端
+  // 还连不连着无关）。所以"主动停止"和"连接被掐断"这两种也要刷会话列表 ——
+  // 不刷的话库里已经多了个会话，界面上却看不到，得刷新页面才冒出来。
+  let maybePersisted = false
+  try {
+    await streamChat(payload, {
+      meta: (d) => {
+        // 引用在答案之前就画出来 —— 用户先看到"依据来自哪几份文档"
+        Object.assign(slot.data, {
+          sources: d.sources || [],
+          hit: d.hit,
+          reranked: d.reranked,
+          searched_kb_ids: d.searched_kb_ids,
+          skipped_orphans: d.skipped_orphans,
+          model: d.model,
+        })
+      },
+      delta: (d) => {
+        pending += d.text
+        if (!timer) {
+          timer = setInterval(() => {
+            flush()
+            // 滚动也跟着节流：每个 token 都贴底，用户想往回翻会被一直拽回来
+            const now = Date.now()
+            if (now - lastScrollAt > 120) {
+              lastScrollAt = now
+              scrollToBottom()
+            }
+          }, STREAM_FLUSH_MS)
+        }
+      },
+      done: (d) => {
+        flush()
+        slot.data.answer = d.answer
+        if (d.usage) slot.data.usage = d.usage
+        // 与历史回放同源：后端把 finish_reason 写进了 meta，前端展开进 data，
+        // 所以模板里"当场答的"与"翻出来的老消息"用同一个判据（见 truncated 分支）。
+        slot.data.finish_reason = d.finish_reason
+        // 后端只在"答案完整返回、但落库失败"时给 saved=false ——
+        // 这是用户知道"这轮没进历史"的唯一通道，必须提示出来。
+        if (d.saved === false) slot.unsaved = true
+        // 写会话 id 前先确认这条请求还是"当前那条"：用户可能已经点了
+        // "新对话"（abort），此时写回去会把刚清空的界面又指向旧会话。
+        if (d.conversation_id && !controller.signal.aborted) {
+          currentConvId.value = d.conversation_id
+        }
+      },
+    }, { signal: controller.signal })
+    ok = true
+  } catch (e) {
+    flush()
+    if (e?.name === 'AbortError') {
+      // 用户主动停止。后端落库发生在 yield done 之前，停止的瞬间可能刚好已经落库，
+      // 前端无从判断 —— 所以文案保持中性，不下"存没存"的结论。
+      slot.stopped = true
+      maybePersisted = true
+    } else if (slot.data.answer && e?.code === 'STREAM_TRUNCATED') {
+      // 连接被掐断（反代空闲超时 / 网络抖动）：字节没送到，但**后端多半已经落完库**了 ——
+      // 落库不看客户端还在不在。所以这里不能用"未存入历史"那句，那是流内 error 的口径。
+      slot.cutoff = true
+      maybePersisted = true
+    } else if (slot.data.answer) {
+      slot.interrupted = true // 流内 error：后端明确不落库，可以下这个结论
+    } else {
+      slot.error = true
+      slot.content = e?.message || '请求失败，请稍后重试'
+    }
+  } finally {
+    stopTimer()
+    flush()
+    slot.streaming = false
+    if (streamAbort === controller) streamAbort = null
+  }
+  // 刷新列表放 try/catch 外（理由同 askOnce）：标题与活跃时间都变了
+  if (ok || maybePersisted) await loadConversations()
 }
 
 async function scrollToBottom() {
@@ -288,6 +438,9 @@ function scorePercent(score) {
 onMounted(async () => {
   await Promise.all([loadKbList(), loadConversations(), loadMemories()])
 })
+
+// 离开页面时别让流还挂着：它占着一条连接和一个后端线程，done 回调还会写已卸载组件的状态
+onBeforeUnmount(() => abortStream())
 </script>
 
 <template>
@@ -410,7 +563,26 @@ onMounted(async () => {
                 </template>
 
                 <template v-else>
-                  <div class="answer">{{ m.data.answer }}</div>
+                  <div class="answer">
+                    {{ m.data.answer }}<span v-if="m.streaming" class="caret"></span>
+                  </div>
+                  <div v-if="m.interrupted" class="stream-note">
+                    生成中断，本次未存入历史（半截答案不进历史，免得影响后续追问）
+                  </div>
+                  <div v-else-if="m.stopped" class="stream-note">
+                    已停止生成（本次回答可能未存入历史）
+                  </div>
+                  <div v-else-if="m.cutoff" class="stream-note">
+                    连接中断，回答可能不完整（已生成的部分多半已经存进历史了）
+                  </div>
+                  <div v-else-if="m.unsaved" class="stream-note">
+                    答案已完整返回，但这次没能存入历史
+                  </div>
+                  <!-- 被 max_tokens 截断：与上面几条**独立**判断（可能叠加出现）。
+                       判据来自 meta 里的 finish_reason，当场答的与翻出来的老消息同源。 -->
+                  <div v-if="m.data.finish_reason === 'length'" class="stream-note">
+                    答案达到长度上限被截断，后面的内容没生成完 —— 换个问法或让他分段回答
+                  </div>
 
                   <!-- 元信息：接口不同、回放历史与实时回答的字段也略有差异，逐项判空 -->
                   <div class="meta">
@@ -420,6 +592,9 @@ onMounted(async () => {
                     <!-- 脱敏消息：当时的口径全都取不回来了（meta 只剩 source），
                          不能说成"未使用知识库资料" —— 它其实用过资料，只是现在无权看了 -->
                     <el-tag v-if="m.data.redacted" size="small" type="warning">资料已无权访问</el-tag>
+                    <!-- 流式中 meta 事件还没到，hit 还是 null。
+                         这时不能落进下面那个三元 —— 会把"还没检索完"说成"未使用知识库资料"。 -->
+                    <el-tag v-else-if="m.data.hit === null" size="small" type="info">检索中…</el-tag>
                     <el-tag v-else size="small" :type="m.data.hit ? 'success' : 'info'">
                       {{ m.data.hit ? '有资料依据' : '未使用知识库资料' }}
                     </el-tag>
@@ -781,6 +956,28 @@ onMounted(async () => {
 .answer {
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 流式生成中的光标。用闪烁的竖条而不是转圈：转圈会让人以为整个请求还没开始，
+   而这里的事实是"答案正在一个个字出来"。 */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--el-color-primary);
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+@keyframes caret-blink {
+  to {
+    visibility: hidden;
+  }
+}
+/* 流中途断了：正文保留，只在下面加一行说明（并说清没进历史）。 */
+.stream-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 .err {
   color: var(--el-color-danger);

@@ -73,3 +73,8 @@ export const memoryApi = {
   create: (content) => http.post('/memories', { content }),
   remove: (id) => http.delete(`/memories/${id}`),
 }
+
+// 流式问答单独放一个文件（`stream.js`）：它**不能用 axios** ——
+// 拦截器整条建立在"响应体是统一信封"之上，而 SSE 是一帧帧事件。
+// 所以它走原生 fetch，并自己补回 401 跳登录与错误提示。
+export { streamChat } from './stream'
