@@ -175,8 +175,11 @@ def _trim_messages(db: Session, conv: Conversation) -> None:
     · **不可逆，所以每次真删都打 WARNING 并带上条数**。这类"悄悄减少用户数据"的动作
       必须有据可查，否则将来只会看到"我的对话怎么短了"。
 
-    ⚠️ 失败只记 warning、**不 rollback**：它跑在"本轮问答已写了一半"的事务里，
-    rollback 会把刚写好的这一轮一起丢掉 —— 那比少清理几条消息严重得多。
+    ⚠️ 清理放在 **SAVEPOINT**（`begin_nested`）里，失败只回滚这一小段：
+    它跑在"本轮问答已写了一半"的事务里，所以出错的影响面必须被切断 ——
+    保存点让"少清几条消息"和"本轮问答"彻底解耦，而不是赌 session 出错后还刚好能用。
+    （与 `agent_log_repository.prune_older_than` 同一口径；那边写了它**防不住**什么，
+    即整事务级故障如 MySQL 死锁，这里同理。）
 
     与 `CONVERSATION_MAX_HISTORY_TURNS` 的分工要说清：那个管的是**送进 Prompt 的范围**
     （数据仍在库里，随时回看）；这里管的是**库里留多少**。前者可逆，后者不可逆。
@@ -185,21 +188,22 @@ def _trim_messages(db: Session, conv: Conversation) -> None:
     if cap <= 0:
         return
 
+    removed = 0
     try:
-        total = message_repository.count_by_conversation(db, conv.id)
-        excess = total - cap
-        if excess <= 0:
-            return
-        if excess % 2:  # 凑成整轮
-            excess += 1
-        removed = message_repository.delete_oldest(db, conv.id, excess)
-        if removed:
-            logger.warning(
-                "会话消息超出上限，已删除最旧的 %s 条 conv=%s 上限=%s（按整轮删）",
-                removed, conv.id, cap,
-            )
+        with db.begin_nested():
+            total = message_repository.count_by_conversation(db, conv.id)
+            excess = total - cap
+            if excess > 0:
+                if excess % 2:  # 凑成整轮
+                    excess += 1
+                removed = message_repository.delete_oldest(db, conv.id, excess)
     except Exception as exc:  # noqa: BLE001
         logger.warning("会话消息保留清理失败（不影响本次问答）conv=%s: %s", conv.id, str(exc)[:200])
+        return
+    if removed:
+        logger.warning(
+            "会话消息超出上限，已删除最旧的 %s 条 conv=%s 上限=%s（按整轮删）",
+            removed, conv.id, cap)
 
 
 def list_conversations(

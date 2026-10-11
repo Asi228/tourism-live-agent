@@ -508,6 +508,52 @@ def test_old_agent_logs_are_pruned(client, make_user, agent, session_factory, mo
     assert len(left) == 1, "应当只清过期的，别把刚写的那条也带上"
 
 
+def test_prune_failure_does_not_lose_the_turn(
+    client, make_user, agent, session_factory, monkeypatch
+):
+    """清理失败，不能连累本轮问答 —— SAVEPOINT 要保证的就是这件事。
+
+    与 `_trim_messages` 那条同源（会话侧），这条盯的是**审计侧**（`prune_older_than`）：
+    它跑在"本轮已写了一半"的事务里，若清理出错把整个事务带走，用户虽然照样拿到答案，
+    但这一轮的审计与对话都没落库 —— 那种丢法不报错、事后也查不出来。
+
+    ⚠️ 失败刻意用**真的会报错的 SQL**（DELETE 一张不存在的表）制造，而不是在 Python 里
+    `raise`：只有走到 DB 层的错误才可能把 session 弄进"必须回滚"的状态；Python 异常
+    模拟不出来，那样写的用例对"没有 SAVEPOINT"的实现也会通过，等于什么都没测。
+    """
+    from sqlalchemy import text
+
+    from app.models import AgentLog, Message
+    from app.repositories import agent_log_repository
+
+    class _BadDelete:
+        """冒充 `delete()` 的返回值：`.where()` 照样能链，但一执行就撞一张不存在的表。"""
+
+        def where(self, *args, **kwargs):
+            return text("DELETE FROM __no_such_table__")
+
+    monkeypatch.setattr(settings, "AGENT_LOG_RETENTION_DAYS", 30)
+    monkeypatch.setattr(agent_service, "_last_prune_at", None)   # None = 从未清理过，放行节流
+    monkeypatch.setattr(agent_log_repository, "delete", lambda _model: _BadDelete())
+
+    admin = make_user("admin")
+    body = _ask(client, admin)
+    assert body["code"] == 0, body
+
+    conv_id = body["data"]["conversation_id"]
+    with session_factory() as db:
+        logs = db.query(AgentLog).filter(AgentLog.user_id == admin["id"]).all()
+        rows = (
+            db.query(Message)
+            .filter(Message.conversation_id == conv_id)
+            .order_by(Message.id)
+            .all()
+        )
+
+    assert len(logs) == 1, "清理失败把本轮的审计也带走了"
+    assert [m.role for m in rows] == ["user", "assistant"], "清理失败把本轮的对话也带走了"
+
+
 def test_agent_log_prune_is_throttled(session_factory, monkeypatch):
     """清理要**节流**，否则每次提问都会顺手发一条 DELETE。"""
     from app.repositories import agent_log_repository

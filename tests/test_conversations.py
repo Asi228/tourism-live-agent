@@ -544,6 +544,39 @@ def test_message_cap_rounds_to_whole_turn(client, make_user, chat_env, monkeypat
     assert len(detail["messages"]) == 4, "奇数上限应当向下取到整轮"
 
 
+def test_trim_failure_does_not_lose_the_turn(
+    client, make_user, chat_env, session_factory, monkeypatch
+):
+    """保留清理失败，不能连累本轮问答 —— SAVEPOINT 要保证的就是这件事。
+
+    ⚠️ 这里刻意用**真的会报错的 SQL**（不存在的表）来制造失败，而不是在 Python 里 `raise`：
+    只有走到 DB 层的错误才可能把 session 弄进"必须回滚"的状态；Python 异常模拟不出来，
+    那样写出来的用例对旧实现也会通过，等于什么都没测。
+    """
+    from sqlalchemy import text
+
+    from app.repositories import message_repository
+
+    monkeypatch.setattr(settings, "CONVERSATION_MAX_MESSAGES", 1)   # 逼它每轮都触发清理
+
+    def boom(db, conversation_id, count):
+        db.execute(text("SELECT * FROM __no_such_table__"))
+
+    monkeypatch.setattr(message_repository, "delete_oldest", boom)
+    admin = make_user("admin")
+
+    body = _ask(client, admin, "年假几天")
+    assert body["code"] == 0, body
+
+    with session_factory() as db:
+        rows = db.scalars(
+            select(Message)
+            .where(Message.conversation_id == body["data"]["conversation_id"])
+            .order_by(Message.id)
+        ).all()
+    assert [m.role for m in rows] == ["user", "assistant"], "清理失败把这一轮问答也带走了"
+
+
 def test_retention_off_keeps_everything(client, make_user, chat_env, monkeypatch):
     """0 = 不限，一项关掉不影响另一项。"""
     monkeypatch.setattr(settings, "CONVERSATION_MAX_MESSAGES", 0)

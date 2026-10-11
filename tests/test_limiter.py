@@ -10,6 +10,8 @@
 conftest 里默认把限流关了，本文件自己打开。
 """
 
+import time
+
 import pytest
 
 from app.config import settings
@@ -117,6 +119,32 @@ def test_key_carries_window_bucket_and_ttl():
     assert key.startswith(f"{KEY_PREFIX}chat:1:")
     assert key.rsplit(":", 1)[1].isdigit(), "key 里没带窗口序号"
     assert fake.ttl[key] == 61
+
+
+def test_window_bucket_comes_from_wall_clock():
+    """窗口序号必须由**墙上时钟**算出来 —— 这条挡住"顺手统一时钟"。
+
+    `time.monotonic()` 的基线是"**各进程各自**的开机时刻"：多 worker 下每个进程算出的
+    窗口序号都不同 → key 不同 → 计数各算各的 → **跨进程限流直接失效**，
+    而那正是这个文件存在的全部理由。
+
+    光写注释没用（内存替身的用例照样全绿、真 Redis 的集成用例默认跳过），
+    所以这里直接比对 key 里的序号与 `time.time()` 算出来的是否一致。
+    """
+
+    fake = _FakeRedis()
+    _limiter(fake).allow("chat:1", limit=1, window=60)
+
+    (key,) = fake.store
+    bucket = int(key.rsplit(":", 1)[1])
+    expected = int(time.time()) // 60
+
+    assert abs(bucket - expected) <= 1, (
+        "窗口序号不是墙上时钟算的（拿到 %s，按 time.time() 应为 %s）—— "
+        "换成 monotonic 之后多 worker 会各算各的桶，跨进程限流就失效了" % (bucket, expected)
+    )
+    # 量级兜底：monotonic 是"开机秒数"，开机多久都不可能到这个量级
+    assert bucket > 10 ** 6, "序号量级不像 Unix 时间戳（monotonic 会小好几个数量级）"
 
 
 def test_two_workers_share_one_counter():

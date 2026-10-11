@@ -70,19 +70,32 @@ def prune_older_than(db: Session, days: int) -> int:
 
     **不 commit**：口径与 `create` 一致 —— 事务边界归 service 层。
 
-    ⚠️ 失败时**只记 warning、不 rollback**。这一点和 `create` 刻意不同：
-    `create` 失败时 session 已经被搞脏、必须清毒，而它此刻还没来得及写业务数据；
-    而这里（留存的清理）跑在"这一轮问答已经写了一半"的事务里，
-    一旦 rollback 就会把**本轮刚写好的审计与对话一起丢掉** —— 那比"少清几条旧日志"严重得多。
-    所以宁可让它在最终 commit 时按普通 DB 错误暴露出来。
+    ⚠️ 清理放在 **SAVEPOINT**（`begin_nested`）里，失败只回滚这一小段。
+    为什么必须是保存点而不是"捕获异常就算了"：这条删除跑在"本轮问答已经写了一半"的事务里
+    （审计 + 对话都在同一个事务里待提交），所以清理出错的**影响面必须被切断**——
+    保存点让"少清几条旧日志"和"本轮问答"彻底解耦，回滚点由我们自己指定，
+    而不是赌 session 出错后还刚好能用。
+
+    ⚠️ 但**别把它的能力说过头**（这点实测过，见下）：它防的是"语句级 / flush 级错误
+    把外层事务带坏"，**防不住整事务级故障**——MySQL 的死锁(1213)、连接断开会让 InnoDB
+    把整个事务回滚，那种情况下本轮问答**两种实现都保不住**（保存点也活不过整事务回滚）。
+    换句话说：这是一个稳定的兜底写法，不是"死锁保险"。想真正防死锁只能把清理挪到
+    独立事务里去，那是另一个量级的改动，当前不值得。
     """
     if days <= 0:
         return 0
     cutoff = datetime.now() - timedelta(days=days)
+    removed = 0
     try:
-        result = db.execute(delete(AgentLog).where(AgentLog.created_at < cutoff))
-        db.flush()
-        return result.rowcount or 0
+        with db.begin_nested():
+            # 刻意**不 flush**（别顺手加回来）：这是一条 Core DELETE，`rowcount` 直接可用，
+            # 不需要 flush 帮忙；而 session 是 `autoflush=False`，所以保存点里只有这一条删除。
+            # 若在这里 flush，任何"已 add 但未提交"的行都会被写进保存点 —— 回滚保存点时它们在
+            # 库层面被撤掉，只能靠 SQLAlchemy 的状态恢复机制在 commit 时重发。那种隐式依赖不该
+            # 留着：换个版本、或上游改一下写入顺序，语义就可能悄悄变。
+            result = db.execute(delete(AgentLog).where(AgentLog.created_at < cutoff))
+            removed = result.rowcount or 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理过期 agent_logs 失败（不影响本次回答）：%s", str(exc)[:200])
         return 0
+    return removed

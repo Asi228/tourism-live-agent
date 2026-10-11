@@ -77,9 +77,17 @@ class RedisFixedWindowLimiter:
 
     def allow(self, key: str, limit: int, window: int) -> tuple[bool, int]:
         """记一次访问，返回 `(是否放行, 建议重试秒数)`。Redis 不可用 → 放行。"""
+        # 冷却判断用 monotonic：单调时钟不会因为系统时间被调整而跳变，
+        # 而且它只在本进程内比较（_down_until 是本进程自己写的），没有跨进程一致性要求。
         if time.monotonic() < self._down_until:
             return True, 0
 
+        # ⚠️ 窗口序号必须用**墙上时钟** time.time()，这里不能用 monotonic —— 这是硬约束：
+        #    monotonic 的基线是"**各进程各自**的开机时刻"，多 worker 下每个进程算出的
+        #    窗口序号都不同 → key 不同 → 计数各算各的 → **跨进程限流直接失效**，
+        #    而那正是这个文件存在的全部理由。
+        #    （反过来，上面那个冷却只在进程内比较，所以用 monotonic 才对。
+        #     同一个函数里两个时钟，是刻意分工，别"顺手统一"。）
         now = int(time.time())
         bucket = now // window
         redis_key = "%s%s:%s" % (KEY_PREFIX, key, bucket)
