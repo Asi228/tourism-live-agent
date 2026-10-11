@@ -351,7 +351,7 @@ def _stream_events(
     ⚠️ 入参是 `_StreamPlan`（纯数据）而不是 `Prepared`：见该类说明 ——
     请求 session 已经关了，这里没有也不该有 ORM 对象。
 
-    落库分两步（见 `_persist_after_stream` / `_maintain_after_stream`）：
+    落库分两步（见 `_persist_after_stream` / `conversation_service.maintain_after_stream`）：
     先写消息并 `yield done` 把答案交付出去，**再**补摘要与裁剪。
     """
 
@@ -369,7 +369,7 @@ def _stream_events(
             "saved": saved_id is not None,
         }}
         if saved_id is not None:
-            _maintain_after_stream(saved_id)
+            conversation_service.maintain_after_stream(saved_id)
         return
 
     # ---- 有资料：先给引用，再逐字吐 ----
@@ -450,7 +450,7 @@ def _stream_events(
         "saved": saved_id is not None,
     }}
     if saved_id is not None:
-        _maintain_after_stream(saved_id)
+        conversation_service.maintain_after_stream(saved_id)
 
 
 def _meta_event(data: dict, conversation_id: int | None) -> dict:
@@ -484,7 +484,7 @@ def _persist_after_stream(
     失败路径根本走不到这里。
 
     摘要与裁剪**不在这里做**（`defer_maintenance=True`）：摘要是同步的模型调用，
-    放在这一步会让"最后一个字吐完了、光标还在转"。它们由 `_maintain_after_stream`
+    放在这一步会让"最后一个字吐完了、光标还在转"。它们由 `conversation_service.maintain_after_stream`
     在 `done` 事件**之后**补做 —— 两步必须一起推迟（见 `append_turn` 的说明）。
     """
     try:
@@ -510,33 +510,3 @@ def _persist_after_stream(
             "流式问答落库失败（答案已返回给用户）user_id=%s: %s", user_id, str(exc)[:200]
         )
         return None
-
-
-def _maintain_after_stream(conversation_id: int) -> None:
-    """流收尾的"维护"：摘要 + 裁剪，在 `done` 交付完答案**之后**补做（失败只 warning）。
-
-    为什么不跟落库放在一起：`maybe_refresh_summary` 里挂着一次**同步的模型调用**
-    （最多 400 token），放在 done 之前，用户就得盯着转动的光标等它 —— 非流式时
-    它藏在"整段响应"里看不出来，流式下是肉眼可见的停滞。挪到这里，答案已经
-    交付完，模型调用再慢也不挡用户。
-
-    顺序仍然恪守 P12 的硬约束：**先摘要、后裁剪**（`run_maintenance`）——
-    裁剪会永久删掉滑出窗口的旧消息，摘要是它们唯一的底。两步同在一个新开的
-    session 里按序执行，一起 commit。
-
-    失败只 warning，失败方向是安全的：摘要字段没动、下一轮会重试（机会式）；
-    裁剪晚一轮执行只是**多留**几条消息。客户端在 done 一到就断开时，生成器被
-    关闭、这一步会跳过 —— 同样只是推迟，不丢数据。
-    """
-    try:
-        with _session_factory() as db:
-            conv = db.get(Conversation, conversation_id)
-            if conv is None:
-                logger.warning("流式收尾失败：会话已不存在 conv=%s", conversation_id)
-                return
-            conversation_service.run_maintenance(db, conv)
-            db.commit()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "流式收尾（摘要/裁剪）失败 conv=%s: %s", conversation_id, str(exc)[:200]
-        )

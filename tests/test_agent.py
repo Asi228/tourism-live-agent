@@ -458,8 +458,18 @@ def test_repository_does_not_finish_the_transaction(session_factory, monkeypatch
 
     with session_factory() as db:
         calls = {"commit": 0, "flush": 0}
+        real_flush = db.flush
         monkeypatch.setattr(db, "commit", lambda: calls.__setitem__("commit", calls["commit"] + 1))
-        monkeypatch.setattr(db, "flush", lambda: calls.__setitem__("flush", calls["flush"] + 1))
+        # ⚠️ 记数的同时**必须真的 flush**：审计写在 SAVEPOINT 里（`create` 有注释），
+        # 而 nested transaction 靠 flush 把待写入的行发出去。若这里换成只计数的假
+        # flush，行会一直挂着 pending，SQLAlchemy 就会"flush 完还有 pending"反复重试
+        # 直到 100 次上限 —— 那时红的是测试自己，不是被测代码。
+        monkeypatch.setattr(
+            db, "flush",
+            lambda *a, **kw: (
+                calls.__setitem__("flush", calls["flush"] + 1) or real_flush(*a, **kw)
+            ),
+        )
 
         got = agent_log_repository.create(
             db, user_id=1, query="q", answer="a", hit=True, source_count=1,
@@ -467,7 +477,9 @@ def test_repository_does_not_finish_the_transaction(session_factory, monkeypatch
         )
 
     assert got is not None
-    assert calls["flush"] == 1, "repo 应当只 flush"
+    # 不再钉"恰好 flush 一次"：那是实现细节，SAVEPOINT 会让它变成多次。
+    # 这条用例的命脉是下面那条 —— 事务边界必须在 service 层。
+    assert calls["flush"] >= 1, "repo 得把审计写出去，否则 service 的 commit 无内容可提交"
     assert calls["commit"] == 0, "repository 不应自己结束事务"
 
 

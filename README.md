@@ -519,8 +519,18 @@ Phase 12 加了一段**滚动摘要**（`conversations.summary`）把丢掉的�
   所以它**进了 `messages.meta`**（`_turn_meta`）：当场答的与翻历史回放的共用同一个判据，只在当场
   提示一次的话刷新页面就没了，而"这条答案其实是半截的"恰恰是回放时才最容易察觉（当场只当它答完了）。
   其余值前端不渲染。（Agent 路径没有这个字段：它内部多步调用，末步的 finish_reason 无意义。）
-- **Agent 侧仍是非流式**。它的价值在"多步决策的进度"而不是逐字输出，要做应该是节点级事件，
-  值得单开一轮；界面上 `mode === 'agent'` 走原路径，两条路的差别一眼可见。
+- **Agent 侧已同样支持流式**（Phase 14：`POST /api/agent/chat/stream`），但吐的是
+  **节点级进度**而不是逐字 —— 这条口径 README 在 P8 就定了：Agent 的价值在
+  "多步决策的进度"（判定要不要检索 → 资料够不够 → 要不要换个词再查一轮）而不在
+  "一个字一个字地蹦"。真要逐字得给 `generate` 节点注入一条输出通道，复杂度再上一档，
+  留给后续。两条流式 SSE 走同一个 `app/api/sse.py` 的帧格式与同一份前端渲染
+  （`Chat.vue` 的 `askStream`，按 `agentMode` 切 url）—— 只有一份实现，才不会漂移。
+- 🔴 **流式路径里，图必须用新开的 session 装配**。`build_graph(db, user, …)` 是
+  **闭包捕获 db** 的（graph.py 有注释解释为什么这么设计），而请求 session 在响应体
+  开始迭代**之前**就关了。P13 那次踩的只是"流里碰了一个 ORM 对象"，Agent 这里踩的是
+  **整个图的每个节点都在碰 db**（检索读正文、长期记忆读库）—— 一旦抓回请求 session，
+  流式这条路会全线炸，而同步路径 `/api/agent/chat` 的用例一条都不会红。
+  `tests/test_agent_stream.py` 用 Session 对象身份比对钉着它（变异验证过：改回去就红）。
 
 ⚠️ 两个容量/连通性提醒：SSE 是**长连接**，每条连接会占住一个线程直到流结束（Starlette 的线程池默认 40），
 单 worker 下并发几十路流就会打满；同时**空闲超过代理的 read_timeout 会被掐断** —— 首 token 之前 `meta`
@@ -543,7 +553,7 @@ Phase 12 加了一段**滚动摘要**（`conversations.summary`）把丢掉的�
 | 历史压缩 | **已实现摘要压缩**（Phase 12）：滑出「最近 N 轮」窗口的旧轮次会被**增量**压成一段滚动摘要（`conversations.summary` + `summary_upto_id`）并拼进系统提示词，所以长对话里更早聊过的内容不会凭空消失。**默认关**（`CONVERSATION_SUMMARY_ENABLED`）—— 它是一次"多调一次模型换上下文"的买卖，关掉时提示词与从前逐字一致。触发阈值 `CONVERSATION_SUMMARY_TRIGGER_TURNS`(10)、提示词预算 `CONVERSATION_SUMMARY_MAX_CHARS`(800)。⚠️ 它与消息上限有**交叉约束**：`CONVERSATION_MAX_MESSAGES` 必须 ≥ `(CONVERSATION_MAX_HISTORY_TURNS + TRIGGER_TURNS) × 2`，否则摘要永远攒不够输入（一次都不生成）而裁剪照常删 —— 所以启动时就会拒绝这种配置 |
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布。⚠️ 注意：光累积**正样本**（库里有答案的问题）定不出这个阈值，需要的是"**明明库里没有**"时分数能到多高的上界 |
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
-| 流式输出 | **纯 RAG 已支持流式**（`POST /api/chat/stream`，SSE，逐字返回，见第 10 节）；**Agent 仍是整段返回** —— 它的价值在"多步决策的进度"，要做应该是节点级事件而不是逐字输出 |
+| 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
 | 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期 |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
 | Rerank | 已接入。`/chat` 默认开启，`/search` 默认关闭以便对比效果 |

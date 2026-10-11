@@ -59,6 +59,26 @@ def session_factory():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_tables():
+    """⚠️ 每个用例都从**干净的表**开始。
+
+    以前没有这个 fixture，所有用例共享库里的累积数据 —— 于是断言只能写成
+    "调用前后的差值"，而差值断言一旦有人中途多写一条，报错就变成
+    "应差 2 实差 3"，归因线索全丢。在这里清一次比在每条断言里绕便宜得多。
+
+    默认角色一并重建：`drop_all` 会把 `client` 那个 session 级 fixture 建好的
+    角色表内容带走，所以每次重建都要把它放回去（注册/登录都依赖它）。
+    """
+    Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
+    with TestSessionLocal() as db:
+        for item in DEFAULT_ROLES:
+            db.add(Role(**item))
+        db.commit()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _disable_rate_limit(monkeypatch):
     """默认关掉限流。
 

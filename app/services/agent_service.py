@@ -13,6 +13,7 @@
 
 import logging
 import time
+from collections.abc import Iterator
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.agent.graph import ANSWER_NO_EVIDENCE, build_graph
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.db.session import SessionLocal
 from app.models.user import User
 from app.repositories import agent_log_repository
 from app.services import conversation_service
@@ -34,8 +36,13 @@ def _write_log(db: Session, **fields) -> bool:
     不在这里 commit 的原因：本轮要落的东西不止审计，还有对话消息 ——
     分两次提交会留下"有审计没对话"或反过来，一次 commit 才能保证它们同进同出。
 
-    repo 内部已吞掉异常并返回 None（写不进去也不会让用户拿不到答案），
-    失败时它自己 rollback 清毒，所以调用方可以安全地接着写对话历史。
+    repo 内部已吞掉异常并返回 None（写不进去也不会让用户拿不到答案）。
+
+    ⚠️ 注意"返回 None"的含义是**只有审计那一段回滚了**：repo 把它包在 SAVEPOINT 里，
+    失败时回滚的是保存点，session 仍然干净、本轮事务里已经 flush 出来的东西
+    （比如刚新建的会话行）**不会被带走**，所以调用方可以安全地接着写对话历史。
+    （早期这里写的是"它自己 rollback 清毒"，把保护范围说过头了 —— 整个 session 的
+    rollback 会让会话行一起消失，那才是危险的。）
     """
     ok = agent_log_repository.create(db, **fields) is not None
     if ok:
@@ -199,8 +206,10 @@ def answer(
     }
 
     # 顺序有讲究：**先审计、再对话、最后统一提交**。
-    # 万一审计写失败，repo 内部会 rollback 清毒 —— 那时对话数据还没写进去，
-    # 所以不会被一起带走（反过来的顺序会让"审计失败"升级成"这轮对话丢了"）。
+    # 万一审计写失败，repo 只回滚它自己那个 SAVEPOINT（见 `_write_log` 的说明），
+    # 本轮已经 flush 出来的会话行**不会被带走** —— 这正是保存点在这里的全部意义。
+    # 若改成"审计失败就回滚整个事务"，会级联出"会话没了、消息却还往里插"的
+    # 孤儿数据（MySQL 上更糟：外键直接 1452，把一次成功的问答变成 500）。
     _write_log(
         db, user_id=user.id, query=query, answer=result["answer"], hit=result["hit"],
         source_count=len(sources), iterations=result["iterations"], steps=steps,
@@ -235,3 +244,245 @@ def answer(
         result["answer_mode"], len(sources), (usage or {}).get("total_tokens"), elapsed,
     )
     return result
+
+
+# ==================== 流式（SSE，节点级进度）====================
+#
+# 与 rag_service 的流式**同协议、同套路**：
+#     status → step*N → meta → done      （error 只在流开始之后）
+# 差别只是中间那段不是逐字，而是**多步决策的进度** —— README 早就定了这个口径：
+# Agent 的价值在"它为什么慢"（判定要不要检索、资料够不够、要不要换个词再查一轮），
+# 而不在"答案一个字一个字地蹦"。真要逐字就得给 generate 节点注入一条输出通道
+# （闭包塞一个 sink），复杂度再上一档，留给后续。
+#
+# ⚠️ **实现方式选了同步而非 async**：langgraph 同时提供同步的 `graph.stream()`，
+# 选它就不必把端点改成 async 生成器，可以直接复用 P13 那一整套机制（普通函数 +
+# 同步生成器 + Starlette 线程池迭代）。代价是心跳仍然发不出去 —— 与 rag_service
+# 那条路的结论一致，等真要部署到反代后面再一起解决。
+
+# 流式路径要**自己开一个 session**（理由见 `rag_service._persist_after_stream`）。
+# 做成模块级变量而不是直接调 `SessionLocal()`，是为了给测试一个明确的替换点 ——
+# 与 rag_service 同款，用例把它指向测试库即可，否则会写进真 MySQL。
+_session_factory = SessionLocal
+
+
+def stream_answer(
+    db: Session,
+    user: User,
+    query: str,
+    kb_ids: list[int] | None = None,
+    top_k: int | None = None,
+    conversation_id: int | None = None,
+) -> Iterator[dict]:
+    """流式 Agent 问答：返回 SSE 事件生成器。
+
+    ⚠️ **这个函数本身不是生成器**（函数体里没有 `yield`），是普通函数：先把准备
+    工作跑完再返回内部生成器。理由与 `rag_service.stream_answer` 完全一致 ——
+    FastAPI 只在开始迭代 body 时才发响应头，准备工作必须赶在那之前完成，
+    "Agent 未启用" / 越权 404 / 配额到顶才能走统一信封，而不是降级成流里的 error。
+
+    准备工作里**只做归属校验**：会话不是自己的要趁早 404（也顺带省下一整轮多步
+    推理的钱）。历史、摘要、图本身都推迟到流式阶段 —— 因为那里必须用**新 session**，
+    见 `_agent_stream_events` 的说明。
+    """
+    if not settings.AGENT_ENABLED:
+        raise AppException(
+            ErrorCode.PARAM_ERROR, "Agent 功能当前未启用，请改用 /api/chat"
+        )
+    if conversation_id is not None:
+        conversation_service.get_owned(db, user, conversation_id)
+
+    return _agent_stream_events(user.id, query, kb_ids, top_k, conversation_id)
+
+
+def _agent_stream_events(
+    user_id: int,
+    query: str,
+    kb_ids: list[int] | None,
+    top_k: int | None,
+    conversation_id: int | None,
+) -> Iterator[dict]:
+    """真正产事件的地方（`stream_answer` 的准备工作已经跑完）。
+
+    🔴 **图必须用这里新开的 session 装配，绝不能用请求 session**。
+    `build_graph(db, user, ...)` 是**闭包捕获 db** 的（graph.py 的注释解释了为什么
+    这么设计），而请求 session 在响应体开始迭代**之前**就关了（fastapi 0.115.6 的
+    yield 依赖早退，P13 已坐实）。P13 那次踩的只是"流里碰了一个 ORM 对象"，这里踩的
+    是**整个图的每个节点都在碰 db**（检索要读正文、长期记忆要读库）—— 一旦用错
+    session，流式这条路会全线炸，而同步路径的测试一条都红不了。
+    """
+    started = time.monotonic()
+    yield {"event": "status", "data": {"phase": "start"}}
+
+    saved_id: int | None = None
+
+    with _session_factory() as db:
+        user = db.get(User, user_id)
+        if user is None:
+            logger.warning("Agent 流式：用户已不存在 user_id=%s", user_id)
+            yield {"event": "error", "data": {
+                "code": ErrorCode.NOT_FOUND, "message": "用户不存在",
+            }}
+            return
+
+        conv = conversation_service.ensure_conversation(db, user, conversation_id, query)
+        history = conversation_service.load_history(db, conv.id)
+
+        graph = build_graph(db, user, kb_ids, top_k)
+        initial = {
+            "query": query,
+            "kb_ids": kb_ids,
+            "top_k": top_k or settings.RAG_TOP_K,
+            "history": history,
+            "summary": conversation_service.summary_section(conv),
+            "retrieved": [],
+            "iterations": 0,
+            "steps": [],
+            "usage": {},
+        }
+        recursion_limit = max(8, settings.AGENT_MAX_ITERATIONS * 2 + 6)
+
+        # ---- 跑图：每完成一个节点就吐一个 step 事件 ----
+        final: dict = {}
+        failure: str | None = None
+        try:
+            for update in graph.stream(
+                initial,
+                config={"recursion_limit": recursion_limit},
+                stream_mode="updates",
+            ):
+                for node_name, patch in update.items():
+                    final.update(patch)
+                    yield {"event": "step", "data": _step_event(node_name, patch)}
+        except Exception as exc:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            if type(exc).__name__ == "GraphRecursionError":
+                failure = "Agent 步骤数超出上限已中止，请把问题拆小一点再问"
+                logger.warning("Agent 流式触发 recursion_limit=%s", recursion_limit)
+            else:
+                failure = "Agent 执行失败，请稍后重试"
+                logger.warning("Agent 流式执行失败: %s", str(exc)[:300])
+
+            # 同非流式路径：**先 rollback 再写审计**，让这条审计仍能独立提交。
+            # 本轮对话不落库（多步推理没走完，历史里不该留半截）。
+            db.rollback()
+            if _write_log(
+                db, user_id=user_id, query=query, answer=None, hit=False,
+                source_count=0, iterations=0, steps=None, total_tokens=0,
+                elapsed_ms=elapsed, error_msg=failure,
+            ):
+                db.commit()
+            yield {"event": "error", "data": {
+                "code": ErrorCode.LLM_ERROR, "message": failure,
+            }}
+            return
+
+        elapsed = int((time.monotonic() - started) * 1000)
+        steps = final.get("steps", [])
+        usage = final.get("usage") or None
+        sources = final.get("sources", [])
+        iterations = final.get("iterations", 0)
+        # 这几个值在 `with` 退出之后还要用 —— 提前取出来，届时 ORM 对象已经 detached
+        answer = final.get("answer") or ""
+        hit = bool(final.get("hit"))
+        answer_mode = final.get("answer_mode") or ANSWER_NO_EVIDENCE
+        # 真实检索范围由 retrieve 节点带出来（已与权限求过交集）。iterations=0 表示
+        # 本次没查任何库，给 [] —— None 的语义是"管理员不受限"，不能混用。
+        searched_kb_ids = final.get("searched_kb_ids") if iterations else []
+
+        # 引用先给出去，让用户先看到"依据来自哪几份文档"
+        yield {"event": "meta", "data": {
+            "hit": hit,
+            "sources": sources,
+            "answer_mode": answer_mode,
+            "iterations": iterations,
+            "searched_kb_ids": searched_kb_ids,
+            "model": settings.LLM_MODEL,
+            # 只在客户端本来就传了时回显：新建的会话要等落库成功才有权威 id
+            "conversation_id": conversation_id,
+        }}
+
+        # 顺序照搬非流式：**先审计、再对话、最后统一提交**。审计写失败时只回滚
+        # 它自己的 SAVEPOINT，会话行留得住 —— 见 `_write_log` 的说明。
+        # ⚠️ 这里还有一层非流式没有的风险：**整个 new session 的提交是一次性的**。
+        # 审计/落库/提交任何一步抛异常，都会让这条流以一个没有内容的
+        # `done` 收场（用户看着答案生成完了却什么都没收到）—— 所以下面包了 try。
+        try:
+            _write_log(
+                db, user_id=user_id, query=query, answer=answer, hit=hit,
+                source_count=len(sources), iterations=iterations, steps=steps,
+                total_tokens=(usage or {}).get("total_tokens") or 0, elapsed_ms=elapsed,
+            )
+            conversation_service.append_turn(
+                db,
+                conv,
+                query,
+                answer,
+                sources=sources,
+                meta={
+                    "source": "agent",     # 前端回放历史时据此决定要不要画执行轨迹
+                    "hit": hit,
+                    "answer_mode": answer_mode,
+                    "model": settings.LLM_MODEL,
+                    "usage": usage,
+                    "iterations": iterations,
+                    "searched_kb_ids": searched_kb_ids,
+                    "elapsed_ms": elapsed,
+                    # 轨迹一起存：它是"这次为什么绕了两圈"的唯一证据。
+                    "steps": steps,
+                },
+                defer_maintenance=True,
+            )
+            db.commit()
+            saved_id = conv.id
+
+            logger.info(
+                "Agent 流式问答完成 user_id=%s conv=%s 历史=%s轮 节点数=%s 检索轮数=%s "
+                "模式=%s 引用=%s tokens=%s 耗时=%sms",
+                user_id, conv.id, len(history) // 2, len(steps), iterations,
+                answer_mode, len(sources), (usage or {}).get("total_tokens"), elapsed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 答案已经完整地算出来了，只是没能写进历史 —— 与 RAG 那条路同一口径：
+            # **不能把它判成失败**（用户到手的答复不该因为一次 DB 抖动变成断流），
+            # 与 `rag_service._persist_after_stream` 同一口径：给 `done{saved: false}`，
+            # 让前端提示"这次没能存入历史"。
+            # 不这么做的话，`saved` 这个字段在 Agent 路上恒为 true，等于废掉的守门。
+            db.rollback()
+            logger.warning(
+                "Agent 流式问答落库失败（答案已返回给用户）user_id=%s: %s",
+                user_id, str(exc)[:200],
+            )
+
+    # `with` 已退出（session 关闭）—— 下面只用纯值，绝不碰 ORM 对象
+    yield {"event": "done", "data": {
+        "answer": answer,
+        "usage": usage,
+        "answer_mode": answer_mode,
+        "iterations": iterations,
+        "steps": steps,
+        "elapsed_ms": elapsed,
+        "conversation_id": saved_id,
+        "saved": saved_id is not None,
+    }}
+    if saved_id is not None:
+        conversation_service.maintain_after_stream(saved_id)
+
+
+def _step_event(node: str, patch: dict) -> dict:
+    """一个节点完成时的事件载荷。
+
+    取自 `graph._step` 已经攒好的轨迹项，再补一个 `node` 字段便于前端按节点名
+    分组/着色。**刻意不带答案**：节点还可能走到失败分支，答案提前吐到界面上会
+    变成"闪一下就没了"。答案统一在 `done` 里给。
+    """
+    # langgraph 在节点返回 None 时给出的是 `{"node": None}` —— 补丁本身不是 dict。
+    # 不兜这一下就是 AttributeError，而且发生在**响应已经开始之后**：前端看不到
+    # `error`（生成器直接炸了），只会见到一条静默断流。一行换掉一整类生产事故。
+    patch = patch or {}
+    trail = patch.get("steps") or []
+    last = dict(trail[-1]) if trail else {}
+    last.pop("node", None)
+    return {"node": node, **last}
+
+

@@ -13,15 +13,14 @@ Phase 6 的出口：问题进、答案 + 引用出。
 所以"检索到哪些资料、要不要调模型"的判断**只有一份**。
 """
 
-import json
 import logging
-from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
+from app.api.sse import SSE_HEADERS, iter_sse
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
@@ -31,14 +30,6 @@ from app.services import rag_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["问答"])
-
-# SSE 响应头。`X-Accel-Buffering: no` 是给反向代理看的 —— nginx 默认会缓冲
-# `text/event-stream`，那样"流式"会被攒成一次吐出来，白做。现在直连没影响，部署时用得上。
-_SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
 
 
 @router.post(
@@ -67,17 +58,6 @@ def chat(
         # 前端一眼能看出这次**没有调用大模型**（也就没有产生费用）
         return success(data, "未检索到相关资料，未调用大模型")
     return success(data)
-
-
-def _sse(events: Iterator[dict]) -> Iterator[str]:
-    """把事件 dict 序列化成 SSE 帧：`event: xxx` + `data: {…}` + 一个空行。
-
-    `ensure_ascii=False` 让中文原样出去（Starlette 会给 `text/*` 自动补
-    `charset=utf-8`，不必自己编码）—— 响应体更小，抓包时也看得懂。
-    """
-    for ev in events:
-        payload = json.dumps(ev["data"], ensure_ascii=False)
-        yield f"event: {ev['event']}\ndata: {payload}\n\n"
 
 
 @router.post("/stream", summary="知识库问答（SSE 流式，逐字返回）")
@@ -109,5 +89,5 @@ def chat_stream(
         conversation_id=payload.conversation_id,
     )
     return StreamingResponse(
-        _sse(events), media_type="text/event-stream", headers=_SSE_HEADERS
+        iter_sse(events), media_type="text/event-stream", headers=SSE_HEADERS
     )

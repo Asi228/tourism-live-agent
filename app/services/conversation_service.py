@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.db.session import SessionLocal
 from app.models.conversation import TITLE_MAX_LENGTH, Conversation
 from app.models.message import ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.user import User
@@ -30,6 +31,11 @@ from app.repositories import conversation_repository, message_repository
 from app.services import knowledge_service
 
 logger = logging.getLogger(__name__)
+
+# 流式收尾（补摘要/裁剪）要**自己开一个 session**，理由见 `maintain_after_stream`。
+# 做成模块级变量而不是直接调 `SessionLocal()`，是为了给测试一个明确的替换点 ——
+# 与 rag_service / agent_service 的写法一致。
+_session_factory = SessionLocal
 
 # 引用的资料已经无权访问时，用来替换答案正文的固定话术。
 # 不用空字符串：空字符串在前端看起来像"这条消息坏了"，而这其实是一个**明确的状态**。
@@ -166,7 +172,7 @@ def append_turn(
     而摘要正是"旧轮次唯一的底"。反过来的顺序会让"还没进摘要就被删"的那几轮彻底消失。
 
     `defer_maintenance`：**流式路径**把"摘要 + 裁剪"推迟到 `done` 事件之后单独做
-    （见 `rag_service._maintain_after_stream`）—— 因为摘要是同步的模型调用，
+    （见本模块的 `maintain_after_stream`）—— 因为摘要是同步的模型调用，
     放在收尾前会让用户"最后一个字吐完了、光标还在转"。
     ⚠️ 要推迟就**两步一起推迟**：只推迟摘要、照常裁剪，就会踩中上面那条
     "还没进摘要就被删"的静默丢数据。
@@ -186,6 +192,41 @@ def run_maintenance(db: Session, conv: Conversation) -> None:
     """
     maybe_refresh_summary(db, conv)
     _trim_messages(db, conv)
+
+
+def maintain_after_stream(conversation_id: int) -> None:
+    """流式交付完答案**之后**补做收尾：**自己开一个 session**，失败只 warning。
+
+    为什么不跟落库放在一起：`maybe_refresh_summary` 里挂着一次**同步的模型调用**
+    （最多 400 token），放在 `done` 之前，用户就得盯着转动的光标等它 —— 非流式时
+    它藏在"整段响应"里看不出来，流式下是肉眼可见的停滞。
+
+    为什么不复用请求那个 session：响应体一开始迭代，请求 session 就关了，
+    而且 SQLAlchemy 的 Session 不是线程安全的（同步生成器由线程池迭代）。
+
+    顺序仍恪守"先摘要、后裁剪"（`run_maintenance`）—— 裁剪会永久删掉滑出窗口的
+    旧消息，摘要是它们唯一的底。
+
+    ⚠️ **两条流式问答路（RAG / Agent）都调这里**："新开 session + 收尾维护"这套动作
+    因此在全局只有一份实现。放在本模块而不是 rag_service，是因为它维护的是**会话**
+    （`append_turn` / `defer_maintenance` 也在这儿），归属要对得上 —— 否则就会出现
+    Agent 侧跨模块去调 RAG 侧私有函数那种别扭的依赖。
+
+    失败方向是安全的：摘要字段没动（下一轮重试）、裁剪晚一轮只是**多留**几条消息。
+    客户端在 `done` 一到就断开时这一步会被跳过 —— 同样只是推迟，不丢数据。
+    """
+    try:
+        with _session_factory() as db:
+            conv = db.get(Conversation, conversation_id)
+            if conv is None:
+                logger.warning("流式收尾失败：会话已不存在 conv=%s", conversation_id)
+                return
+            run_maintenance(db, conv)
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "流式收尾（摘要/裁剪）失败 conv=%s: %s", conversation_id, str(exc)[:200]
+        )
 
 
 # ==================== 长对话摘要（Phase 12）====================

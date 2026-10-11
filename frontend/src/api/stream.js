@@ -18,14 +18,16 @@ import { getToken, setToken } from './http'
  * 发一次流式问答。
  *
  * @param {object} payload 与 /api/chat 相同：`{ query, kb_ids?, conversation_id? }`
- * @param {{meta?:Function, delta?:Function, done?:Function}} handlers 事件回调
- * @param {{signal?: AbortSignal}} [options] `signal` 用于中止（新建会话/卸载时），
- *   中止后 fetch/read 会以 AbortError reject，由调用方区分处理
+ * @param {{meta?:Function, delta?:Function, done?:Function, step?:Function}} handlers 事件回调
+ * @param {{signal?: AbortSignal, url?: string}} [options]
+ *   `signal` 用于中止（新建会话/卸载时），中止后 fetch/read 会以 AbortError reject，
+ *   由调用方区分处理；`url` 让同一份解析逻辑服务 RAG 与 Agent 两条路 ——
+ *   帧格式、分流、收尾判定必须只有一份实现。
  * @returns {Promise<void>} 流正常走完 resolve；准备阶段失败 / 网络错误 / 流内 error /
  *   流被掐断（没等到 done 就关闭）都 reject
  */
-export async function streamChat(payload, handlers = {}, { signal } = {}) {
-  const resp = await fetch('/api/chat/stream', {
+export async function streamChat(payload, handlers = {}, { signal, url } = {}) {
+  const resp = await fetch(url || '/api/chat/stream', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -40,25 +40,37 @@ def create(
     写日志失败不该让用户拿不到已经生成好的答案。
     """
     try:
-        row = AgentLog(
-            user_id=user_id,
-            query=query[:1000],
-            answer=answer,
-            hit=hit,
-            source_count=source_count,
-            iterations=iterations,
-            steps=steps,
-            total_tokens=total_tokens,
-            elapsed_ms=elapsed_ms,
-            error_msg=(error_msg or None) and error_msg[:500],
-        )
-        db.add(row)
-        db.flush()
+        # ⚠️ **必须放在 SAVEPOINT 里**（与 `prune_older_than` 同一写法、同一理由）。
+        # 这条 insert 跑在"本轮问答已经写了一半"的事务里：会话行**已经 flush 过**、
+        # 消息还没写。审计自身出错时若回滚整个 session，那个刚 flush 出来的会话行
+        # 会跟着消失（它的 Python 对象还在、`conv.id` 也还有值），于是紧随其后的
+        # `append_turn` 拿一个已经不存在的 id 去插消息 —— SQLite 默认不开外键，
+        # 会静默留下孤儿消息；MySQL 上 `messages_ibfk_1` 会直接报 1452。
+        # 保存点把"少一条审计"和"这个会话到底存不存在"彻底切开。
+        #
+        # 这里可以放心 flush：此刻 session 里 pending 的只有 AuditLog 这一行
+        # （会话早已 flush 过、消息还没 add），不会把别的行卷进保存点。
+        # ⚠️ 但这是个**隐式前提** —— 将来若有人把写审计挪到 add 消息之后，
+        # 就会重演 `prune_older_than` 注释里担心的那种"整批 pending 被写进保存点"。
+        with db.begin_nested():
+            row = AgentLog(
+                user_id=user_id,
+                query=query[:1000],
+                answer=answer,
+                hit=hit,
+                source_count=source_count,
+                iterations=iterations,
+                steps=steps,
+                total_tokens=total_tokens,
+                elapsed_ms=elapsed_ms,
+                error_msg=(error_msg or None) and error_msg[:500],
+            )
+            db.add(row)
+            db.flush()
         return row
     except Exception as exc:  # noqa: BLE001
-        # flush 失败会把 session 留在"必须 rollback 才能继续用"的状态上，
-        # 所以这里必须清毒；清理后返回 None，调用方据此跳过 commit。
-        db.rollback()
+        # 保存点已经自己回滚了 **这一小段**，session 仍然是干净的、可以接着写对话历史 ——
+        # 这与"整个 session rollback"有本质区别，后者会把本轮待提交的东西全带走。
         logger.warning("写入 agent_logs 失败（不影响本次回答）：%s", str(exc)[:200])
         return None
 

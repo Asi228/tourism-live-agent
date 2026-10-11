@@ -22,7 +22,7 @@ from app.core.response import ErrorCode
 from app.models import Conversation, Message
 from app.rag import llm as llm_module
 from app.rag import prompt
-from app.services import rag_service, vector_service
+from app.services import conversation_service, rag_service, vector_service
 
 
 def _hit(content: str = "员工入职满一年可享受带薪年假 5 天。") -> dict:
@@ -41,12 +41,15 @@ def _hit(content: str = "员工入职满一年可享受带薪年假 5 天。") -
 def stream_env(monkeypatch, session_factory):
     """替掉检索与流式 LLM，并把**流式落库**指向测试库。
 
-    ⚠️ `rag_service._session_factory` 必须换掉：流式路径是自己开 session 落库的
-    （不能复用请求那个，见 `_persist_after_stream` 的说明），不换就会写进**真 MySQL**。
+    ⚠️ 两个 `_session_factory` 都要换掉：流式路径是自己开 session 的（不能复用
+    请求那个，见 `_persist_after_stream` 的说明），不换就会写进**真 MySQL**。
+      · `rag_service`           —— 落库
+      · `conversation_service`  —— `done` 之后的收尾维护（`maintain_after_stream`）
 
     `fail_at`：让流在第 N 块之前抛错，用来验证"中途失败不留半截"。
     """
     monkeypatch.setattr(rag_service, "_session_factory", session_factory)
+    monkeypatch.setattr(conversation_service, "_session_factory", session_factory)
 
     box: dict = {
         "results": [_hit()],
@@ -319,7 +322,7 @@ def test_stream_runs_summary_and_trim_after_done(
 
     摘要是同步的模型调用：放在 done 之前，用户最后一个字吐完了还得盯着光标
     等它 —— 非流式时藏在"整段响应"里看不出来，流式下是肉眼可见的停滞。
-    这里给 `_sse` 挂一个间谍记录"已产出的事件帧"：摘要模型被调用时，
+    这里给 `iter_sse` 挂一个间谍记录"已产出的事件帧"：摘要模型被调用时，
     **本次请求**的 `event: done` 必须已经在里面，否则收尾停滞就又回来了。
 
     ⚠️ 必须**单请求触发**（先往库里预置一轮旧消息，再发一次流式请求）：
@@ -334,14 +337,14 @@ def test_stream_runs_summary_and_trim_after_done(
     frames: list[str] = []
     seen_at_summary: list[str] | None = None
 
-    real_sse = chat_api._sse
+    real_sse = chat_api.iter_sse
 
     def spy_sse(events):
         for frame in real_sse(events):
             frames.append(frame.split("\n", 1)[0])
             yield frame
 
-    monkeypatch.setattr(chat_api, "_sse", spy_sse)
+    monkeypatch.setattr(chat_api, "iter_sse", spy_sse)
 
     def fake_summary_chat(system, text, max_tokens=None, temperature=None, history=None):
         nonlocal seen_at_summary

@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
+import { conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -276,51 +276,39 @@ async function ask() {
   await scrollToBottom()
 
   try {
-    if (mode.value === 'agent') await askOnce(payload)
-    else await askStream(payload)
+    await askStream(payload, mode.value === 'agent')
   } finally {
     asking.value = false
     await scrollToBottom()
   }
 }
 
-/** Agent 侧仍走**非流式**：它的价值在"多步决策"，逐字输出体现不出来（见 README）。 */
-async function askOnce(payload) {
-  let ok = false
-  try {
-    const body = await chatApi.askAgent(payload)
-    const data = body.data
-    messages.value.push({ role: 'assistant', data, mode: 'agent' })
-
-    // 后端可能在这次提问时刚建了会话 —— 记下来
-    if (data.conversation_id) currentConvId.value = data.conversation_id
-    ok = true
-  } catch {
-    // 失败也留一条痕迹，否则用户会以为没发出去
-    messages.value.push({ role: 'assistant', error: true, content: '请求失败，请稍后重试' })
-  }
-  // 刷新列表放 try/catch 外（它自己有 catch）：放里面的话，刷新一旦出错
-  // 会被当成"请求失败"，在已经答成功的消息下面再叠一条错误提示。
-  if (ok) await loadConversations()
-}
-
 /**
- * 纯 RAG 走 SSE：先占一条空消息，再往里面逐块追加。
+ * 两条问答路共用同一套 SSE 渲染 —— RAG 逐字、Agent 逐节点，差别只在后端吐什么。
+ *
+ * 刻意不写成两份：节流、done 覆盖、三种中断语义、abort 守卫这些东西一旦有两份
+ * 实现，迟早漂移；而漂移的表现是"某条路上偶发不提示"，很难归因。
  *
  * 必须处理的细节：
- *  1. **节流**（见 `STREAM_FLUSH_MS`）：新到的字先攒在普通变量里，定时器统一刷进响应式对象。
- *  2. **以 `done.answer` 为准**：逐块渲染可能因节流丢帧，服务端拼好的那段才是完整答案，
- *     最后覆盖一次 —— 保证"界面上看到的"与"历史里存的"逐字一致。
- *  3. **中断时留住已生成的部分**：直接换成错误提示会让内容"闪一下消失"，用户以为白等了。
- *     保留正文 + 一行说明，并**明说这次没进历史**。
+ *  1. **节流**（见 `STREAM_FLUSH_MS`）：新到的字先攒在普通变量里，定时器统一刷进
+ *     响应式对象。Agent 不逐字，节流对它不起作用，共用一份也不受影响。
+ *  2. **以 `done.answer` 为准**：逐块渲染可能因节流丢帧，服务端拼好的那段才是完整
+ *     答案，最后覆盖一次 —— 保证"界面上看到的"与"历史里存的"逐字一致。
+ *  3. **中断时留住已生成的部分**：直接换成错误提示会让内容"闪一下消失"，用户以为
+ *     白等了。保留正文 + 一行说明，并**明说这次没进历史**。
  *  4. **每次请求一个 AbortController**：新建/删除会话、组件卸载时中止旧流，
  *     防止它的 done 回调把会话 id 写回一个用户已经离开的地方。
+ *  5. **Agent 的答案是 `done` 里整段给的**（README 定了：它的价值在多步决策的进度
+ *     而不是逐字输出）。所以 streaming 期间正文是空的，进度全靠 `step` 事件实时累加
+ *     进 `data.steps` —— 模板里那条"执行轨迹"自己会长出来。
+ *
+ * @param {boolean} agentMode true 走 `/api/agent/chat/stream`
  */
-async function askStream(payload) {
+async function askStream(payload, agentMode = false) {
   const slot = reactive({
     role: 'assistant',
-    mode: 'rag',
-    data: { answer: '', sources: [], hit: null, reranked: null },
+    mode: agentMode ? 'agent' : 'rag',
+    data: { answer: '', sources: [], hit: null, reranked: null, steps: [] },
     streaming: true,
   })
   messages.value.push(slot)
@@ -377,10 +365,25 @@ async function askStream(payload) {
           }, STREAM_FLUSH_MS)
         }
       },
+      // Agent 专属：每跑完一个节点就吐一条轨迹，这里直接累进 `steps`。
+      // 模板那条"执行轨迹（N 步）"折叠面板读的就是它 —— 于是标题会自己往上跳，
+      // 用户能看见它卡在检索还是判断。RAG 侧永远不会来这个事件。
+      step: (d) => {
+        slot.data.steps.push(d)
+        // 流式期间 meta 还没到，检索轮数先自己数着（done/meta 里的才是权威值）
+        if (d.node === 'retrieve') slot.data.iterations = (slot.data.iterations || 0) + 1
+      },
       done: (d) => {
         flush()
         slot.data.answer = d.answer
         if (d.usage) slot.data.usage = d.usage
+        // Agent 的答案不是逐字来的：正文、轨迹、轮数都在 done 里一次性到，
+        // 这里全部以服务端为准覆盖（step 期间攒的是"过程视图"）。
+        if (agentMode) {
+          if (d.steps?.length) slot.data.steps = d.steps
+          slot.data.iterations = d.iterations
+          slot.data.elapsed_ms = d.elapsed_ms
+        }
         // 与历史回放同源：后端把 finish_reason 写进了 meta，前端展开进 data，
         // 所以模板里"当场答的"与"翻出来的老消息"用同一个判据（见 truncated 分支）。
         slot.data.finish_reason = d.finish_reason
@@ -393,7 +396,10 @@ async function askStream(payload) {
           currentConvId.value = d.conversation_id
         }
       },
-    }, { signal: controller.signal })
+    }, {
+      signal: controller.signal,
+      url: agentMode ? '/api/agent/chat/stream' : '/api/chat/stream',
+    })
     ok = true
   } catch (e) {
     flush()
@@ -564,7 +570,7 @@ onBeforeUnmount(() => abortStream())
 
                 <template v-else>
                   <div class="answer">
-                    {{ m.data.answer }}<span v-if="m.streaming" class="caret"></span>
+                    {{ m.data.answer }}<span v-if="m.streaming && m.mode === 'rag'" class="caret"></span>
                   </div>
                   <div v-if="m.interrupted" class="stream-note">
                     生成中断，本次未存入历史（半截答案不进历史，免得影响后续追问）
