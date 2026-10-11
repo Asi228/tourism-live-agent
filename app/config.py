@@ -161,6 +161,20 @@ class Settings(BaseSettings):
     # 本轮先用"只带最近 N 轮"这个最简单、也最容易解释清楚的做法。
     CONVERSATION_MAX_HISTORY_TURNS: int = 5
 
+    # ===== 长对话摘要压缩（Phase 12）=====
+    # 上面那个开关只带"最近 N 轮"，更早的**直接丢**。打开这一组之后，滑出窗口的旧轮次会被
+    # 增量压成一段滚动摘要，拼进系统提示词 —— 模型仍然知道"前面聊过什么"。
+    #
+    # **默认关**：一次压缩要多调一次模型（是"多花钱换上下文"的买卖），
+    # 和 RAG_RERANK_ENABLED / USER_MEMORY_ENABLED 同一个习惯：先有开关两组数据再谈值不值。
+    # 关掉时行为与上一阶段**逐字一致**（不生成、也不注入）。
+    CONVERSATION_SUMMARY_ENABLED: bool = False
+    # 攒够多少轮"已滑出窗口且还没被摘要"的对话才压缩一次。
+    # 设太小会频繁调模型；设太大则摘要覆盖面偏旧（中间那段既不在窗口里、也没进摘要）。
+    CONVERSATION_SUMMARY_TRIGGER_TURNS: int = 10
+    # 摘要拼进提示词的字符上限（超出**从头截断**，保留更近的部分）。
+    CONVERSATION_SUMMARY_MAX_CHARS: int = 800
+
     # ===== 数据保留（Phase 10）=====
     # 上限分三类，**每个都支持 0 = 不限**（关掉某一项不影响其它项）。
     # 口径：这三条治的是"只增不减"，而不是"喂给模型多少" —— 后者是上面那个
@@ -258,10 +272,44 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONVERSATION_MAX_HISTORY_TURNS 不能为负数（0 表示不带历史，是合法值）"
             )
+        if self.CONVERSATION_SUMMARY_TRIGGER_TURNS < 1:
+            raise ValueError(
+                "CONVERSATION_SUMMARY_TRIGGER_TURNS 至少为 1（0 会让每次追加都触发压缩）"
+            )
+        if self.CONVERSATION_SUMMARY_MAX_CHARS < 100:
+            raise ValueError(
+                "CONVERSATION_SUMMARY_MAX_CHARS 不能小于 100：太短的摘要段没有意义，"
+                "等于白花一次模型调用"
+            )
         if self.CONVERSATION_MAX_PER_USER < 0:
             raise ValueError("CONVERSATION_MAX_PER_USER 不能为负数（0 表示不限）")
         if self.CONVERSATION_MAX_MESSAGES < 0:
             raise ValueError("CONVERSATION_MAX_MESSAGES 不能为负数（0 表示不限）")
+        if (
+            self.CONVERSATION_SUMMARY_ENABLED
+            and self.CONVERSATION_MAX_HISTORY_TURNS > 0
+            and self.CONVERSATION_MAX_MESSAGES > 0
+        ):
+            # 摘要是"被裁掉的旧轮次唯一的底"，所以它必须**追得上裁剪**。
+            # 一轮 = 2 条消息；摘只在"窗口外、且还没被摘要覆盖"的轮次攒够
+            # CONVERSATION_SUMMARY_TRIGGER_TURNS 轮时才动手，而库里最多只留
+            # CONVERSATION_MAX_MESSAGES 条 —— 窗口占掉一部分之后，留给"待摘要"
+            # 的余量只有 (cap - window*2)。它若小于 trigger*2，pending 永远攒不够，
+            # 摘要**一次都不会发生**，而裁剪照常删 —— 旧轮次被静默丢弃。
+            # （默认值 100 ≥ (5+10)*2=30 是安全的，但"少存点"是很自然的运维动作。）
+            need = (
+                self.CONVERSATION_MAX_HISTORY_TURNS
+                + self.CONVERSATION_SUMMARY_TRIGGER_TURNS
+            ) * 2
+            if self.CONVERSATION_MAX_MESSAGES < need:
+                raise ValueError(
+                    "开启对话摘要时，CONVERSATION_MAX_MESSAGES 必须不小于 "
+                    "(CONVERSATION_MAX_HISTORY_TURNS + CONVERSATION_SUMMARY_TRIGGER_TURNS) * 2："
+                    f"当前 {self.CONVERSATION_MAX_MESSAGES} < {need}，"
+                    "摘要会永远攒不够输入（一次都不生成），而裁剪照常执行 —— "
+                    "结果是最旧的轮次被删掉且从未被摘要过。"
+                    "要么调大上限，要么关掉摘要（CONVERSATION_SUMMARY_ENABLED=false）"
+                )
         if self.AGENT_LOG_RETENTION_DAYS < 0:
             raise ValueError("AGENT_LOG_RETENTION_DAYS 不能为负数（0 表示不限）")
         if self.USER_MEMORY_MAX_PER_USER < 0:

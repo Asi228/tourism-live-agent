@@ -59,7 +59,10 @@ export const conversationApi = {
   // params 传 { limit, offset } 翻页；不传就用后端默认（limit=50, offset=0）。
   // 这个接口是拿到更早会话的**唯一**入口，不翻页的话第 51 条之后就永远看不到。
   list: (params) => http.get('/conversations', { params }),
-  detail: (id) => http.get(`/conversations/${id}`),
+  // 详情默认只返回**最新一页**消息。往前翻传 { limit, before_id }：
+  // before_id 是"当前最旧那条消息的 id"，用 keyset 而不是 offset ——
+  // 会话尾部一直在长，offset 翻页会在翻页期间漏条/重条。
+  detail: (id, params) => http.get(`/conversations/${id}`, { params }),
   remove: (id) => http.delete(`/conversations/${id}`),
 }
 

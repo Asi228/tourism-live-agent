@@ -44,7 +44,11 @@ class ConversationItem(BaseModel):
 
 
 class ConversationDetail(BaseModel):
-    """会话详情：带全部消息，用于点开历史会话时还原界面。"""
+    """会话详情：一页消息 + "还有没有更早的"，用于点开历史会话时还原界面。
+
+    `has_more=True` 表示这条会话在返回的这批消息之前还有内容，
+    前端可以据此显示"加载更早"，再用 `before_id=消息里最小的 id` 往前翻。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,4 +56,7 @@ class ConversationDetail(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    has_more: bool = Field(
+        default=False, description="返回的这一页之前是否还有更早的消息"
+    )
     messages: list[MessageOut] = Field(default_factory=list)

@@ -292,11 +292,13 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             }
 
         # history（会话历史，Phase 9）只给生成节点用；判定节点不看它，见 state.py 的说明。
-        # 长期记忆（Phase 11）同源复用 memory_service —— 与纯 RAG 走同一份拼装逻辑，
-        # 都在"真要调模型之前"才取，判定/空检索的路径不白查库。
+        # 长期记忆（Phase 11）与对话摘要（Phase 12）同源复用 service —— 与纯 RAG 走同一份
+        # 拼装逻辑，都在"真要调模型之前"才取，判定/空检索的路径不白查库。
         memory = memory_service.section_for_prompt(db, user)
         out = llm.chat(
-            prompt.build_system_prompt(memory),
+            prompt.build_system_prompt(
+                memory_section=memory, summary_section=state.get("summary") or ""
+            ),
             prompt.build_user_message(state["query"], context),
             history=state.get("history") or [],
         )

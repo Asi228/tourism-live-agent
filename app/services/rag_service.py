@@ -123,20 +123,23 @@ def answer(
 
     # history：最近几轮的问答对（Phase 9）。只带问答本身，不带当时检索到的资料 ——
     # 否则每轮的参考资料都会堆进上下文，token 会随轮数平方级上涨。
-    # 长期记忆（Phase 11）在**这里**才取：没命中、没上下文的路径都不该白查一次库。
+    # 长期记忆（Phase 11）与对话摘要（Phase 12）都在**这里**才取：
+    # 没命中、没上下文的路径都不该白查一次库。
     memory = memory_service.section_for_prompt(db, user)
+    summary = conversation_service.summary_section(conv)
     got = llm.chat(
-        prompt.build_system_prompt(memory),
+        prompt.build_system_prompt(memory_section=memory, summary_section=summary),
         prompt.build_user_message(query, context),
         history=history,
     )
 
     logger.info(
-        "RAG 问答完成 user=%s conv=%s 历史=%s轮 memory=%s字 scope=%s hits=%s adopted=%s "
-        "reranked=%s answer_len=%s total_tokens=%s",
+        "RAG 问答完成 user=%s conv=%s 历史=%s轮 summary=%s字 memory=%s字 scope=%s hits=%s "
+        "adopted=%s reranked=%s answer_len=%s total_tokens=%s",
         user.username,
         conv.id,
         len(history) // 2,
+        len(summary),
         len(memory),
         "ALL" if scope is None else scope,
         len(results),

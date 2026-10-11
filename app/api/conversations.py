@@ -53,9 +53,16 @@ def list_conversations(
     return success(data)
 
 
-@router.get("/{conversation_id}", summary="会话详情（含全部消息，按当前权限脱敏）")
+@router.get("/{conversation_id}", summary="会话详情（默认返回最新一页消息，可往前翻）")
 def get_conversation(
     conversation_id: int,
+    # 默认只返回**最新**一页：长会话一次全量返回会把 sources/meta 三段 JSON 全吐出去，
+    # 响应又大又慢。往前翻用 keyset（before_id），不是 offset —— 会话尾部一直在长，
+    # offset 会在翻页期间漏条/重条（理由见 message_repository.page_by_conversation）。
+    limit: int = Query(default=50, ge=1, le=200, description="本页最多返回多少条消息"),
+    before_id: int | None = Query(
+        default=None, ge=1, description="取 id 小于它的那一段（往前翻页的游标），不传则取最新一页"
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -63,12 +70,15 @@ def get_conversation(
     # 而是过一遍 load_messages_for_display：引用了"此刻已无权访问"的知识库的答案
     # 会被整条隐藏（撤销授权不能通过历史回放被绕开）。
     conv = conversation_service.get_owned(db, current_user, conversation_id)
-    messages = conversation_service.load_messages_for_display(db, current_user, conv)
+    messages, has_more = conversation_service.load_messages_for_display(
+        db, current_user, conv, limit=limit, before_id=before_id
+    )
     detail = ConversationDetail(
         id=conv.id,
         title=conv.title,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        has_more=has_more,
         messages=[MessageOut.model_validate(m) for m in messages],
     )
     return success(detail.model_dump(mode="json"))

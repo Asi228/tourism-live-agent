@@ -12,7 +12,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -43,6 +43,19 @@ class Conversation(Base):
     # 每次追加消息都会更新 —— 列表按它倒序，最近聊的排最前
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), index=True, nullable=False
+    )
+
+    # ===== 长对话的滚动摘要（Phase 12）=====
+    # 喂给模型的历史只有最近 N 轮（`CONVERSATION_MAX_HISTORY_TURNS`），更早的直接丢。
+    # 这里存一段**滚动摘要**把丢掉的部分压成一段话，让模型仍然知道"前面聊过什么"。
+    #
+    # `summary_upto_id` 记录摘要**已经覆盖到哪条消息**：下一次只需要把"新滑出窗口的那几轮"
+    # 增量合并进去，不用重头总结 —— 否则每轮都要把整段对话重新喂一遍，越聊越贵。
+    summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="较早轮次的滚动摘要（供拼进 Prompt）"
+    )
+    summary_upto_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="摘要已覆盖到的消息 id；比它旧的消息都不必再喂给摘要模型"
     )
 
     # ⚠️ 用 ORM 级联而不是只靠数据库级联：**测试库是 SQLite，而 SQLite 默认不启用外键约束**

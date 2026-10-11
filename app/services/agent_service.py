@@ -136,6 +136,7 @@ def answer(
         "kb_ids": kb_ids,
         "top_k": top_k or settings.RAG_TOP_K,
         "history": history,
+        "summary": conversation_service.summary_section(conv),
         "retrieved": [],
         "iterations": 0,
         "steps": [],

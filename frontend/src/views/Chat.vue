@@ -19,6 +19,11 @@ const convLoading = ref(false)
 const convHasMore = ref(false)
 // 一页 50 条（后端上限 100）。列表是拿到更早会话的唯一入口，所以必须能继续往下翻。
 const CONV_PAGE_SIZE = 50
+// 详情页每次取多少条消息。**必须分页**：长会话一次全量返回会把 sources/meta
+// 三段 JSON 全吐出来，响应又大又慢。
+const DETAIL_PAGE_SIZE = 50
+const convHasOlder = ref(false)   // 这条会话在返回的这批之前还有更早的消息
+const olderLoading = ref(false)
 
 // ---- 长期记忆（Phase 11）----
 // 与会话内的"上文"不是一回事：它是**跨会话**仍然成立的事实（"我在财务部"）。
@@ -82,6 +87,7 @@ async function loadConversations({ append = false } = {}) {
 function newConversation() {
   currentConvId.value = null
   messages.value = []
+  convHasOlder.value = false
 }
 
 async function openConversation(id) {
@@ -92,11 +98,48 @@ async function openConversation(id) {
   }
   currentConvId.value = id
   try {
-    const body = await conversationApi.detail(id)
+    // 只取最新一页；更早的由"加载更早的消息"按需拉（before_id 游标）
+    const body = await conversationApi.detail(id, { limit: DETAIL_PAGE_SIZE })
     messages.value = (body.data?.messages || []).map(toMessage)
+    convHasOlder.value = body.data?.has_more === true
     await scrollToBottom()
   } catch {
     messages.value = []
+    convHasOlder.value = false
+  }
+}
+
+/**
+ * 往更早翻一页，插到消息列表**头部**。
+ *
+ * 翻完要把滚动位置按住：插入内容会把下面的东西顶下去，不补这一下用户就"被跳走"了。
+ * 做法是记录插入前后的 scrollHeight 差值，插完再把它加回 scrollTop。
+ */
+async function loadOlderMessages() {
+  if (olderLoading.value || !messages.value.length) return
+  // 游标取"最旧的、带服务端 id 的那条" —— 无 id 的是本次会话刚答、还没落库的几条，
+  // 按不变量它们一定排在**尾部**，所以 find 到的就是当前最靠前的已知 id
+  // （只有比它更早的才需要向后端拉）。别改成取最后一条：那会拿尾部的消息当游标。
+  const oldest = messages.value.find((m) => m.id != null)
+  if (!oldest) return
+
+  olderLoading.value = true
+  const box = scroller.value
+  const heightBefore = box ? box.scrollHeight : 0
+  try {
+    const body = await conversationApi.detail(currentConvId.value, {
+      limit: DETAIL_PAGE_SIZE,
+      before_id: oldest.id,
+    })
+    const older = (body.data?.messages || []).map(toMessage)
+    messages.value = [...older, ...messages.value]
+    convHasOlder.value = body.data?.has_more === true
+    await nextTick()
+    if (box) box.scrollTop += box.scrollHeight - heightBefore
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    olderLoading.value = false
   }
 }
 
@@ -106,11 +149,15 @@ async function openConversation(id) {
  * assistant 消息在服务端拆成了三块：content（正文）、sources（引用）、
  * meta（当时的口径：模式 / 命中 / token / 轨迹…）。这里把它们拼回一个 `data`，
  * 这样"实时回答"和"回放历史"走**同一套渲染分支**，不会出现两套模板各写一遍。
+ *
+ * `id` 必须留着：它既是列表 key（往头部插更早的消息时不能靠下标），
+ * 也是往前翻页的 keyset 游标（`before_id`）。
  */
 function toMessage(m) {
-  if (m.role === 'user') return { role: 'user', content: m.content }
+  if (m.role === 'user') return { id: m.id, role: 'user', content: m.content }
   const meta = m.meta || {}
   return {
+    id: m.id,
     role: 'assistant',
     mode: meta.source === 'agent' ? 'agent' : 'rag',
     data: { answer: m.content, sources: m.sources || [], ...meta },
@@ -340,7 +387,18 @@ onMounted(async () => {
             </div>
           </el-empty>
 
-          <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+          <div v-if="convHasOlder" class="older-wrap">
+            <el-button text size="small" :loading="olderLoading" @click="loadOlderMessages">
+              加载更早的消息
+            </el-button>
+          </div>
+
+          <div
+            v-for="(m, i) in messages"
+            :key="m.id != null ? 's' + m.id : 'l' + i"
+            class="msg"
+            :class="m.role"
+          >
             <template v-if="m.role === 'user'">
               <div class="bubble user-bubble">{{ m.content }}</div>
             </template>
@@ -645,6 +703,13 @@ onMounted(async () => {
   height: 100%;
   overflow-y: auto;
   padding: 16px;
+}
+
+/* "加载更早的消息"：只在详情返回 has_more=true 时出现，居中放在消息列表顶部 */
+.older-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 8px;
 }
 .empty-tips {
   margin-top: 8px;

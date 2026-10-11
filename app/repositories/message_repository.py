@@ -11,13 +11,37 @@ logger = logging.getLogger(__name__)
 
 
 def list_by_conversation(db: Session, conversation_id: int) -> list[Message]:
-    """按时间正序取一个会话的全部消息（详情页/加载历史用）。"""
+    """按时间正序取一个会话的全部消息。"""
     stmt = (
         select(Message)
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.id)
     )
     return list(db.scalars(stmt))
+
+
+def page_by_conversation(
+    db: Session, conversation_id: int, limit: int, before_id: int | None = None
+) -> tuple[list[Message], bool]:
+    """取会话里**最新**的 limit 条（`before_id` 之前的那一段），按时间正序返回。
+
+    返回 `(消息列表, 是否还有更早的)`。
+
+    **为什么是 keyset（`id < before_id`）而不是 offset**：会话的头部在不断长出新消息，
+    offset 分页在"翻页期间又来了新消息"时会漏条/重条 —— 与列表页那个 offset 场景正好相反
+    （那边翻的是不再变化的存量，这边翻的是活跃增长的尾部）。`id` 单调递增，
+    拿"当前最旧那条的 id"当下次游标，翻页期间来多少新消息都不影响。
+
+    **多查一条来判断 has_more**：比再发一次 COUNT 便宜，而且天然一致
+    —— 两次查询之间又追加了消息的话，COUNT 的答案就已经过期了。
+    """
+    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    if before_id is not None:
+        stmt = stmt.where(Message.id < before_id)
+
+    rows = list(db.scalars(stmt.order_by(Message.id.desc()).limit(limit + 1)))
+    has_more = len(rows) > limit
+    return list(reversed(rows[:limit])), has_more
 
 
 def recent(db: Session, conversation_id: int, limit: int) -> list[Message]:
@@ -36,6 +60,27 @@ def recent(db: Session, conversation_id: int, limit: int) -> list[Message]:
         .limit(limit)
     )
     return list(reversed(list(db.scalars(stmt))))
+
+
+def list_between(
+    db: Session, conversation_id: int, after_id: int, before_id: int
+) -> list[Message]:
+    """取 id **落在 `(after_id, before_id)` 之间**的消息，按时间正序。
+
+    给"长对话摘要"用（见 `conversation_service.maybe_refresh_summary`）：
+    它要的正是"已经滑出最近 N 轮窗口、但还没被摘要覆盖"的那一段。
+    两端都用 `id` 比较而不是时间：`id` 单调递增、且同一秒内也不含糊。
+    """
+    stmt = (
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.id > after_id,
+            Message.id < before_id,
+        )
+        .order_by(Message.id)
+    )
+    return list(db.scalars(stmt))
 
 
 def count_by_conversation(db: Session, conversation_id: int) -> int:

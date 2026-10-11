@@ -37,6 +37,26 @@ MEMORY_HEADER = (
     "不能当作公司制度依据，也不要为它们标注来源编号）："
 )
 
+# 长对话的滚动摘要段表头（Phase 12）。同样是"背景"，不是资料 —— 与记忆段一个口径：
+# 摘要里的结论来自**之前轮次已经答过的内容**，模型不能拿它当本轮的依据去标编号，
+# 更不能用它替代本轮检索（资料可能已经更新，以本轮检索为准）。
+SUMMARY_HEADER = (
+    "以下是这段对话**较早轮次**的摘要（供你了解上下文，"
+    "不能当作本轮回答的依据，也不要为它标注来源编号；若与本轮参考资料冲突，以参考资料为准）："
+)
+
+# 生成滚动摘要时用的系统提示词。三条要求都是为了"压缩后仍然可用"：
+# 保留数字与结论（否则摘要等于删掉了答案）、不加自己的知识（否则摘要会变成幻觉的源头）、
+# 与已有摘要合并（否则会攒成一串越来越长的分段摘要）。
+SUMMARY_SYSTEM = """你在为一段企业知识库问答对话做滚动摘要，供后续轮次当背景参考。
+
+要求：
+1. 保留**具体事实与数字**（天数、金额、期限、比例、流程名称），这些是后续轮次真正要用的。
+2. 只总结对话里出现过的内容。**不要添加你自己的知识，也不要推断没说过的事**。
+3. 给了「已有摘要」就把它和新增对话**合并成一段**，不要写成两段或列表。
+4. 中文，第三人称陈述，控制在 200 字以内。不要复述这些要求。
+"""
+
 
 def _page_text(page_number: int | None) -> str:
     """页码后缀。纯文本文档（txt/md）没有页码（用 None 表示），此时不显示。
@@ -188,13 +208,39 @@ def build_memory_section(memories: list[str], max_chars: int) -> str:
     return MEMORY_HEADER + "\n" + "\n".join(lines)
 
 
-def build_system_prompt(memory_section: str = "") -> str:
-    """完整系统提示词 = 规则 +（可选）长期记忆段 —— **全项目唯一出口**。
+def build_summary_section(summary: str | None, max_chars: int) -> str:
+    """把长对话的滚动摘要拼成系统提示词里的一段（Phase 12）。没有摘要时返回空串。
+
+    截断方向与另外两个上下文函数**刻意相反**：这里**从头截断**（保留结尾）。
+    摘要的写法是"越早的事在前面、越近的在后面"（它是增量合并出来的），
+    所以留着尾部 = 留着离当前最近的上下文，那才是接下来最可能用到的部分。
+    """
+    text = " ".join((summary or "").split())
+    if not text or max_chars <= 0:
+        return ""
+    if len(text) > max_chars:
+        logger.info("对话摘要超限，按尾部截断：%s → %s 字", len(text), max_chars)
+        text = "…" + text[-max_chars:]
+    return SUMMARY_HEADER + "\n" + text
+
+
+def build_system_prompt(memory_section: str = "", summary_section: str = "") -> str:
+    """完整系统提示词 = 规则 +（可选）对话摘要 +（可选）长期记忆 —— **全项目唯一出口**。
 
     为什么不让调用方自己拼：纯 RAG 与 Agent 两条路都要用它，
     两处各拼一次必然改一处忘一处（`build_prompt_and_sources` 已经踩过这个坑）。
-    没有记忆时原样返回 `SYSTEM_PROMPT`，不打任何补丁 —— 关掉开关就必须与从前逐字一致。
+    两个可选段都没有时**原样返回 `SYSTEM_PROMPT`**，不打任何补丁 ——
+    关掉开关就必须与从前逐字一致。
+
+    顺序（摘要 → 记忆）是刻意的：两者都是"背景"，但记忆是**跨会话的稳定事实**、
+    更贴近当前问题，所以放在最后。改顺序要重新验证一次"背景不会盖过资料"
+    （记忆那次实测见 README 的「实测数据」）。
     """
-    if not memory_section:
+    parts = [SYSTEM_PROMPT]
+    if summary_section:
+        parts.append(summary_section)
+    if memory_section:
+        parts.append(memory_section)
+    if len(parts) == 1:
         return SYSTEM_PROMPT
-    return SYSTEM_PROMPT + "\n" + memory_section + "\n"
+    return "\n".join(parts) + "\n"

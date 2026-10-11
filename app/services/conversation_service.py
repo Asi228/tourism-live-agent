@@ -25,6 +25,7 @@ from app.core.response import ErrorCode
 from app.models.conversation import TITLE_MAX_LENGTH, Conversation
 from app.models.message import ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.user import User
+from app.rag import llm, prompt
 from app.repositories import conversation_repository, message_repository
 from app.services import knowledge_service
 
@@ -157,11 +158,136 @@ def append_turn(
     sources: list | None = None,
     meta: dict | None = None,
 ) -> None:
-    """把一轮问答写进会话。只 flush，提交由调用方决定。"""
+    """把一轮问答写进会话。只 flush，提交由调用方决定。
+
+    ⚠️ **摘要要在裁剪之前做**：`_trim_messages` 会把超出上限的最旧消息**永久删掉**，
+    而摘要正是"旧轮次唯一的底"。反过来的顺序会让"还没进摘要就被删"的那几轮彻底消失。
+    """
     message_repository.create(db, conv.id, ROLE_USER, query)
     message_repository.create(db, conv.id, ROLE_ASSISTANT, answer, sources=sources, meta=meta)
     conversation_repository.touch(db, conv)
+    maybe_refresh_summary(db, conv)
     _trim_messages(db, conv)
+
+
+# ==================== 长对话摘要（Phase 12）====================
+
+# 生成摘要那次调用的 max_tokens。**写死不做配置项**：它只是"摘要该多长"的实现细节，
+# 真正的约束是 `CONVERSATION_SUMMARY_MAX_CHARS`（拼进提示词的字符预算）。
+# 再多一个旋钮，只会让后来人不知道该调哪个。
+_SUMMARY_MAX_TOKENS = 400
+
+
+def summary_section(conv: Conversation) -> str:
+    """给提示词用的摘要段 —— 开关关、或还没有摘要时返回空串。
+
+    与记忆段同一个口径：**开关只管"拼不拼进提示词"，不管库里的数据**。
+    这样关掉开关时行为与上一阶段逐字一致，也便于做开/关对比。
+    """
+    if not settings.CONVERSATION_SUMMARY_ENABLED:
+        return ""
+    return prompt.build_summary_section(
+        conv.summary, settings.CONVERSATION_SUMMARY_MAX_CHARS
+    )
+
+
+def _pair_turns(messages: list[Message]) -> list[tuple[str, str]]:
+    """按相邻的 (user, assistant) 配成轮次，落单的丢掉。
+
+    与 `load_history` 共享的是**配对规则**（一条没有对应问题的孤立答案对模型是噪声），
+    但**刻意不共享「过滤无依据轮次」那一条** —— `load_history` 会丢掉
+    `_has_evidence` 为假的轮次，这里不会。两条理由：
+
+      · **形态不同**。`load_history` 是把「知识库中没有找到…」这句**原话**以 assistant
+        身份逐条喂回去，模型容易顺着那个口径走（越沿用越错）；而摘要是一条**概述**，
+        "问过 X、当时没查到"是对发生过的对话的陈述，不是把拒绝话术当答案，
+        诱导强度低得多。
+      · **用途不同**。历史的职责是"给模型当前可依据的事实"，宁缺毋滥；
+        摘要的职责是"别让早期内容凭空消失"，记下"这个话题被问过"本身有价值
+        （以后资料补上了，用户再问时模型知道这不是新话题）。
+
+    ⚠️ 所以这里**不是漏了过滤**。真要把摘要也按 `_has_evidence` 筛，先想清两件事：
+    ① 窗口外的无依据轮次会**既不进摘要、又被 `_trim_messages` 删掉** = 永久遗忘；
+    ② 若 pending 里的轮次全被筛光，`maybe_refresh_summary` 会因"攒不够 trigger"而
+    **永不推进** `summary_upto_id`，每个请求都重复扫同一批（见该函数）。
+    """
+    turns: list[tuple[str, str]] = []
+    i = 0
+    while i + 1 < len(messages):
+        first, second = messages[i], messages[i + 1]
+        if first.role == ROLE_USER and second.role == ROLE_ASSISTANT:
+            turns.append((first.content, second.content))
+            i += 2
+        else:
+            i += 1
+    return turns
+
+
+def _summarize(conv_id: int, previous: str, new_turns: str) -> str | None:
+    """把「已有摘要 + 新增轮次」交给模型合并成一段新摘要。**失败返回 None**。
+
+    失败只 warning、不抛：摘要是"锦上添花"，它挂了不该把这一轮问答也带走
+    （与重排失败降级同一个取向）。
+    """
+    user_text = (
+        (f"已有摘要：\n{previous}\n\n" if previous else "")
+        + f"新增对话：\n{new_turns}\n\n"
+        + "请按系统提示词的要求，输出合并后的摘要。"
+    )
+    try:
+        out = llm.chat(prompt.SUMMARY_SYSTEM, user_text, max_tokens=_SUMMARY_MAX_TOKENS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "对话摘要生成失败（不影响本次问答）conv=%s: %s", conv_id, str(exc)[:200]
+        )
+        return None
+    return (out.get("answer") or "").strip() or None
+
+
+def maybe_refresh_summary(db: Session, conv: Conversation) -> None:
+    """把"已滑出窗口、且还没被摘要"的轮次**增量**压进摘要（失败只 warning）。
+
+    **机会式**而不是定时任务：项目没有调度器；而且摘要在语义上就该"又攒够一批旧轮次时
+    顺手做掉"，挂在写入路径上最自然（与 agent_logs 的过期清理同一思路）。
+
+    三条判据，缺一不可：
+      · **攒够** `CONVERSATION_SUMMARY_TRIGGER_TURNS` 轮才做 —— 否则每轮都要多调一次模型；
+      · **只做增量**：处理 `summary_upto_id` 之后、最近窗口之前的那一段。
+        不重头总结的原因很实际：每轮把整段对话重喂一遍，token 会随轮数平方级上涨；
+      · **失败不动字段**：`summary` / `summary_upto_id` 原样留着，下一轮还会再试，不丢内容。
+    """
+    if not settings.CONVERSATION_SUMMARY_ENABLED:
+        return
+
+    window_turns = max(0, settings.CONVERSATION_MAX_HISTORY_TURNS)
+    if window_turns <= 0:
+        # 不带历史时摘要没有意义 —— 它唯一的作用就是替被丢掉的轮次留个底
+        return
+
+    window = window_turns * 2
+    recent = message_repository.recent(db, conv.id, limit=window)
+    if len(recent) < window:
+        return  # 还一轮都没滑出窗口
+    boundary = recent[0].id  # 窗口内最旧的那条：比它旧才算"滑出去了"
+
+    pending = message_repository.list_between(
+        db, conv.id, conv.summary_upto_id or 0, boundary
+    )
+    turns = _pair_turns(pending)
+    if len(turns) < settings.CONVERSATION_SUMMARY_TRIGGER_TURNS:
+        return
+
+    new_text = "\n".join(f"问：{q}\n答：{a}" for q, a in turns)
+    summary = _summarize(conv.id, conv.summary or "", new_text)
+    if summary is None:
+        return  # 失败：字段原样留着，下一轮再试
+
+    conv.summary = summary
+    conv.summary_upto_id = pending[-1].id
+    logger.info(
+        "对话摘要已更新 conv=%s 本次覆盖 %s 条 / %s 轮 摘要长度=%s",
+        conv.id, len(pending), len(turns), len(summary),
+    )
 
 
 def _trim_messages(db: Session, conv: Conversation) -> None:
@@ -217,12 +343,6 @@ def list_conversations(
     return conversation_repository.list_by_user(db, user.id, limit=limit, offset=offset)
 
 
-def get_messages(db: Session, user: User, conversation_id: int) -> list[Message]:
-    """读一个会话的全部消息（校验归属）。"""
-    conv = get_owned(db, user, conversation_id)
-    return message_repository.list_by_conversation(db, conv.id)
-
-
 def _cites_revoked_kb(sources: list | None, allowed: list[int] | None) -> bool:
     """这条答案有没有引用「此刻已无权访问」的知识库。
 
@@ -238,8 +358,19 @@ def _cites_revoked_kb(sources: list | None, allowed: list[int] | None) -> bool:
     return False
 
 
-def load_messages_for_display(db: Session, user: User, conv: Conversation) -> list[dict]:
-    """会话详情要返回的消息（**已按当前权限脱敏**），返回纯 dict。
+def load_messages_for_display(
+    db: Session,
+    user: User,
+    conv: Conversation,
+    limit: int | None = None,
+    before_id: int | None = None,
+) -> tuple[list[dict], bool]:
+    """会话详情要返回的消息（**已按当前权限脱敏**），返回 `(纯 dict 列表, 是否还有更早的)`。
+
+    ⚠️ 从 Phase 12 起**支持分页**：`limit=None` 才是"全量"（内部与测试用），
+    接口一律传 limit —— 长会话一次全量返回会把 `sources`/`meta` 三段 JSON 全吐出去，
+    响应又大又慢。分页用 keyset（`before_id`）而不是 offset，理由见
+    `message_repository.page_by_conversation`。
 
     权限的语义在这里被掰清了：**「文档权限」说的是此刻有没有权看，
     而会话记的是当时看到了什么；冲突时不能让历史成为绕开撤销的后门。**
@@ -254,9 +385,17 @@ def load_messages_for_display(db: Session, user: User, conv: Conversation) -> li
     会被 SQLAlchemy 记成脏字段，下一次 flush 就**把脱敏结果永久写进数据库** ——
     那是不可逆的数据损坏（原答案再也拿不回来）。
     """
+    if limit is None:
+        rows = message_repository.list_by_conversation(db, conv.id)
+        has_more = False
+    else:
+        rows, has_more = message_repository.page_by_conversation(
+            db, conv.id, limit, before_id
+        )
+
     allowed = knowledge_service.get_accessible_kb_ids(db, user)
     out: list[dict] = []
-    for msg in message_repository.list_by_conversation(db, conv.id):
+    for msg in rows:
         if msg.role == ROLE_ASSISTANT and _cites_revoked_kb(msg.sources, allowed):
             out.append({
                 "id": msg.id,
@@ -277,7 +416,7 @@ def load_messages_for_display(db: Session, user: User, conv: Conversation) -> li
             "meta": msg.meta,
             "created_at": msg.created_at,
         })
-    return out
+    return out, has_more
 
 
 def delete_conversation(db: Session, user: User, conversation_id: int) -> None:

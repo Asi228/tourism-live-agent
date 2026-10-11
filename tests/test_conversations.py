@@ -356,7 +356,7 @@ def test_agent_failure_leaves_no_conversation(client, make_user, session_factory
     assert after == before, "Agent 问答失败了，却留下了一个会话"
 
 
-# ==================== 列表分页 ====================
+# ==================== 列表与详情分页 ====================
 
 
 def test_conversation_list_is_pageable(client, make_user, chat_env):
@@ -384,6 +384,60 @@ def test_conversation_list_is_pageable(client, make_user, chat_env):
     paged = list_page(2, 0) + list_page(2, 2)
     assert [i["id"] for i in paged] == [i["id"] for i in full[:4]], "翻页与整表顺序对不上"
     assert list_page(2, 100000) == [], "offset 远超总数应当返回空列表"
+
+
+def test_conversation_detail_is_pageable(client, make_user, chat_env):
+    """会话详情按**最新一页**返回，并能用 `before_id` 一直往前翻。
+
+    做法照列表那条：拿"整表"和"翻页拼起来"对拍 —— 顺序、边界、**不重不漏**一次看全。
+    用 keyset 而不是 offset 的理由也在这条里：翻页游标是"当前最旧那条的 id"，
+    所以中途又追加了消息也不会错位。
+    """
+    admin = make_user("admin")
+    conv_id = _ask(client, admin, "第0问")["data"]["conversation_id"]
+    for i in range(1, 4):
+        _ask(client, admin, "第%d问" % i, conversation_id=conv_id)
+
+    def detail(limit: int | None = None, before_id: int | None = None) -> dict:
+        params: dict = {}
+        if limit is not None:
+            params["limit"] = limit
+        if before_id is not None:
+            params["before_id"] = before_id
+        r = client.get(
+            f"/api/conversations/{conv_id}", params=params, headers=admin["headers"]
+        ).json()
+        assert r["code"] == 0, r
+        return r["data"]
+
+    full = detail()["messages"]
+    assert len(full) == 8, "4 轮问答 = 8 条消息"          # limit 默认 50，够装下
+    assert detail()["has_more"] is False
+
+    # 往前翻：每页 3 条，一直翻到底，拼起来必须与整表逐条相同
+    pages: list[dict] = []
+    cursor = None
+    for _ in range(10):
+        page = detail(limit=3, before_id=cursor)
+        pages = page["messages"] + pages          # 更早的一页接在前面
+        if not page["has_more"]:
+            break
+        cursor = page["messages"][0]["id"]        # 游标 = 本页最旧那条的 id
+    else:
+        raise AssertionError("翻页没有终点（has_more 一直是 True）")
+
+    assert [m["id"] for m in pages] == [m["id"] for m in full], "翻页与整表对不上（漏条或重条）"
+
+
+def test_conversation_detail_rejects_bad_paging_params(client, make_user, chat_env):
+    """详情分页参数同样要校验：limit 有上下界、before_id 必须是正整数。"""
+    admin = make_user("admin")
+    conv_id = _ask(client, admin, "年假几天")["data"]["conversation_id"]
+    for query in ("limit=0", "limit=201", "before_id=0"):
+        body = client.get(
+            f"/api/conversations/{conv_id}?{query}", headers=admin["headers"]
+        ).json()
+        assert body["code"] == ErrorCode.PARAM_ERROR, (query, body)
 
 
 def test_conversation_list_rejects_bad_paging_params(client, make_user):
@@ -454,7 +508,7 @@ def test_display_redaction_does_not_touch_stored_data(
         # user 只用来判权限，而这个函数在测试里已被替掉，所以给个带 id 的壳就够
         user = SimpleNamespace(id=admin["id"])
         conv = conversation_service.get_owned(db, user, conv_id)
-        msgs = conversation_service.load_messages_for_display(db, user, conv)
+        msgs, _has_more = conversation_service.load_messages_for_display(db, user, conv)
 
         assert msgs[1]["content"] == conversation_service.REDACTED_ANSWER
         assert not db.dirty, "脱敏动了 ORM 对象，下一次 commit 就会把隐藏结果写回库"
