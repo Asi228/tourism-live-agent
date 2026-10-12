@@ -353,7 +353,15 @@ def _stream_events(
 
     落库分两步（见 `_persist_after_stream` / `conversation_service.maintain_after_stream`）：
     先写消息并 `yield done` 把答案交付出去，**再**补摘要与裁剪。
+
+    事件序列：`status → meta → delta*N → done`（与 Agent 那条路同协议，见
+    `agent_service._agent_stream_events`）。
     """
+
+    # 第一帧：告诉前端"连上了、后端开工了"。它与 Agent 侧同构（那边是同一帧），
+    # 作用是**把"meta 之前断流"纳入前端可降级的范围** —— meta 之后要等上游排队 +
+    # 预填充，正是反代 read_timeout 最容易出事的窗口，早一帧发出去，断了才能降级重取。
+    yield {"event": "status", "data": {"phase": "start"}}
 
     # ---- 没命中：不调模型，答案是一句固定话术，同样走 delta 让前端只写一套渲染 ----
     if plan.no_hit:

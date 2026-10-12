@@ -473,10 +473,16 @@ Phase 12 加了一段**滚动摘要**（`conversations.summary`）把丢掉的�
 
 | 事件 | 载荷 | 时机 |
 |---|---|---|
+| `status` | `{phase}` | 连接建立、后端刚开工 —— 前端据此显示占位（见下面第 5 条） |
+| `step` | `{node, ms, mode, adopted, …}` | **Agent 专属**：每跑完一个节点一条（analyze / retrieve / evaluate / generate） |
 | `meta` | `hit` / `sources` / `searched_kb_ids` / `reranked` / `model` / `conversation_id` | 检索完、开始生成**之前** —— 引用卡片先画出来 |
-| `delta` | `{text}` | 逐块，可多块 |
+| `delta` | `{text}` | 逐块，可多块（Agent 侧不逐字，没有这个事件） |
 | `done` | `answer`（完整）/ `usage` / `finish_reason` / `conversation_id` / `saved` | 结束 |
 | `error` | `code` / `message` | **只在"已经开始吐字之后"**才会出现 |
+
+Agent 那条路的事件序列是 `status → step*N → meta → done`；纯 RAG 是 `status → meta → delta*N → done`。
+两条共用同一个 `app/api/sse.py` 的帧格式与同一份前端渲染（`Chat.vue` 的 `askStream` 按 `agentMode` 切 URL）——
+只有一份实现，才不会漂移。
 
 ⚠️ **两条例外**，它们违背"HTTP 恒 200、错误码在 body"这条通用约定：
 
@@ -519,6 +525,30 @@ Phase 12 加了一段**滚动摘要**（`conversations.summary`）把丢掉的�
   所以它**进了 `messages.meta`**（`_turn_meta`）：当场答的与翻历史回放的共用同一个判据，只在当场
   提示一次的话刷新页面就没了，而"这条答案其实是半截的"恰恰是回放时才最容易察觉（当场只当它答完了）。
   其余值前端不渲染。（Agent 路径没有这个字段：它内部多步调用，末步的 finish_reason 无意义。）
+- **流断了会自动降级到非流式重取一次**（`Chat.vue` 的 `retryWithoutStream`）。SSE 是长连接，
+  放到 nginx 后面被 `proxy_read_timeout` 掐断是常态（本地 Vite 的 120s 只是碰不到）—— 断了之后
+  用户手里只有半截答案，而**非流式那条路照样能跑**（同一个后端、同一套检索与生成）。有了它，
+  SSE 出问题最多是"慢一点"，不再是"整个问答页废了"。四条边界：
+  1. **只重试一次**（不循环，否则一次网络故障会放大成好几次付费调用）；
+  2. **用户主动停止不重试**（AbortError 提前分流）；
+  3. **降级请求本身也要能中止** —— `chatApi.ask` 的 config 形参就是为传 `signal` 加的，
+     否则用户切走会话后那次整段请求还会跑满 180s 再花一次钱；
+  4. **降级失败要把原因带出来**：它很可能就是"配额到顶"（走的是同一个 chat 限流器），
+     只显示原中断文案会让用户把配额问题当网络问题反复重试。
+- 🔴 **"可重试"的判据是 `gotEvent || transport`，别只看前者**。本项目 HTTP 恒 200，
+  所以**非 200 按定义就不是我们的信封**，必然是中间层坏了（nginx 502/504）—— 而那正是 SSE
+  最常见的死法。若把它并进"信封解析失败"分支，`gotEvent` 会是 false，降级永远等不到
+  它要救的场景。（`stream.js` 对 `!resp.ok` 单独抛一个带 `transport: true` 的错误。）
+- ⚠️ **降级的代价说清楚**：常见情形是干净的（客户端断开 → 服务端 `GeneratorExit` → 落库之前
+  就退出 → 库里没东西，重试只留下一条）。但断流若落在服务端 `db.commit()` 与 `done` 帧送达
+  之间那个毫秒级窗口，库里会留下一条**用户从没看到过**的会话，重试又新建一条 →
+  侧栏出现两个内容相同的会话，其中一个是隐形历史。低概率、不可消除（落库不看客户端在不在），
+  只能这样写明。
+- **`status` 事件不是摆设**：它驱动 Agent 侧"正在判定要不要查库…"的占位（文案走 `PHASE_TEXT`
+  映射，**不在模板里写死** —— 否则后端新增 phase 时界面会撒谎）。analyze 节点要花一秒上下，
+  那期间不显示点什么，用户会以为界面卡死了；第一个 `step` 一到，占位就让位给执行轨迹。
+  RAG 侧也发这一帧，为的是把"meta 之前断流"纳入降级范围 —— meta 之后要等上游排队 + 预填充，
+  那正是反代 read_timeout 最容易出事的窗口。
 - **Agent 侧已同样支持流式**（Phase 14：`POST /api/agent/chat/stream`），但吐的是
   **节点级进度**而不是逐字 —— 这条口径 README 在 P8 就定了：Agent 的价值在
   "多步决策的进度"（判定要不要检索 → 资料够不够 → 要不要换个词再查一轮）而不在
@@ -554,6 +584,8 @@ Phase 12 加了一段**滚动摘要**（`conversations.summary`）把丢掉的�
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布。⚠️ 注意：光累积**正样本**（库里有答案的问题）定不出这个阈值，需要的是"**明明库里没有**"时分数能到多高的上界 |
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
 | 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
+| 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。断流 / 降级重取 / 三种中断提示目前**只能真机触发** —— 而它是问答在界面上的唯一入口（非流式已从 UI 移除），风险集中度不低。计划用 vite `configureServer` 加一个 dev-only 的 mock SSE 中间件（吐若干帧后主动断开）来复现，**不往后端生产代码加调试参数** |
+| 测试基建 | ⚠️ 三处 `_session_factory`（`agent_service` / `rag_service` / `conversation_service`）靠 fixture 的 docstring 提醒"都要换"，**漏 patch 的后果不是变红，而是静默写进真 MySQL**。将来加第四条流式路径时，值得收敛成一个模块级工厂，或在 conftest 里 autouse 统一替换 |
 | 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期 |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
 | Rerank | 已接入。`/chat` 默认开启，`/search` 默认关闭以便对比效果 |

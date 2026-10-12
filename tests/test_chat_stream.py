@@ -131,7 +131,7 @@ def test_stream_emits_meta_deltas_then_done(client, make_user, stream_env):
     assert status == 200
     assert ctype.startswith("text/event-stream"), ctype
     names = [e for e, _ in events]
-    assert names[0] == "meta" and names[-1] == "done", names
+    assert names[0] == "status" and names[-1] == "done", names
     assert names.count("delta") == len(stream_env["parts"]), names
 
     deltas = "".join(d["text"] for e, d in events if e == "delta")
@@ -140,7 +140,7 @@ def test_stream_emits_meta_deltas_then_done(client, make_user, stream_env):
     assert done["saved"] is True
     assert done["conversation_id"] is not None
 
-    meta = events[0][1]
+    meta = [d for ev, d in events if ev == "meta"][0]
     assert meta["hit"] is True
     assert meta["sources"] and meta["sources"][0]["document_name"] == "员工手册.txt"
 
@@ -175,7 +175,8 @@ def test_stream_continues_existing_conversation(
     conv_id = first[-1][1]["conversation_id"]
 
     _, _, second = _stream(client, user, {"query": "第二问", "conversation_id": conv_id})
-    assert second[0][1]["conversation_id"] == conv_id, "已有会话应当在 meta 里回显"
+    meta_again = [d for ev, d in second if ev == "meta"][0]
+    assert meta_again["conversation_id"] == conv_id, "已有会话应当在 meta 里回显"
 
     with session_factory() as db:
         total = db.scalar(
@@ -202,7 +203,7 @@ def test_stream_failure_emits_error_and_saves_nothing(
     _, _, events = _stream(client, user, {"query": "年假几天"})
 
     names = [e for e, _ in events]
-    assert names == ["meta", "delta", "error"], names
+    assert names == ["status", "meta", "delta", "error"], names
     err = events[-1][1]
     assert err["code"] == ErrorCode.LLM_ERROR
     assert "大模型调用失败" in err["message"]
@@ -268,9 +269,9 @@ def test_stream_no_hit_skips_llm(client, make_user, stream_env):
     _, _, events = _stream(client, user, {"query": "食堂几点开饭"})
 
     names = [e for e, _ in events]
-    assert names == ["meta", "delta", "done"], names
-    assert events[0][1]["hit"] is False
-    assert events[1][1]["text"] == prompt.NO_HIT_ANSWER
+    assert names == ["status", "meta", "delta", "done"], names
+    assert [d for ev, d in events if ev == "meta"][0]["hit"] is False
+    assert [d for ev, d in events if ev == "delta"][0]["text"] == prompt.NO_HIT_ANSWER
     assert events[-1][1]["saved"] is True
     assert stream_env["calls"] == [], "没命中却调用了大模型"
 

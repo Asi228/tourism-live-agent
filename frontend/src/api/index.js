@@ -47,9 +47,11 @@ export const documentApi = {
 
 export const chatApi = {
   // 纯 RAG：快、便宜，答案同样带引用
-  ask: (payload) => http.post('/chat', payload),
+  // 第二个形参 config 透传给 axios —— 降级重试要靠它传 `signal`，
+  // 否则用户切走之后那次整段请求仍会跑满 180s 并花掉一次付费调用。
+  ask: (payload, config) => http.post('/chat', payload, config),
   // Agent：多步决策，返回执行轨迹；会多调几次模型，更慢也更贵
-  askAgent: (payload) => http.post('/agent/chat', payload),
+  askAgent: (payload, config) => http.post('/agent/chat', payload, config),
   // 只检索不给模型：用来对比"重排前后"的排序差异
   search: (payload) => http.post('/search', payload),
 }

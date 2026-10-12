@@ -39,7 +39,19 @@ export async function streamChat(payload, handlers = {}, { signal, url } = {}) {
 
   const contentType = resp.headers.get('content-type') || ''
 
-  // ① 准备阶段就失败了 → 普通信封，不是流
+  // ① 传输层坏了：**本项目 HTTP 恒 200，真错在 body.code** —— 所以非 200 按定义
+  //    就不是我们的信封，必然是中间层出的问题（nginx 502/504、网关超时、连接被重置）。
+  //    而这恰恰是 SSE 最常见的死法，也正是前端要做降级重试的场景；
+  //    若把它并进下面那个"信封解析失败"分支，`gotEvent` 会是 false，重试规则会
+  //    把它当成"越权/配额那种重试没用的失败"—— 降级就永远等不到它要救的场景。
+  //    所以这里单独抛一个带 `transport: true` 的错误，作为"可重试"的第二个入口。
+  if (!resp.ok) {
+    const err = new Error(`服务暂时不可用（HTTP ${resp.status}），正在重新获取`)
+    err.transport = true
+    throw err
+  }
+
+  // ② 准备阶段就失败了 → 普通信封，不是流
   if (!contentType.includes('text/event-stream')) {
     const body = await resp.json().catch(() => null)
     const code = body?.code

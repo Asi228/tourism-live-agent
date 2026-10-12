@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
+import { chatApi, conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -37,6 +37,13 @@ const ANSWER_MODE = {
   grounded: { text: '依据资料', type: 'success' },
   no_evidence: { text: '无可用资料', type: 'warning' },
   smalltalk: { text: '寒暄直答', type: 'info' },
+}
+
+// `status` 事件里的 phase → 界面文案。与 ANSWER_MODE 同一张表的用法：
+// 后端新增 phase 时这里补一行就行，**绝不在模板里写死** ——
+// 否则后端哪天吐 phase:"generating"，界面会拿一句"正在判定要不要查库"撒谎。
+const PHASE_TEXT = {
+  start: '正在判定要不要查库…',
 }
 
 const canAsk = computed(() => !!query.value.trim() && !asking.value)
@@ -310,6 +317,8 @@ async function askStream(payload, agentMode = false) {
     mode: agentMode ? 'agent' : 'rag',
     data: { answer: '', sources: [], hit: null, reranked: null, steps: [] },
     streaming: true,
+    // ⑤ `status` 事件点亮它：非空表示"后端已开工、但第一个节点还没回来"
+    phase: null,
   })
   messages.value.push(slot)
 
@@ -338,9 +347,21 @@ async function askStream(payload, agentMode = false) {
   // 还连不连着无关）。所以"主动停止"和"连接被掐断"这两种也要刷会话列表 ——
   // 不刷的话库里已经多了个会话，界面上却看不到，得刷新页面才冒出来。
   let maybePersisted = false
+  // ④ 是否收到过**任何**一帧事件 —— 它决定了失败时能不能降级重试：
+  // 一帧都没收到说明请求根本没进流（越权/配额/未登录），重试是同样的结果。
+  let gotEvent = false
+  const mark = () => { gotEvent = true }
   try {
     await streamChat(payload, {
+      // ⑤ `status` 是协议里唯一的"开始"信号：它一到达就说明连上了、后端开工了。
+      // 消费方式是点亮 `phase`，让 Agent 侧在第一个节点跑完前显示占位
+      // （analyze 要花一秒左右，那期间界面不该是一片空白）。
+      status: (d) => {
+        mark()
+        slot.phase = d.phase
+      },
       meta: (d) => {
+        mark()
         // 引用在答案之前就画出来 —— 用户先看到"依据来自哪几份文档"
         Object.assign(slot.data, {
           sources: d.sources || [],
@@ -352,6 +373,7 @@ async function askStream(payload, agentMode = false) {
         })
       },
       delta: (d) => {
+        mark()
         pending += d.text
         if (!timer) {
           timer = setInterval(() => {
@@ -369,11 +391,15 @@ async function askStream(payload, agentMode = false) {
       // 模板那条"执行轨迹（N 步）"折叠面板读的就是它 —— 于是标题会自己往上跳，
       // 用户能看见它卡在检索还是判断。RAG 侧永远不会来这个事件。
       step: (d) => {
+        mark()
+        slot.phase = null // 已经有进度可看了，占位让位
         slot.data.steps.push(d)
         // 流式期间 meta 还没到，检索轮数先自己数着（done/meta 里的才是权威值）
         if (d.node === 'retrieve') slot.data.iterations = (slot.data.iterations || 0) + 1
       },
       done: (d) => {
+        mark()
+        slot.phase = null
         flush()
         slot.data.answer = d.answer
         if (d.usage) slot.data.usage = d.usage
@@ -408,14 +434,34 @@ async function askStream(payload, agentMode = false) {
       // 前端无从判断 —— 所以文案保持中性，不下"存没存"的结论。
       slot.stopped = true
       maybePersisted = true
-    } else if (slot.data.answer && e?.code === 'STREAM_TRUNCATED') {
-      // 连接被掐断（反代空闲超时 / 网络抖动）：字节没送到，但**后端多半已经落完库**了 ——
-      // 落库不看客户端还在不在。所以这里不能用"未存入历史"那句，那是流内 error 的口径。
-      slot.cutoff = true
-      maybePersisted = true
-    } else if (slot.data.answer) {
-      slot.interrupted = true // 流内 error：后端明确不落库，可以下这个结论
+    } else if (gotEvent || e?.transport) {
+      // ④ 流真的开始了才谈降级 —— 见 `retryWithoutStream` 的说明。
+      //    `e.transport` 是第二个入口：传输层就坏了（nginx 502/504）时一帧都没收到，
+      //    但那恰恰是最该重试的场景（本项目 HTTP 恒 200，非 200 必然不是我们的信封）。
+      const recovered = await retryWithoutStream(
+        slot, payload, agentMode, controller.signal
+      )
+      if (recovered) {
+        maybePersisted = true // 重试走非流式落库，会话必然已建
+      } else if (slot.data.answer && e?.code === 'STREAM_TRUNCATED') {
+        // 连接被掐断（反代空闲超时 / 网络抖动）：字节没送到，但**后端多半已经落完库**了 ——
+        // 落库不看客户端还在不在。所以这里不能用"未存入历史"那句，那是流内 error 的口径。
+        slot.cutoff = true
+        maybePersisted = true
+      } else if (slot.data.answer) {
+        slot.interrupted = true // 流内 error：后端明确不落库，可以下这个结论
+      } else {
+        // ④ 降级也失败了：**必须把降级那次的原因带出来**。http.js 的拦截器会弹一个
+        // 全局 toast，而这里显示的是另一句 —— 两处信息不一致时，用户会把 toast 当误触，
+        // 并且因为看不到真实原因（很可能就是"配额到顶"）而反复重试。
+        slot.error = true
+        slot.content = slot.retryError
+          ? `重新获取也失败了：${slot.retryError}`
+          : e?.message || '请求失败，请稍后重试'
+      }
     } else {
+      // 一帧都没收到：请求根本没进流（越权 / 配额到顶 / 未登录 / 网络不通）。
+      // 这种失败重试一次是同样的结果，直接显示后端那句话。
       slot.error = true
       slot.content = e?.message || '请求失败，请稍后重试'
     }
@@ -427,6 +473,65 @@ async function askStream(payload, agentMode = false) {
   }
   // 刷新列表放 try/catch 外（理由同 askOnce）：标题与活跃时间都变了
   if (ok || maybePersisted) await loadConversations()
+}
+
+/**
+ * ④ SSE 降级重试：流开始之后断了，用**非流式**端点再要一次整段答案。
+ *
+ * 为什么值得做：SSE 是长连接，放到 nginx 后面被 `proxy_read_timeout` 掐断是常态
+ * （本地 Vite 的 120s 只是碰不到）。一旦断了，用户手里只有半截答案，而**非流式那条路
+ * 照样能跑** —— 同一个后端、同一套检索与生成。有了它，SSE 出问题最多是"慢一点"，
+ * 不再是"整个问答页废了"。
+ *
+ * 三条边界：
+ *  · **只重试一次**。第二次再失败就照常报错，绝不循环（否则一次网络故障会放大成
+ *    好几次付费调用）。
+ *  · **只在流真的开始过之后**。一帧都没收到的失败（越权 / 配额到顶 / 未登录）
+ *    重试一次是同样的结果，白花一次请求 —— 由调用方用 `gotEvent` 把关。
+ *  · **用户主动停止不重试**（AbortError），那条路径在调用方就分流掉了。
+ *
+ * @returns {Promise<boolean>} 是否拿到了完整答案
+ */
+async function retryWithoutStream(slot, payload, agentMode, signal) {
+  slot.retrying = true
+  try {
+    // ⚠️ signal 必须传下去：`ask/askAgent` 的 config 形参就是为它加的。
+    // 不传的话，用户切走会话之后这次整段请求还会跑满 180s（http.js 的 timeout），
+    // 并且再花掉一次付费调用 —— 而它的结果已经没人要了。
+    const body = agentMode
+      ? await chatApi.askAgent(payload, { signal })
+      : await chatApi.ask(payload, { signal })
+    const d = body.data || {}
+    Object.assign(slot.data, {
+      answer: d.answer || '',
+      sources: d.sources || [],
+      hit: d.hit,
+      reranked: d.reranked,
+      answer_mode: d.answer_mode,
+      iterations: d.iterations,
+      searched_kb_ids: d.searched_kb_ids,
+      skipped_orphans: d.skipped_orphans,
+      model: d.model,
+      usage: d.usage,
+      finish_reason: d.finish_reason,
+      elapsed_ms: d.elapsed_ms,
+    })
+    // Agent 的轨迹整段回来，直接覆盖（step 期间攒的是"过程视图"）
+    if (agentMode && d.steps?.length) slot.data.steps = d.steps
+    if (d.conversation_id && !signal.aborted) {
+      currentConvId.value = d.conversation_id
+    }
+    slot.recovered = true
+    return true
+  } catch (e2) {
+    // ④ 把降级失败的原因存下来交给调用方：它很可能就是"配额到顶"——
+    // 降级那次走的是同一个 chat 限流器。不存的话界面只会显示原中断文案，
+    // 用户会把它当网络问题反复重试。
+    slot.retryError = e2?.message || '未知原因'
+    return false // 降级也没救回来，交回调用方按原中断语义提示
+  } finally {
+    slot.retrying = false
+  }
 }
 
 async function scrollToBottom() {
@@ -572,6 +677,15 @@ onBeforeUnmount(() => abortStream())
                   <div class="answer">
                     {{ m.data.answer }}<span v-if="m.streaming && m.mode === 'rag'" class="caret"></span>
                   </div>
+                  <!-- ⑤ 后端已开工、但第一个节点还没回来（Agent 的 analyze 要一秒上下）。
+                       没有它，那段时间里这条消息是一片空白，用户不知道它到底动没动。 -->
+                  <div v-if="m.streaming && m.phase && m.mode === 'agent'" class="stream-hint">
+                    {{ PHASE_TEXT[m.phase] || m.phase }}
+                  </div>
+                  <!-- ④ 正在用非流式端点重取完整答案 -->
+                  <div v-if="m.retrying" class="stream-hint">
+                    连接中断，正在重新获取完整答案…
+                  </div>
                   <div v-if="m.interrupted" class="stream-note">
                     生成中断，本次未存入历史（半截答案不进历史，免得影响后续追问）
                   </div>
@@ -583,6 +697,10 @@ onBeforeUnmount(() => abortStream())
                   </div>
                   <div v-else-if="m.unsaved" class="stream-note">
                     答案已完整返回，但这次没能存入历史
+                  </div>
+                  <!-- ④ 降级成功：答案是完整的，只是来路换了，交代一句 -->
+                  <div v-else-if="m.recovered" class="stream-note">
+                    流式连接中断过一次，这条答案是用普通模式补取的（完整，已存入历史）
                   </div>
                   <!-- 被 max_tokens 截断：与上面几条**独立**判断（可能叠加出现）。
                        判据来自 meta 里的 finish_reason，当场答的与翻出来的老消息同源。 -->
@@ -984,6 +1102,12 @@ onBeforeUnmount(() => abortStream())
   margin-top: 6px;
   font-size: 12px;
   color: var(--el-color-warning);
+}
+/* 正在等 / 正在重取：不是错误，只是"还在动"的说明，用中性色跟 stream-note 区分。 */
+.stream-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .err {
   color: var(--el-color-danger);
