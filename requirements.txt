@@ -24,6 +24,15 @@ pypdf==6.19.0
 langchain-openai==1.6.7
 pymilvus==3.0.2
 
+# rerank (Phase 7)
+# httpx: the reranker calls a native /rerank endpoint (the OpenAI protocol has
+#   no such route), so it is a plain HTTP call instead of an SDK call.
+#   NOTE: this is a RUNTIME dependency - app/rag/reranker.py imports it.
+#   It used to live only in requirements-dev.txt, which meant a clean install
+#   from this file alone would hit ImportError on the first rerank call
+#   (the dev file pulls this one in, so tests never caught it).
+httpx==0.28.1
+
 # agent / state machine (Phase 8)
 # langgraph: graph orchestration for the multi-step QA agent
 #   (decide-whether-to-retrieve -> retrieve -> judge -> maybe-retrieve-again -> generate).

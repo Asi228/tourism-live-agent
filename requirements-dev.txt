@@ -8,4 +8,8 @@
 
 pytest==8.3.4
 pytest-asyncio==0.25.2
-httpx==0.28.1
+
+# NOTE: httpx is NOT listed here on purpose. It is a RUNTIME dependency
+#   (app/rag/reranker.py) and already pinned in requirements.txt, which this
+#   file includes. Starlette's TestClient happens to need it too, so tests
+#   work either way - but keeping a second copy here would let the two drift.

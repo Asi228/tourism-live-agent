@@ -34,6 +34,9 @@ export const userApi = {
 export const statsApi = {
   // 概览统计，**口径按当前用户可见范围**（员工看到的是他有权访问的那部分）
   overview: () => http.get('/stats/overview'),
+  // 图表用的趋势数据（近 N 天提问数 + 各库文档数）。
+  // 与 overview **分开取**：首屏不该为"补了 6 个 0 的折线"付流量，图表按需再要。
+  trends: (days = 7) => http.get(`/stats/trends?days=${days}`),
 }
 
 export const auditApi = {
@@ -91,7 +94,10 @@ export const chatApi = {
   ask: (payload, config, url) => http.post(url || '/chat', payload, config),
   // Agent：多步决策，返回执行轨迹；会多调几次模型，更慢也更贵
   askAgent: (payload, config, url) => http.post(url || '/agent/chat', payload, config),
-  // 只检索不给模型：用来对比"重排前后"的排序差异
+  // 只检索不给模型：用来对比"重排前后"的排序差异（`/search` 默认 rerank=false）。
+  // ⚠️ **当前没有 UI 入口**——这是刻意的，它是**对照实验**用的封装
+  //（见 docs/benchmarks/query-rewrite.md 的做法），不是漏接线的界面功能。
+  // 重跑实验时用它，或走调试台的「万能请求」直接 POST。
   search: (payload) => http.post('/search', payload),
 }
 
@@ -101,8 +107,9 @@ export const vectorApi = {
   // 两者都会静默改变检索结果，而 documents 表里没有任何向量相关字段 —— 从界面上看不出来。
   // ⚠️ 仅系统管理员：后端 require_admin。
   health: () => http.get('/vector/health'),
-  // 清理孤儿向量。**刻意不放前端主界面**：这是真删 Milvus 数据的危险操作，
-  // 放在应急调试台里让人多点一步、想清楚，比放在漂亮界面上手滑好。
+  // 清理孤儿向量（**真删 Milvus 数据、不可逆**）。
+  // 入口在「系统状态」页的向量库卡片上：**只在真有孤儿时才出现**那个按钮，
+  // 且走确认框（与"少一个可点的地方就少一次手滑"同一个思路）。
   purgeOrphans: () => http.post('/vector/purge-orphans'),
 }
 
