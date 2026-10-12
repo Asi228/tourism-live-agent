@@ -34,8 +34,18 @@ def client():
     # 建表（导入 app.models 时 Role / User 已注册到 Base.metadata）
     Base.metadata.create_all(bind=test_engine)
     with TestSessionLocal() as db:
+        # ⚠️ **幂等插入**，不能直接 add：`client` 是 session 级的，只在**首次被请求**时
+        # 初始化；而 `_fresh_tables`（function 级 autouse）每个用例都会重建角色表。
+        # 若某个不请求 client 的用例（如纯限流测试）先跑过，表里已经有角色了，
+        # 这里再 add 一次就会撞 `UNIQUE constraint failed: roles.code` —— 而且报在
+        # setup 阶段，看上去像"某个用例坏了"，实际是 fixture 顺序问题。
+        # （与 `init_db._seed_roles` 同一做法：有就跳过。）
+        existing = {
+            code for (code,) in db.execute(select(Role.code)).all()
+        }
         for item in DEFAULT_ROLES:
-            db.add(Role(**item))
+            if item["code"] not in existing:
+                db.add(Role(**item))
         db.commit()
 
     app = create_app()

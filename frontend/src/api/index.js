@@ -10,8 +10,34 @@ export const authApi = {
 }
 
 export const userApi = {
-  // 仅系统管理员可调，用于成员授权时选人
-  list: (keyword) => http.get('/users', { params: keyword ? { keyword } : {} }),
+  // 仅系统管理员可调。
+  // 默认最小字段（选人授权用）；`full=true` 时带邮箱与注册时间（用户管理页用）。
+  list: (keyword, full) =>
+    http.get('/users', { params: { ...(keyword ? { keyword } : {}), ...(full ? { full: true } : {}) } }),
+  // 改角色 —— 提权入口，后端有三条约束（不能改自己 / 不能没有 admin / 必留审计）
+  updateRole: (id, roleCode) => http.patch(`/users/${id}/role`, { role_code: roleCode }),
+  // 从"人"这一侧看权限：他被授权了哪些库
+  grants: (id) => http.get(`/users/${id}/grants`),
+}
+
+export const statsApi = {
+  // 概览统计，**口径按当前用户可见范围**（员工看到的是他有权访问的那部分）
+  overview: () => http.get('/stats/overview'),
+}
+
+export const auditApi = {
+  // 管理操作审计（仅系统管理员）。
+  // 翻页用 keyset（before_id = 当前最旧那条的 id）而不是 offset ——
+  // 审计只追加，offset 会在翻的过程中漏条/重条。响应是 {items, has_more}。
+  list: (params = {}) => http.get('/audit', { params }),
+  // 动作清单（value + 中文说明）由后端下发，前端不维护第二份映射
+  actions: () => http.get('/audit/actions'),
+}
+
+export const systemApi = {
+  // 健康检查：MySQL / Milvus / Redis 逐项状态（后端有 3 秒缓存，连点不会反复打外部依赖）。
+  // 这个端点**不需要登录**，但没有它前端就得靠"随便调一个接口看会不会失败"来判断后端死活。
+  health: () => http.get('/health'),
 }
 
 export const knowledgeApi = {

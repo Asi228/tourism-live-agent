@@ -49,6 +49,9 @@ async function handleLogout() {
       </div>
 
       <el-menu :default-active="route.path" router class="menu">
+        <el-menu-item index="/dashboard">
+          <span>概览</span>
+        </el-menu-item>
         <el-menu-item index="/knowledge">
           <span>知识库</span>
         </el-menu-item>
@@ -58,6 +61,16 @@ async function handleLogout() {
         <el-menu-item index="/chat">
           <span>智能问答</span>
         </el-menu-item>
+        <!-- 管理入口只对管理员渲染。这是"权限差异感"：员工看不到的入口干脆不出现，
+             而不是点进去才被后端拒。后端 require_admin 仍然强校验（这里只是体验层）。 -->
+        <template v-if="user.isAdmin">
+          <el-menu-item index="/users">
+            <span>用户管理</span>
+          </el-menu-item>
+          <el-menu-item index="/system">
+            <span>系统状态</span>
+          </el-menu-item>
+        </template>
       </el-menu>
 
       <div class="aside-foot">

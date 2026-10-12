@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     agent,
+    audit,
     auth,
     chat,
     conversations,
@@ -15,6 +16,7 @@ from app.api import (
     knowledge,
     memories,
     search,
+    stats,
     users,
     vector,
 )
@@ -87,6 +89,8 @@ def create_app() -> FastAPI:
     app.include_router(agent.router, prefix=settings.API_PREFIX)
     app.include_router(conversations.router, prefix=settings.API_PREFIX)
     app.include_router(memories.router, prefix=settings.API_PREFIX)
+    app.include_router(stats.router, prefix=settings.API_PREFIX)
+    app.include_router(audit.router, prefix=settings.API_PREFIX)
 
     # 调试台只在 dev 环境挂载：生产环境（APP_ENV=prod）压根不存在这个路径，
     # 外部访问不到。安全靠"默认不挂载"，而不是靠人记得删文件。

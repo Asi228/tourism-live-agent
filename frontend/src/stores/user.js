@@ -39,11 +39,37 @@ export const useUserStore = defineStore('user', () => {
     return profile.value
   }
 
+  /**
+   * 保证 `profile` 已加载（并发安全）。
+   *
+   * 为什么需要它：`profile` 是**异步**拉的，而路由守卫要在进入页面前就知道
+   * "这个人是不是管理员" —— 刷新页面时 `profile` 是 null、`isAdmin` 是 false，
+   * 守卫会把管理员误判成员工踢走。
+   *
+   * 用模块级 promise 做单例：多个守卫 / 组件同时调用时只会发**一次**请求，
+   * 而不是每人发一次。请求结束（无论成败）后清掉，失败可以重试。
+   */
+  let profilePromise = null
+
+  async function ensureProfile() {
+    if (profile.value) return profile.value
+    if (!profilePromise) {
+      profilePromise = fetchMe().finally(() => {
+        profilePromise = null
+      })
+    }
+    return profilePromise
+  }
+
   function logout() {
     token.value = ''
     profile.value = null
+    profilePromise = null
     setToken('')
   }
 
-  return { token, profile, isLoggedIn, isAdmin, displayName, roleName, login, register, fetchMe, logout }
+  return {
+    token, profile, isLoggedIn, isAdmin, displayName, roleName,
+    login, register, fetchMe, ensureProfile, logout,
+  }
 })

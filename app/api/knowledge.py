@@ -96,7 +96,7 @@ def delete_knowledge(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    knowledge_service.delete_kb(db, kb_id)
+    knowledge_service.delete_kb(db, kb_id, admin)
     return success(None, "删除成功")
 
 

@@ -40,6 +40,7 @@ from app.schemas.knowledge import (
     MemberAdd,
     MemberOut,
 )
+from app.services import audit_service
 from app.utils import file_storage
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,8 @@ def create_kb(db: Session, payload: KnowledgeBaseCreate, owner: User) -> Knowled
     knowledge_member_repository.create(
         db, kb_id=kb.id, user_id=owner.id, permission=PERM_ADMIN
     )
+    # 审计与改动同事务（audit_service 只 flush，这里一起 commit）
+    audit_service.record_kb_create(db, actor=owner, kb=kb)
     db.commit()
     logger.info("创建知识库 kb_id=%s name=%s owner=%s", kb.id, kb.name, owner.username)
     return kb
@@ -202,13 +205,23 @@ def update_kb(
             raise AppException(ErrorCode.PARAM_ERROR, "该知识库名称已存在")
 
     if fields:
+        # ⚠️ `is_public` 是**权限开关**不是元数据：置 True 之后所有登录用户至少
+        # 有 read，而且下一次请求就生效（`get_accessible_kb_ids` 立刻把它算进
+        # 检索范围）—— 比改角色生效还快。所以它必须留痕。
+        # 这个 from 值要在 update 之前取：update 之后 kb.is_public 已经被改掉了。
+        was_public = kb.is_public
         knowledge_repository.update(db, kb, fields)
+        if "is_public" in fields and fields["is_public"] != was_public:
+            audit_service.record_kb_visibility(
+                db, actor=user, kb=kb, from_public=was_public,
+                to_public=bool(fields["is_public"]),
+            )
     db.commit()
     logger.info("修改知识库 kb_id=%s fields=%s", kb.id, list(fields))
     return kb
 
 
-def delete_kb(db: Session, kb_id: int) -> None:
+def delete_kb(db: Session, kb_id: int, actor: User) -> None:
     """删除知识库：成员记录、文档行、文档的磁盘文件一起清。
 
     权限由接口层的 require_admin 保证 —— 删除被划为**系统管理员专属**操作：
@@ -227,6 +240,8 @@ def delete_kb(db: Session, kb_id: int) -> None:
     name = kb.name
     # 先取路径再删行：删完就查不到了
     doc_paths = document_repository.list_file_paths_by_kb(db, kb_id)
+    # 审计要在删之前记：库删掉后就没有对象可供引用 id/name 了（记录里用的是快照）
+    audit_service.record_kb_delete(db, actor=actor, kb_id=kb_id, kb_name=name)
     knowledge_repository.delete(db, kb)  # 成员、文档、chunk 由 cascade 一起删
     db.commit()
 
@@ -312,6 +327,7 @@ def grant_member(db: Session, user: User, kb_id: int, payload: MemberAdd) -> Mem
         raise AppException(ErrorCode.PARAM_ERROR, "创建者默认拥有全部权限，无需授权")
 
     member = knowledge_member_repository.get(db, kb_id, payload.user_id)
+    previous = member.permission if member is not None else None
     if member is None:
         member = knowledge_member_repository.create(
             db, kb_id=kb_id, user_id=payload.user_id, permission=payload.permission
@@ -320,6 +336,10 @@ def grant_member(db: Session, user: User, kb_id: int, payload: MemberAdd) -> Mem
         member = knowledge_member_repository.update_permission(
             db, member, payload.permission
         )
+    audit_service.record_member_grant(
+        db, actor=user, kb=kb, target_user=target,
+        permission=payload.permission, previous=previous,
+    )
     db.commit()
     logger.info(
         "授权知识库成员 kb_id=%s target=%s perm=%s by=%s",
@@ -342,6 +362,13 @@ def revoke_member(db: Session, user: User, kb_id: int, target_user_id: int) -> N
     if member is None:
         raise AppException(ErrorCode.NOT_FOUND, "该用户不是此知识库的成员")
 
+    target = user_repository.get_by_id(db, target_user_id)
+    audit_service.record_member_revoke(
+        db, actor=user, kb=kb,
+        target_user_id=target_user_id,
+        target_name=target.username if target else f"user#{target_user_id}",
+        previous=member.permission,
+    )
     knowledge_member_repository.delete(db, member)
     db.commit()
     logger.info("移除知识库成员 kb_id=%s target_user_id=%s", kb_id, target_user_id)

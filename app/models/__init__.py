@@ -6,6 +6,15 @@
 """
 
 from app.models.agent_log import AgentLog
+from app.models.audit_log import (
+    ACTION_KB_CREATE,
+    ACTION_KB_DELETE,
+    ACTION_MEMBER_GRANT,
+    ACTION_MEMBER_REVOKE,
+    ACTION_ROLE_CHANGE,
+    ALL_ACTIONS,
+    AuditLog,
+)
 from app.models.conversation import TITLE_MAX_LENGTH, Conversation
 from app.models.document import (
     ALL_STATUSES,
@@ -24,6 +33,12 @@ from app.models.user import User
 from app.models.user_memory import CONTENT_MAX_LENGTH as MEMORY_MAX_LENGTH, UserMemory
 
 __all__ = [
+    "ACTION_KB_CREATE",
+    "ACTION_KB_DELETE",
+    "ACTION_MEMBER_GRANT",
+    "ACTION_MEMBER_REVOKE",
+    "ACTION_ROLE_CHANGE",
+    "ALL_ACTIONS",
     "ALL_ROLES",
     "ALL_STATUSES",
     "MEMORY_MAX_LENGTH",
@@ -35,6 +50,7 @@ __all__ = [
     "STATUS_PROCESSING",
     "TITLE_MAX_LENGTH",
     "AgentLog",
+    "AuditLog",
     "Conversation",
     "Document",
     "DocumentChunk",
