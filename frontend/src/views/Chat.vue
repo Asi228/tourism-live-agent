@@ -617,26 +617,6 @@ onBeforeUnmount(() => abortStream())
 
 <template>
   <div class="chat-page">
-    <!-- dev-only 故障模拟工具条：import.meta.env.DEV 在 build 时被静态替换成 false，
-         所以这条（连按钮）不会进产物。放在问答页内而不是 devtools，是因为 devtools
-         由 FastAPI 挂在 :8000，与 vite dev server 不同源 —— 那边开链接只会 404。 -->
-    <div v-if="isDev" class="mock-bar">
-      <span class="mock-bar-label">SSE 故障模拟</span>
-      <button
-        v-for="b in MOCK_BUTTONS"
-        :key="b.mode"
-        class="mock-btn"
-        :class="{ on: MOCK_MODE === b.mode }"
-        @click="setMock(b.mode)"
-      >{{ b.label }}</button>
-      <button v-if="MOCK_MODE" class="mock-btn off" @click="setMock(null)">关闭</button>
-      <span class="mock-bar-hint">
-        当前：<b>{{ MOCK_MODE || '未启用（连真后端）' }}</b>
-        ｜流式与非流式都会走 mock，不花钱、不写库
-        ｜rag / agent 切换决定模拟哪条协议
-      </span>
-    </div>
-
     <!-- 左：会话列表 -->
     <aside class="side">
       <el-button type="primary" class="new-btn" @click="newConversation">＋ 新对话</el-button>
@@ -700,6 +680,30 @@ onBeforeUnmount(() => abortStream())
 
     <!-- 右：对话区 -->
     <div class="main-col">
+      <!-- dev-only 故障模拟工具条。
+           ⚠️ 它必须是 `.main-col` 的子元素，**不能放在 `.chat-page` 下**：
+           后者是 `display: flex` 的横向容器，直接子元素会和三列（会话列表 / 主列 /
+           记忆列）横排争宽度 —— 主列被压扁后，模式选择、消息区、输入框全被挤出
+           可见区，界面看起来"没有问答功能"。（这个错从加上它的那轮就存在，
+           跑 build 和 curl 都发现不了，只有真看浏览器才会暴露。）
+           `import.meta.env.DEV` 在 build 时被静态替换成 false，运行时不渲染。 -->
+      <div v-if="isDev" class="mock-bar">
+        <span class="mock-bar-label">SSE 故障模拟</span>
+        <button
+          v-for="b in MOCK_BUTTONS"
+          :key="b.mode"
+          class="mock-btn"
+          :class="{ on: MOCK_MODE === b.mode }"
+          @click="setMock(b.mode)"
+        >{{ b.label }}</button>
+        <button v-if="MOCK_MODE" class="mock-btn off" @click="setMock(null)">关闭</button>
+        <span class="mock-bar-hint">
+          当前：<b>{{ MOCK_MODE || '未启用（连真后端）' }}</b>
+          ｜流式与非流式都会走 mock，不花钱、不写库
+          ｜rag / agent 切换决定模拟哪条协议
+        </span>
+      </div>
+
       <el-card shadow="never" class="head-card">
         <div class="head-row">
           <el-select
@@ -1178,14 +1182,15 @@ onBeforeUnmount(() => abortStream())
     visibility: hidden;
   }
 }
-/* dev-only 故障模拟工具条（build 时整条不进产物，见 isDev 的说明） */
+/* dev-only 故障模拟工具条（build 时整条不渲染，见 isDev 的说明）。
+   在 `.main-col` 的竖向 flex 里，`flex: none` 防止它被压高度。 */
 .mock-bar {
+  flex: none;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   padding: 6px 10px;
-  margin-bottom: 10px;
   border: 1px dashed var(--el-color-warning);
   border-radius: 6px;
   background: var(--el-fill-color-lighter);
