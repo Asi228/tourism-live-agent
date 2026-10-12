@@ -1,11 +1,17 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { mockSsePlugin } from './mock-sse.js'
 
 // 开发时把 /api 转发到后端，前端就变成"同源调用"——
 // 这样后端完全不用配 CORS 白名单，而且和将来的生产部署（同域反代）形态一致，
 // 本地怎么调、线上就怎么跑，不会出现"本地好用、部署后跨域失败"。
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // dev-only：模拟 SSE 的各种死法（断流 / 502 / 挂起 / 流内 error）。
+    // 只挂在 dev server 上，build 产物里没有任何引用。
+    mockSsePlugin(),
+  ],
   server: {
     // 显式绑 IPv4。默认的 host='localhost' 在 Windows 上会解析到 IPv6 的 ::1，
     // 于是服务只监听 [::1]:5173 —— 用 127.0.0.1 访问会连不上，curl / 反向代理

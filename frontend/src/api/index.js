@@ -47,11 +47,13 @@ export const documentApi = {
 
 export const chatApi = {
   // 纯 RAG：快、便宜，答案同样带引用
-  // 第二个形参 config 透传给 axios —— 降级重试要靠它传 `signal`，
+  // 第二参 config 透传 axios —— 降级重试靠它传 `signal`，
   // 否则用户切走之后那次整段请求仍会跑满 180s 并花掉一次付费调用。
-  ask: (payload, config) => http.post('/chat', payload, config),
+  // 第三参 url 仅 dev-only 的 mock 用（见 views/Chat.vue 的 MOCK_MODE）：
+  // mock 时必须连非流式也拦掉，否则"降级重试"会打到真后端、真花一次钱。
+  ask: (payload, config, url) => http.post(url || '/chat', payload, config),
   // Agent：多步决策，返回执行轨迹；会多调几次模型，更慢也更贵
-  askAgent: (payload, config) => http.post('/agent/chat', payload, config),
+  askAgent: (payload, config, url) => http.post(url || '/agent/chat', payload, config),
   // 只检索不给模型：用来对比"重排前后"的排序差异
   search: (payload) => http.post('/search', payload),
 }

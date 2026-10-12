@@ -373,6 +373,21 @@
       </div>
     </div>
 
+    <!-- SSE 故障模拟入口（实际按钮在问答页，见下） -->
+    <div class="card">
+      <h2>SSE 故障模拟 <span class="spacer"></span><span class="tag">仅 dev</span></h2>
+      <div class="body">
+        <div class="hint" style="margin:0">
+          断流 / 502 / 流内 error / 降级也失败这些场景，按钮在<b>问答页顶部那条虚线工具条</b>
+          （打开 <code>/?mock=break</code> 这类网址就能看到全部模式）。<br>
+          为什么不放在本页：本页由 FastAPI 挂在 <code>:8000</code>，而 mock 中间件只存在于
+          vite dev server —— 不同源，从这里开链接只会 404。<br>
+          模拟走 vite 自己的中间件（<code>frontend/mock-sse.js</code>），
+          <b>流式和非流式都会走 mock</b>，不花钱、不写库。
+        </div>
+      </div>
+    </div>
+
     <!-- 响应 -->
     <div class="card">
       <h2>响应</h2>

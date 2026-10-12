@@ -46,13 +46,69 @@ const PHASE_TEXT = {
   start: '正在判定要不要查库…',
 }
 
+// ==================== dev-only：SSE 故障模拟 ====================
+// 网址带 `?mock=<模式>` 时，**流式和非流式都**改走 vite 的 mock 中间件
+// （`frontend/mock-sse.js`），用来复现"断流 / 502 / 流内 error / 降级也失败"
+// 这些只有真机才能触发的场景 —— 流式是问答在界面上的唯一入口，降级重试是它的
+// 兜底，而这条路径没有自动化测试。
+//
+// 🔴 **必须用 import.meta.env.DEV 门控**：vite 会在 build 时把这个常量静态替换成
+// false，于是 `MOCK_MODE` 恒为 null、`isDev` 恒为 false —— 两条 mock 路径在**运行时
+// 都不可达**。少了它，线上任何人加 `?mock=break` 都会让页面去请求
+// `/__mock__/chat/stream` → nginx 404 → !resp.ok → transport → 自动降级打真后端
+// —— 等于给线上开了一条"一个 query 参数让每次问答白跑一趟"的路。
+// （注意："build 产物里没有 mock 模块"和"运行时不受影响"是两回事，前者不蕴含后者。）
+// ⚠️ 实话实说：模板分支与 helper 的**字符串仍会留在产物里**（Vue 先编译模板、
+// rollup 才替换常量，跨不过这一层），量级几百字节。行为上无差别，但别把它说成
+// "整条不进产物"。
+const MOCK_MODE = import.meta.env.DEV
+  ? new URLSearchParams(location.search).get('mock')
+  : null
+
+/** mock 模式下的非流式落点。也要走 mock，否则降级重试打的是真后端。 */
+function mockNonStreamUrl(agentMode) {
+  return `/__mock__/${agentMode ? 'agent/' : ''}chat`
+}
+
+function streamUrl(agentMode) {
+  if (!MOCK_MODE) {
+    return agentMode ? '/api/agent/chat/stream' : '/api/chat/stream'
+  }
+  return `/__mock__/${agentMode ? 'agent/' : ''}chat/stream?mode=${MOCK_MODE}`
+}
+
+/** mock 模式切换：改 query 并重载。dev-only，见上面的说明。 */
+function setMock(mode) {
+  const q = new URLSearchParams(location.search)
+  if (mode) q.set('mock', mode)
+  else q.delete('mock')
+  location.search = q.toString()
+}
+
+const MOCK_BUTTONS = [
+  { mode: 'normal', label: '基准' },
+  { mode: 'break', label: '吐 2 帧后断流' },
+  { mode: 'http502', label: '反代 502' },
+  { mode: 'error', label: '流内 error' },
+  { mode: 'hang', label: '首帧前挂 3 秒' },
+  { mode: 'unsaved', label: '落库失败' },
+  { mode: 'truncated', label: '答案被截断' },
+  { mode: 'withconv', label: '带会话 id' },
+]
+
 const canAsk = computed(() => !!query.value.trim() && !asking.value)
 
-const emptyHint = computed(() =>
-  mode.value === 'agent'
+// dev-only 工具条的开关。vite 在 build 时把它静态替换为 false → 运行时不渲染。
+// （同类说明见上面 MOCK_MODE：运行时不可达，但模板分支的字符串仍会进产物。）
+const isDev = import.meta.env.DEV
+
+const emptyHint = computed(() => {
+  const base = mode.value === 'agent'
     ? 'Agent 会先判断要不要查库，查到后再评估资料够不够，不够就换个关键词再查一次 —— 比纯 RAG 更慢也更贵，但寒暄类问题会更自然、更省。'
     : '纯 RAG：检索一次就生成，快且便宜。答案只依据检索到的资料，并带引用编号。'
-)
+  // mock 模式下必须让人看见"现在连的不是真后端"，否则会误以为系统坏了
+  return MOCK_MODE ? `⚠️ SSE 故障模拟中（${MOCK_MODE}）—— 这条请求不会打到后端。${base}` : base
+})
 
 async function loadKbList() {
   try {
@@ -424,7 +480,7 @@ async function askStream(payload, agentMode = false) {
       },
     }, {
       signal: controller.signal,
-      url: agentMode ? '/api/agent/chat/stream' : '/api/chat/stream',
+      url: streamUrl(agentMode),
     })
     ok = true
   } catch (e) {
@@ -498,9 +554,14 @@ async function retryWithoutStream(slot, payload, agentMode, signal) {
     // ⚠️ signal 必须传下去：`ask/askAgent` 的 config 形参就是为它加的。
     // 不传的话，用户切走会话之后这次整段请求还会跑满 180s（http.js 的 timeout），
     // 并且再花掉一次付费调用 —— 而它的结果已经没人要了。
+    // ⚠️ mock 模式下**非流式也必须走 mock**：否则"降级重试"会打到真后端，
+    // 真调一次大模型、真写一轮库 —— 花着钱验着一个被污染的场景。
+    // `baseURL: ''` 是为了绕开 axios 实例上的 `/api`，直接打 vite 的 `/__mock__/…`。
+    const cfg = MOCK_MODE ? { signal, baseURL: '' } : { signal }
+    const url = MOCK_MODE ? mockNonStreamUrl(agentMode) : undefined
     const body = agentMode
-      ? await chatApi.askAgent(payload, { signal })
-      : await chatApi.ask(payload, { signal })
+      ? await chatApi.askAgent(payload, cfg, url)
+      : await chatApi.ask(payload, cfg, url)
     const d = body.data || {}
     Object.assign(slot.data, {
       answer: d.answer || '',
@@ -556,6 +617,26 @@ onBeforeUnmount(() => abortStream())
 
 <template>
   <div class="chat-page">
+    <!-- dev-only 故障模拟工具条：import.meta.env.DEV 在 build 时被静态替换成 false，
+         所以这条（连按钮）不会进产物。放在问答页内而不是 devtools，是因为 devtools
+         由 FastAPI 挂在 :8000，与 vite dev server 不同源 —— 那边开链接只会 404。 -->
+    <div v-if="isDev" class="mock-bar">
+      <span class="mock-bar-label">SSE 故障模拟</span>
+      <button
+        v-for="b in MOCK_BUTTONS"
+        :key="b.mode"
+        class="mock-btn"
+        :class="{ on: MOCK_MODE === b.mode }"
+        @click="setMock(b.mode)"
+      >{{ b.label }}</button>
+      <button v-if="MOCK_MODE" class="mock-btn off" @click="setMock(null)">关闭</button>
+      <span class="mock-bar-hint">
+        当前：<b>{{ MOCK_MODE || '未启用（连真后端）' }}</b>
+        ｜流式与非流式都会走 mock，不花钱、不写库
+        ｜rag / agent 切换决定模拟哪条协议
+      </span>
+    </div>
+
     <!-- 左：会话列表 -->
     <aside class="side">
       <el-button type="primary" class="new-btn" @click="newConversation">＋ 新对话</el-button>
@@ -1097,6 +1178,44 @@ onBeforeUnmount(() => abortStream())
     visibility: hidden;
   }
 }
+/* dev-only 故障模拟工具条（build 时整条不进产物，见 isDev 的说明） */
+.mock-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  border: 1px dashed var(--el-color-warning);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  font-size: 12px;
+}
+.mock-bar-label {
+  font-weight: 600;
+  color: var(--el-color-warning);
+}
+.mock-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  background: var(--el-bg-color);
+  cursor: pointer;
+  font-size: 12px;
+}
+.mock-btn.on {
+  border-color: var(--el-color-warning);
+  color: var(--el-color-warning);
+  font-weight: 600;
+}
+.mock-btn.off {
+  color: var(--el-text-color-secondary);
+}
+.mock-bar-hint {
+  color: var(--el-text-color-secondary);
+  margin-left: 4px;
+}
+
 /* 流中途断了：正文保留，只在下面加一行说明（并说清没进历史）。 */
 .stream-note {
   margin-top: 6px;

@@ -584,7 +584,7 @@ Agent 那条路的事件序列是 `status → step*N → meta → done`；纯 RA
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布。⚠️ 注意：光累积**正样本**（库里有答案的问题）定不出这个阈值，需要的是"**明明库里没有**"时分数能到多高的上界 |
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
 | 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
-| 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。断流 / 降级重取 / 三种中断提示目前**只能真机触发** —— 而它是问答在界面上的唯一入口（非流式已从 UI 移除），风险集中度不低。计划用 vite `configureServer` 加一个 dev-only 的 mock SSE 中间件（吐若干帧后主动断开）来复现，**不往后端生产代码加调试参数** |
+| 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。**已实现**一个 dev-only 的 SSE 故障模拟来补：`frontend/mock-sse.js`（vite `configureServer` 中间件），问答页顶部有一条虚线工具条（`import.meta.env.DEV` 门控，build 时整条不进产物），或直接开 `/?mock=<模式>`。八种模式：`normal` / `break`（吐 2 帧后断开）/ `http502`（502+HTML，验 transport 判据）/ `error`（流内 error）/ `hang`（首帧前挂 3s）/ `unsaved`（`done.saved=false`）/ `truncated`（`finish_reason='length'`）/ `withconv`（`done.conversation_id` 非 null）。**流式和非流式都走 mock** —— 否则降级重试会打到真后端、真花一次钱。⚠️ 它覆盖不到：真实反代的超时行为、浏览器端的渲染细节（逐字/节流/光标）、以及真 LLM 的 usage 是否回传 |
 | 测试基建 | ⚠️ 三处 `_session_factory`（`agent_service` / `rag_service` / `conversation_service`）靠 fixture 的 docstring 提醒"都要换"，**漏 patch 的后果不是变红，而是静默写进真 MySQL**。将来加第四条流式路径时，值得收敛成一个模块级工厂，或在 conftest 里 autouse 统一替换 |
 | 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期 |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
