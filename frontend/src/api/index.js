@@ -58,6 +58,17 @@ export const chatApi = {
   search: (payload) => http.post('/search', payload),
 }
 
+export const vectorApi = {
+  // 向量库自检：Milvus 版本、向量条数、**孤儿向量**（所属知识库已删却还留在 Milvus 里，
+  // 会被检索命中却没有正文）、以及反向的"文档处理好了却一条向量都没有"。
+  // 两者都会静默改变检索结果，而 documents 表里没有任何向量相关字段 —— 从界面上看不出来。
+  // ⚠️ 仅系统管理员：后端 require_admin。
+  health: () => http.get('/vector/health'),
+  // 清理孤儿向量。**刻意不放前端主界面**：这是真删 Milvus 数据的危险操作，
+  // 放在应急调试台里让人多点一步、想清楚，比放在漂亮界面上手滑好。
+  purgeOrphans: () => http.post('/vector/purge-orphans'),
+}
+
 export const conversationApi = {
   // 没有"创建会话"接口：首次提问时后端隐式创建，新 id 在 /chat 的响应里
   // params 传 { limit, offset } 翻页；不传就用后端默认（limit=50, offset=0）。

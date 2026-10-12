@@ -9,6 +9,14 @@ const route = useRoute()
 const router = useRouter()
 const user = useUserStore()
 
+// 应急调试台的地址：dev 下前端在 5173、后端在 8000，**不同源**，必须显式指到 8000
+// （与 vite.config.js 的 proxy target 保持一致）；生产同域反代后用相对路径即可。
+// 端口写死不理想，但 dev 下后端端口就一个，且 proxy target 也是写死的 8000 ——
+// 真要改，两边一起改。
+const devtoolsUrl = import.meta.env.DEV
+  ? 'http://127.0.0.1:8000/devtools/'
+  : '/devtools/'
+
 // 刷新页面后 store 是空的（内存态），但 token 还在 localStorage —— 这里补一次用户信息。
 // 失败不拦：可能是 token 过期，http 拦截器已经处理跳登录。
 onMounted(async () => {
@@ -53,7 +61,13 @@ async function handleLogout() {
       </el-menu>
 
       <div class="aside-foot">
-        <a href="/devtools/" target="_blank" rel="noopener">打开后端调试台 →</a>
+        <!-- ⚠️ dev 下前端(5173)与后端(8000)**不同源**，写 `/devtools/` 会指到 vite 自己，
+             被它的 SPA fallback 接住又返回前端页面 —— 死循环，永远打不开真调试台。
+             （这个错躺了很久：vite 的 proxy target 是 8000，dev 下指过去就对了；
+              生产同域反代时才该用相对路径。）
+             另外它已从"主调试入口"降级为**应急通道**：日常功能前端都有，
+             它只剩"前端挂了时验证后端还活着"和"万能请求"两个价值。 -->
+        <a :href="devtoolsUrl" target="_blank" rel="noopener">应急调试台 →</a>
       </div>
     </el-aside>
 

@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { knowledgeApi, userApi } from '../api'
+import { knowledgeApi, userApi, vectorApi } from '../api'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -36,6 +36,22 @@ function canManage(kb) {
 
 const permissionText = { read: '只读', write: '可写', admin: '管理' }
 const permissionTagType = { read: 'info', write: 'warning', admin: 'success' }
+
+// ---- 向量库自检 ----
+const vectorLoading = ref(false)
+const vectorHealth = ref(null)
+
+async function loadVectorHealth() {
+  vectorLoading.value = true
+  try {
+    const body = await vectorApi.health()
+    vectorHealth.value = body.data || null
+  } catch {
+    /* 拦截器已提示（非管理员会看到"无权限"） */
+  } finally {
+    vectorLoading.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -185,6 +201,61 @@ onMounted(load)
 
 <template>
   <div>
+    <!-- 向量库自检：devtools 里唯一有日常运维价值、而前端一直没有的功能。
+         孤儿向量 / 向量缺失都会静默改变检索结果，documents 表里却没有对应字段，
+         从任何界面上都看不出来 —— 所以给它一个正式入口，而不是埋在应急调试台里。 -->
+    <el-card v-if="user.isAdmin" v-loading="vectorLoading" shadow="never" class="vector-card">
+      <template #header>
+        <div class="card-head">
+          <span>向量库自检</span>
+          <el-button size="small" :loading="vectorLoading" @click="loadVectorHealth">自检</el-button>
+        </div>
+      </template>
+
+      <template v-if="vectorHealth">
+        <div v-if="!vectorHealth.available" class="vector-down">
+          <el-tag type="danger" size="small">不可用</el-tag>
+          <span class="vector-reason">{{ vectorHealth.reason }}</span>
+        </div>
+        <template v-else>
+          <div class="vector-grid">
+            <div class="vector-item">
+              <span class="vector-num">{{ vectorHealth.vector_count }}</span>
+              <span class="vector-label">向量总数</span>
+            </div>
+            <div class="vector-item">
+              <span class="vector-num">{{ vectorHealth.kb_ids_in_vector_store?.length ?? 0 }}</span>
+              <span class="vector-label">库数量</span>
+            </div>
+            <div class="vector-item" :class="{ warn: vectorHealth.orphan_vector_count }">
+              <span class="vector-num">{{ vectorHealth.orphan_vector_count ?? 0 }}</span>
+              <span class="vector-label">孤儿向量</span>
+            </div>
+            <div class="vector-item" :class="{ warn: vectorHealth.documents_without_vectors }">
+              <span class="vector-num">{{ vectorHealth.documents_without_vectors ?? 0 }}</span>
+              <span class="vector-label">缺向量文档</span>
+            </div>
+          </div>
+          <div class="vector-meta">
+            Milvus {{ vectorHealth.server_version }}　·　collection
+            <code>{{ vectorHealth.collection }}</code>
+            <template v-if="!vectorHealth.collection_exists">（尚未创建）</template>
+          </div>
+          <div v-if="vectorHealth.orphan_vector_count || vectorHealth.documents_without_vectors" class="vector-warn">
+            <template v-if="vectorHealth.orphan_vector_count">
+              孤儿向量：所属知识库已删除、却仍留在 Milvus 里 —— 它们会被检索命中，占着 top_k 名额，
+              却拿不到正文（答案里出现"内容缺失"就是它）。<br>
+            </template>
+            <template v-if="vectorHealth.documents_without_vectors">
+              缺向量文档：已处理完成却一条向量都没有 —— 它们<b>永远检索不到</b>，答案里也引用不到。
+              去「文档管理」对它们点"向量化"即可。
+            </template>
+          </div>
+        </template>
+      </template>
+      <div v-else class="vector-empty">点右上角「自检」查看向量库状态</div>
+    </el-card>
+
     <el-card shadow="never">
       <template #header>
         <div class="card-head">
@@ -324,5 +395,65 @@ onMounted(load)
 .grant-row {
   display: flex;
   gap: 8px;
+}
+
+/* ---- 向量库自检卡片 ---- */
+.vector-card {
+  margin-bottom: 14px;
+}
+.vector-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.vector-item {
+  padding: 10px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  text-align: center;
+}
+.vector-item.warn {
+  border-color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+}
+.vector-num {
+  display: block;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.vector-item.warn .vector-num {
+  color: var(--el-color-warning);
+}
+.vector-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.vector-meta {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.vector-warn {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--el-color-warning-light-9);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.vector-down {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vector-reason {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.vector-empty {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 </style>
