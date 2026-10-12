@@ -4,6 +4,12 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.auth import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    RegisterRequest,
+)
+
 
 class RoleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -64,4 +70,40 @@ class RoleUpdateRequest(BaseModel):
     """改角色的入参。只收 role_code —— 不用 role_id：code 是稳定契约，id 不是。"""
 
     role_code: str = Field(min_length=1, max_length=32, description="目标角色的 code")
+
+
+class UserCreateRequest(RegisterRequest):
+    """管理员开通账号的入参。
+
+    字段校验**直接继承注册用的 `RegisterRequest`** —— username 的字符集、
+    password 的长度上限（bcrypt 72 字节）这些规则必须两边一致，
+    各写一份的话迟早出现"注册要求 6 位、管理员建号只要 3 位"的漂移。
+
+    多的只有 `role_code`：自助注册写死 employee，管理员则可以一开始就指定角色
+    （否则建完还得再调一次改角色接口）。默认仍是 employee —— 最小权限优先。
+    """
+
+    role_code: str = Field(
+        default="employee", min_length=1, max_length=32, description="初始角色 code"
+    )
+
+
+class StatusUpdateRequest(BaseModel):
+    """启用 / 停用的入参。布尔值直接表达目标状态，而不是让人传动作名。"""
+
+    is_active: bool = Field(description="true=启用（可登录），false=停用")
+
+
+class PasswordResetRequest(BaseModel):
+    """管理员重置密码的入参。
+
+    长度限制取的是与注册 / 开通**同一组常量**（`schemas.auth`）——
+    密码规则的唯一定义在那里，别在这个文件里另写一份数字。
+    """
+
+    new_password: str = Field(
+        min_length=PASSWORD_MIN_LENGTH,
+        max_length=PASSWORD_MAX_LENGTH,
+        description="新密码（6-72 位）。重置后该用户的旧密码与已签发 token 一并失效",
+    )
 

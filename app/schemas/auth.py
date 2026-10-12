@@ -6,6 +6,12 @@
 
 from pydantic import BaseModel, EmailStr, Field
 
+# 密码长度限制 —— **注册、管理员开通、重置密码三处共用同一组数字**。
+# 散成三份的话，哪天想把下限提到 8 位，很容易只改一处，
+# 于是出现"注册要求 6 位、重置却允许 3 位"这种不一致。
+PASSWORD_MIN_LENGTH = 6
+PASSWORD_MAX_LENGTH = 72  # bcrypt 算法上限（72 字节）
+
 
 class RegisterRequest(BaseModel):
     username: str = Field(
@@ -16,8 +22,8 @@ class RegisterRequest(BaseModel):
     )
     email: EmailStr = Field(description="邮箱（pydantic 会校验格式）")
     password: str = Field(
-        min_length=6,
-        max_length=72,
+        min_length=PASSWORD_MIN_LENGTH,
+        max_length=PASSWORD_MAX_LENGTH,
         description="6-72 位（bcrypt 算法上限 72 字节）",
     )
 

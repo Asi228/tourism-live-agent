@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import create_app
+from app.core.security import hash_password
 from app.db.base import Base
 from app.db.init_db import DEFAULT_ROLES
 from app.db.session import get_db
@@ -103,32 +104,50 @@ def _disable_rate_limit(monkeypatch):
 
 
 @pytest.fixture
+def allow_register(monkeypatch):
+    """把自助注册打开 —— **只有真的在测注册链路时才用**。
+
+    注册默认是关的（`AUTH_ALLOW_REGISTER=False`），所以绝大多数用例跑的是
+    "线上形态"。要测注册本身，显式声明这个 fixture，比在 conftest 里全局打开好：
+    全局打开会让"注册被关掉"这件事永远没有用例守着。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AUTH_ALLOW_REGISTER", True)
+    yield
+
+
+@pytest.fixture
 def make_user(client):
     """造一个用户并返回它的登录凭据。
 
-    注册接口只能造出 employee；需要 admin 时直接在测试库里改 role_id
-    （真实环境没有开放提权接口，这是按设计来的）。
+    ⚠️ **刻意不走注册接口**：注册现在是**默认可关闭**的业务开关
+    （`AUTH_ALLOW_REGISTER`），测试工厂如果依赖它，那么"改一个部署开关"
+    就会波及 100 多条毫不相干的用例。这里直接写库 ——
+
+    工厂的职责是"造出一份合法的测试数据"，不是"顺带验证注册链路"；
+    注册链路由 `tests/test_auth.py:test_register_login_and_me` 专门守着。
+
+    `role_code` 直接在建的时候就指定（以前是"先注册成 employee 再改 role_id"，
+    现在是同一件事但更短）。
     """
 
     def _make(role_code: str = "employee") -> dict:
         username = "u" + uuid.uuid4().hex[:12]
         password = "secret123"
-        payload = {
-            "username": username,
-            "email": f"{username}@example.com",
-            "password": password,
-        }
-        r = client.post("/api/auth/register", json=payload)
-        assert r.json()["code"] == 0, r.json()
-        user_id = r.json()["data"]["id"]
 
-        if role_code != "employee":
-            with TestSessionLocal() as db:
-                role = db.scalar(select(Role).where(Role.code == role_code))
-                assert role is not None, f"角色 {role_code} 不存在"
-                user = db.get(User, user_id)
-                user.role_id = role.id
-                db.commit()
+        with TestSessionLocal() as db:
+            role = db.scalar(select(Role).where(Role.code == role_code))
+            assert role is not None, f"角色 {role_code} 不存在"
+            user = User(
+                username=username,
+                email=f"{username}@example.com",
+                password_hash=hash_password(password),
+                role_id=role.id,
+            )
+            db.add(user)
+            db.commit()
+            user_id = user.id
 
         token = client.post(
             "/api/auth/login", json={"username": username, "password": password}

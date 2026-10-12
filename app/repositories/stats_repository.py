@@ -28,7 +28,7 @@ def document_counts(db: Session, kb_ids: list[int] | None) -> tuple[int, dict[st
         return 0, {}
     stmt = select(Document.status, func.count()).group_by(Document.status)
     if kb_ids is not None:
-        stmt = stmt.where(Document.kb_id.in_(kb_ids))
+        stmt = stmt.where(Document.knowledge_base_id.in_(kb_ids))
     rows = db.execute(stmt).all()
     by_status = {status: count for status, count in rows}
     return sum(by_status.values()), by_status
@@ -70,15 +70,17 @@ def question_counts(db: Session, user_id: int) -> tuple[int, int]:
 
 
 def recent_documents(db: Session, kb_ids: list[int] | None, limit: int = 5) -> list[dict]:
+    """最近上传的文档。输出键与 `DocumentOut` 对齐（`knowledge_base_id`）。"""
     if kb_ids == []:
         return []
     stmt = select(Document).order_by(Document.id.desc()).limit(limit)
     if kb_ids is not None:
-        stmt = stmt.where(Document.kb_id.in_(kb_ids))
+        stmt = stmt.where(Document.knowledge_base_id.in_(kb_ids))
     return [
         {
             "id": d.id, "filename": d.filename, "status": d.status,
-            "kb_id": d.kb_id, "chunk_count": d.chunk_count, "created_at": d.created_at,
+            "knowledge_base_id": d.knowledge_base_id,
+            "chunk_count": d.chunk_count, "created_at": d.created_at,
         }
         for d in db.execute(stmt).scalars().all()
     ]

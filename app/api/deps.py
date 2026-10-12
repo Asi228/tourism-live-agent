@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, password_fingerprint
 from app.db.session import get_db
 from app.models.user import User
 from app.services import auth_service
@@ -55,6 +55,15 @@ def get_current_user(
         raise AppException(ErrorCode.UNAUTHORIZED, "用户不存在")
     if not user.is_active:
         raise AppException(ErrorCode.FORBIDDEN, "账号已被禁用")
+
+    # 密码指纹比对 —— 密码被改过（管理员重置）时，旧 token 立即作废。
+    # 没有这一步，"改密码"就只是"下次登录要用新密码"，而手上那张票还能用到过期：
+    # 改密码最常见的动机恰恰是"凭证可能泄露了"。
+    # ⚠️ **严格口径**：不带这个 claim 的 token 一并拒掉（本项目还没上线，
+    # 宽松放行会留下"老 token 永久有效"的洞）。
+    if payload.get("pwd") != password_fingerprint(user.password_hash):
+        logger.info("token 的密码指纹已过期 user_id=%s（密码被改过）", user.id)
+        raise AppException(ErrorCode.UNAUTHORIZED, "登录状态已失效，请重新登录")
     return user
 
 

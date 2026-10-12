@@ -1,8 +1,9 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
+import { authApi } from '../api'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -12,6 +13,21 @@ const tab = ref('login')
 const loading = ref(false)
 const loginFormRef = ref()
 const regFormRef = ref()
+
+// 自助注册默认**关**（企业里账号由管理员开通），所以这里初值也是 false：
+// 先当成"不显示"，拿到后端的 true 才渲染出注册页签。
+// ⚠️ 反过来（先显示、拿到 false 再隐藏）会让默认部署下**闪一下**
+// 一个点进去必然报错的入口 —— 保守方向的初值在这种开关上是免费的。
+const allowRegister = ref(false)
+
+onMounted(async () => {
+  try {
+    const body = await authApi.config()
+    allowRegister.value = !!body.data?.allow_register
+  } catch {
+    // 拿不到配置就当关着（与默认值一致）—— 这是登录页，不能因为这个请求失败而卡住
+  }
+})
 
 const loginForm = reactive({ username: '', password: '' })
 const regForm = reactive({ username: '', email: '', password: '', confirm: '' })
@@ -116,7 +132,9 @@ async function doRegister() {
           </el-form>
         </el-tab-pane>
 
-        <el-tab-pane label="注册" name="register">
+        <!-- 自助注册默认关（`AUTH_ALLOW_REGISTER`）。关着的时候整个页签不渲染 ——
+             与其让人点进去再被后端 403 打回，不如这个入口根本不出现。 -->
+        <el-tab-pane v-if="allowRegister" label="注册" name="register">
           <el-form ref="regFormRef" :model="regForm" :rules="regRules" @submit.prevent="doRegister">
             <el-form-item prop="username">
               <el-input v-model="regForm.username" placeholder="用户名（字母/数字/下划线）" size="large" clearable />

@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.audit import AuditActionOut, AuditPageOut
 from app.services import audit_service
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audit", tags=["审计"])
 
 
-@router.get("", summary="管理操作审计（仅系统管理员）")
+@router.get(
+    "",
+    summary="管理操作审计（仅系统管理员）",
+    response_model=ApiResponse[AuditPageOut],
+)
 def list_audit_logs(
     limit: int = Query(default=20, ge=1, le=200),
     action: str | None = Query(default=None, max_length=64, description="按动作名精确筛选，如 kb.member_grant"),
@@ -47,7 +52,11 @@ def list_audit_logs(
     return success({"items": items, "has_more": has_more})
 
 
-@router.get("/actions", summary="审计动作清单（仅系统管理员）")
+@router.get(
+    "/actions",
+    summary="审计动作清单（仅系统管理员）",
+    response_model=ApiResponse[list[AuditActionOut]],
+)
 def list_actions(admin: User = Depends(require_admin)):
     """可选的动作名 + 中文说明。
 

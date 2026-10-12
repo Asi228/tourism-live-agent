@@ -11,10 +11,16 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    hash_password,
+    password_fingerprint,
+    verify_password,
+)
 from app.models.user import User
 from app.repositories import role_repository, user_repository
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.services import user_service
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +29,22 @@ DEFAULT_ROLE_CODE = "employee"
 
 
 def register(db: Session, payload: RegisterRequest) -> User:
-    """注册新用户，默认角色 employee。"""
-    if user_repository.get_by_username(db, payload.username) is not None:
-        raise AppException(ErrorCode.PARAM_ERROR, "用户名已被占用")
-    if user_repository.get_by_email(db, payload.email) is not None:
-        raise AppException(ErrorCode.PARAM_ERROR, "邮箱已被注册")
+    """自助注册新用户，默认角色 employee。
+
+    ⚠️ 受 `AUTH_ALLOW_REGISTER` 门控（**默认关**）。企业内部的账号应当由
+    管理员开通（`user_service.create_user`）—— 把注册页挂在公网上等于给
+    "谁能进这个系统"开了一条不需要许可的入口，还会被人用来占用户名与邮箱。
+
+    关闭时给 40300 而不是 40400：接口是存在的、只是被策略关掉了，
+    "403 告诉你这件事被禁止"比"404 让你以为路径写错了"更有用。
+    """
+    if not settings.AUTH_ALLOW_REGISTER:
+        raise AppException(
+            ErrorCode.FORBIDDEN, "本系统未开放自助注册，账号请联系管理员开通"
+        )
+
+    # 唯一性检查与"管理员开通"共用一份（规则必须两边一致）
+    user_service.ensure_unique(db, username=payload.username, email=payload.email)
 
     role = role_repository.get_by_code(db, DEFAULT_ROLE_CODE)
     if role is None:
@@ -60,7 +77,13 @@ def login(db: Session, payload: LoginRequest) -> TokenResponse:
 
     token = create_access_token(
         user.id,
-        extra={"username": user.username, "role": user.role.code},
+        extra={
+            "username": user.username,
+            "role": user.role.code,
+            # 密码指纹：密码一被改（管理员重置 / 将来可能的自助改密），
+            # 这个值就对不上 → 旧 token 立即失效。见 security.password_fingerprint。
+            "pwd": password_fingerprint(user.password_hash),
+        },
     )
     logger.info("用户登录 user_id=%s username=%s role=%s", user.id, user.username, user.role.code)
 

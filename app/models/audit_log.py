@@ -21,6 +21,9 @@ from app.db.base import Base
 
 # 动作名用 `模块.动作` 的形式，方便按前缀过滤（如 `user.` 看所有用户管理动作）。
 ACTION_ROLE_CHANGE = "user.role_change"
+ACTION_USER_CREATE = "user.create"
+ACTION_USER_STATUS = "user.status_change"
+ACTION_USER_PASSWORD_RESET = "user.password_reset"
 ACTION_MEMBER_GRANT = "kb.member_grant"
 ACTION_MEMBER_REVOKE = "kb.member_revoke"
 ACTION_KB_CREATE = "kb.create"
@@ -29,6 +32,9 @@ ACTION_KB_VISIBILITY = "kb.visibility_change"
 
 ALL_ACTIONS = (
     ACTION_ROLE_CHANGE,
+    ACTION_USER_CREATE,
+    ACTION_USER_STATUS,
+    ACTION_USER_PASSWORD_RESET,
     ACTION_MEMBER_GRANT,
     ACTION_MEMBER_REVOKE,
     ACTION_KB_CREATE,
@@ -48,7 +54,8 @@ class AuditLog(Base):
     ## 覆盖边界（写清楚，免得有人以为这张表是全的）
 
     **覆盖**——能改变"谁能看到什么"的权限与可见性变更：
-    改角色、知识库授权 / 撤销、建库、删库、**改为公开 / 私有**。
+    **开通账号、停用 / 启用账号、重置密码**、改角色、知识库授权 / 撤销、建库、删库、
+    **改为公开 / 私有**。
 
     **不覆盖**——两类刻意不记的：
       · **内容级**：删文档、单文档 / 整库向量化。它们改变的是"能检索到什么"，

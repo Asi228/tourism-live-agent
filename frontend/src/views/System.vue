@@ -115,6 +115,12 @@ function detailText(row) {
   switch (row.action) {
     case 'user.role_change':
       return `角色 ${d.from} → ${d.to}`
+    case 'user.create':
+      return `开通为 ${d.role_code}（${d.email}）`
+    case 'user.status_change':
+      return d.to === 'active' ? '已启用该账号' : '已停用该账号'
+    case 'user.password_reset':
+      return '重置了该用户的密码（旧密码与登录态已失效）'
     case 'kb.member_grant':
       return d.previous
         ? `把 ${d.username} 的权限从 ${d.previous} 改为 ${d.permission}`

@@ -4,6 +4,9 @@ import http from './http'
 // 而且**接口路径只在这一个文件里出现** —— 后端改路径时只改这里。
 
 export const authApi = {
+  // 公开的认证配置（无需登录）：目前只有"自助注册开没开"，
+  // 登录页据此决定显不显示「注册」标签页
+  config: () => http.get('/auth/config'),
   login: (payload) => http.post('/auth/login', payload),
   register: (payload) => http.post('/auth/register', payload),
   me: () => http.get('/auth/me'),
@@ -14,6 +17,14 @@ export const userApi = {
   // 默认最小字段（选人授权用）；`full=true` 时带邮箱与注册时间（用户管理页用）。
   list: (keyword, full) =>
     http.get('/users', { params: { ...(keyword ? { keyword } : {}), ...(full ? { full: true } : {}) } }),
+  // 开通账号 —— 可指定初始角色（自助注册默认关，这是主要的开号路径）
+  create: (payload) => http.post('/users', payload),
+  // 停用 / 启用 —— `is_active=false` 会立刻拒登录，已签发的 token 下一次请求也会失效
+  setStatus: (id, isActive) => http.patch(`/users/${id}/status`, { is_active: isActive }),
+  // 重置密码 —— 旧密码与**该用户已签发的所有 token**一起失效（token 里带密码指纹）。
+  // 响应里的 `is_self` 表示"重置的是你自己"，前端据此主动登出。
+  resetPassword: (id, newPassword) =>
+    http.patch(`/users/${id}/password`, { new_password: newPassword }),
   // 改角色 —— 提权入口，后端有三条约束（不能改自己 / 不能没有 admin / 必留审计）
   updateRole: (id, roleCode) => http.patch(`/users/${id}/role`, { role_code: roleCode }),
   // 从"人"这一侧看权限：他被授权了哪些库

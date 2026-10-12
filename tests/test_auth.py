@@ -36,8 +36,13 @@ def test_password_hash_handles_garbage():
     assert verify_password("x", "") is False
 
 
-def test_register_login_and_me(client):
-    """完整链路：注册 → 重复注册被拒 → 密码错被拒 → 登录拿 token → 带 token 取当前用户。"""
+def test_register_login_and_me(client, allow_register):
+    """完整链路：注册 → 重复注册被拒 → 密码错被拒 → 登录拿 token → 带 token 取当前用户。
+
+    ⚠️ 要显式要 `allow_register`：注册默认是**关**的（企业里账号该由管理员开），
+    这条链路的用例自己把开关打开，而不是让 conftest 全局打开 ——
+    全局打开的话，"注册默认关"就没有用例守着了。
+    """
     username = _username()
     payload = {
         "username": username,
@@ -153,3 +158,52 @@ def test_repository_create_does_not_own_transaction(client, session_factory):
 
         db.rollback()
         assert user_repository.get_by_username(db, username) is None
+
+
+# ==================== 自助注册开关（AUTH_ALLOW_REGISTER） ====================
+
+
+def test_allow_register_defaults_to_false():
+    """默认值必须是关的 —— 这是"账号由管理员开"这条口径的落点。
+
+    直接断言模型字段的默认值，而不是断言 settings 的当前值：后者可能被
+    `.env` 覆盖（本地想试自助注册就会覆盖），而**默认该是关的**这件事
+    与部署环境无关。
+    """
+    from app.config import Settings
+
+    assert Settings.model_fields["AUTH_ALLOW_REGISTER"].default is False
+
+
+def test_register_is_rejected_when_switch_off(client, monkeypatch):
+    """开关关着时，注册接口必须拒绝，且错误码是 40300 而不是 40400。"""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AUTH_ALLOW_REGISTER", False)
+    username = _username()
+
+    r = client.post(
+        "/api/auth/register",
+        json={"username": username, "email": f"{username}@example.com", "password": "secret123"},
+    )
+    body = r.json()
+    assert body["code"] == 40300, body
+    # 403（存在但被策略禁止）而不是 404（让人以为路径写错了）
+    assert "管理员" in body["message"]
+
+    # 拒绝要彻底：账号不能真的被建出来
+    r = client.post("/api/auth/login", json={"username": username, "password": "secret123"})
+    assert r.json()["code"] == 40100
+
+
+def test_auth_config_exposes_register_switch(client, monkeypatch):
+    """`GET /auth/config` 是**公开**的（登录页要用它决定显不显示注册入口）。"""
+    from app.config import settings
+
+    r = client.get("/api/auth/config")          # 不带 token
+    assert r.json()["code"] == 0
+    assert r.json()["data"]["allow_register"] is False
+
+    monkeypatch.setattr(settings, "AUTH_ALLOW_REGISTER", True)
+    r = client.get("/api/auth/config")
+    assert r.json()["data"]["allow_register"] is True

@@ -19,6 +19,9 @@ from app.models.audit_log import (
     ACTION_MEMBER_GRANT,
     ACTION_MEMBER_REVOKE,
     ACTION_ROLE_CHANGE,
+    ACTION_USER_CREATE,
+    ACTION_USER_PASSWORD_RESET,
+    ACTION_USER_STATUS,
     ALL_ACTIONS,
     AuditLog,
 )
@@ -31,6 +34,9 @@ logger = logging.getLogger(__name__)
 # 各种动作在界面上的中文说明（前端直接显示，不用自己维护一份映射）
 ACTION_TEXT = {
     ACTION_ROLE_CHANGE: "变更角色",
+    ACTION_USER_CREATE: "开通账号",
+    ACTION_USER_STATUS: "停用 / 启用账号",
+    ACTION_USER_PASSWORD_RESET: "重置密码",
     ACTION_MEMBER_GRANT: "授权知识库",
     ACTION_MEMBER_REVOKE: "撤销授权",
     ACTION_KB_CREATE: "创建知识库",
@@ -40,6 +46,76 @@ ACTION_TEXT = {
 
 # 动作清单对外暴露（`GET /api/audit/actions` 用它渲染前端筛选下拉）
 __all__ = ["ACTION_TEXT", "ALL_ACTIONS"]
+
+
+def record_user_create(
+    db: Session, *, actor: User, target: User, role_code: str
+) -> AuditLog:
+    """✅ 管理员开通账号。
+
+    这是**唯一一条"创造出新身份"的记录** —— 加进审计的理由与改角色同源：
+    它决定了"接下来有谁能进这个系统"。⚠️ detail 里**只有 role_code，绝不含密码**：
+    审计表是给人翻的，密码（哪怕是初始密码）不该有任何机会落到这里。
+    """
+    return audit_log_repository.create(
+        db,
+        actor_id=actor.id,
+        actor_name=actor.username,
+        action=ACTION_USER_CREATE,
+        target_type="user",
+        target_id=target.id,
+        target_name=target.username,
+        detail={"role_code": role_code, "email": target.email},
+    )
+
+
+def record_user_status(
+    db: Session, *, actor: User, target: User, from_active: bool, to_active: bool
+) -> AuditLog:
+    """停用 / 启用账号。
+
+    **停用是"收回访问权"里最重的一档**（比降级角色更彻底：连登录都进不来，
+    已签发的 token 也会在下一次请求被挡），所以必须留痕。
+    启用同样记 —— 审计要能回答"这个账号什么时候被谁放开的"。
+
+    存 `active/disabled` 而不是 `true/false`：与 `record_kb_visibility` 同一个理由，
+    几个月后翻审计的人不该需要对照代码猜布尔值的含义。
+    """
+    return audit_log_repository.create(
+        db,
+        actor_id=actor.id,
+        actor_name=actor.username,
+        action=ACTION_USER_STATUS,
+        target_type="user",
+        target_id=target.id,
+        target_name=target.username,
+        detail={
+            "from": "active" if from_active else "disabled",
+            "to": "active" if to_active else "disabled",
+        },
+    )
+
+
+def record_user_password_reset(db: Session, *, actor: User, target: User) -> AuditLog:
+    """管理员重置密码。
+
+    为什么它算"权限类"动作、要进审计：**它决定"谁能进来"** ——
+    改完密码之后，旧密码与旧 token 一起失效（见 `password_fingerprint`），
+    只有知道新密码的人能登录。在"凭证泄露"的场景里，这条记录是唯一能回答
+    "是谁在什么时候把入口换掉的"。
+
+    ⚠️ detail 里**什么都不放**：既不存明文、也不存哈希、连指纹都不存。
+    "谁重置了谁"已经足够，密码相关的任何派生值都没有进审计的理由。
+    """
+    return audit_log_repository.create(
+        db,
+        actor_id=actor.id,
+        actor_name=actor.username,
+        action=ACTION_USER_PASSWORD_RESET,
+        target_type="user",
+        target_id=target.id,
+        target_name=target.username,
+    )
 
 
 def record_role_change(

@@ -144,7 +144,7 @@ RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest 
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/register` · `/auth/login` · GET `/auth/me` | 注册 / 登录 / 当前用户 |
+| POST | `/auth/register` · `/auth/login` · GET `/auth/me` · `/auth/config` | 注册 / 登录 / 当前用户 / 公开配置（`allow_register`，登录页据此显示注册入口）<br>⚠️ **`/auth/register` 默认关闭**（`AUTH_ALLOW_REGISTER`），关着返回 `40300` |
 | GET · POST | `/knowledge` | 知识库列表 / 创建 |
 | GET · PUT · DELETE | `/knowledge/{id}` | 详情 / 修改 / 删除（级联清理文档、chunk、向量与磁盘文件） |
 | POST · GET · DELETE | `/knowledge/{id}/members` | 成员授权 / 列表 / 移除 |
@@ -162,9 +162,9 @@ RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest 
 | GET | `/vector/health` · POST `/vector/purge-orphans` | 向量自检 / 清理孤儿向量（管理员） |
 | GET | `/health` | 健康检查（MySQL / Milvus / Redis），逐项 `ok/fail`；3 秒内复用结果 |
 | GET | `/stats/overview` | **概览统计**（按当前用户可见范围）：库数 / 文档数（按状态）/ 我的提问数（今日·累计）/ 最近文档与提问。管理员额外给用户数与向量条数（非管理员该段是 `null`，前端整块不渲染） |
-| GET · PATCH | `/users` · `/users/{id}/role` | 用户列表（默认最小字段，`?full=true` 带邮箱与注册时间）/ **改角色**（管理员，见第 5 节的三条约束） |
+| GET · POST · PATCH | `/users` · `/users/{id}/role` · `/users/{id}/status` · `/users/{id}/password` | 用户列表（默认最小字段，`?full=true` 带邮箱与注册时间）/ **开通账号**（可指定初始角色） / **改角色**（管理员，见第 5 节的三条约束） / **停用·启用**（立刻拒登录，已签发 token 下一次请求即失效） / **重置密码**（旧密码与该用户所有登录态一起失效，见第 5c 节） |
 | GET | `/users/{id}/grants` | 某人被授权了哪些库（管理员）—— 从"人"这一侧看权限全貌 |
-| GET | `/audit` · `/audit/actions` | 管理操作审计（管理员）：改角色 / 授权 / 撤销 / 建库 / 删库 / **改可见性**，带操作者与对象名**快照**。支持 `action`、`actor_id` 筛选与 `before_id` keyset 翻页（响应 `{items, has_more}`）；`/audit/actions` 下发动作清单供前端渲染筛选下拉 |
+| GET | `/audit` · `/audit/actions` | 管理操作审计（管理员）：**开通账号 / 停用·启用 / 重置密码** / 改角色 / 授权 / 撤销 / 建库 / 删库 / **改可见性**，带操作者与对象名**快照**。支持 `action`、`actor_id` 筛选与 `before_id` keyset 翻页（响应 `{items, has_more}`）；`/audit/actions` 下发动作清单供前端渲染筛选下拉 |
 
 ### 错误码分段
 
@@ -270,27 +270,67 @@ collection 里只有 `chunk_id`（主键）/ `document_id` / `knowledge_base_id`
 比改角色生效还快（改角色要等下次登录）。所以它必须留痕，且存 `public/private`
 而不是 `true/false`（几个月后翻审计的人不该需要对照代码猜布尔值的意思）。
 
-### 5b. 提权入口的三条约束
+### 5b. 用户生命周期与"别把自己锁在门外"
 
-`PATCH /users/{id}/role` 是系统里唯一的提权入口，三条约束缺一不可：
+账号的产生与终止都归管理员，只有一条自助路径（且默认关）：
+
+| 环节 | 入口 | 说明 |
+|---|---|---|
+| **开通** | `POST /users`（管理员） | 可**一开始就指定角色** —— 否则建完还得再调一次改角色，中间那一步"新账号已有 employee 权限"是个没必要的窗口 |
+| 自助注册 | `POST /auth/register` | ⚠️ **默认关**（`AUTH_ALLOW_REGISTER`）。关着时登录页不渲染注册入口，接口返回 `40300` |
+| **改角色** | `PATCH /users/{id}/role`（管理员） | 提权入口，见下 |
+| **停用 / 启用** | `PATCH /users/{id}/status`（管理员） | 立刻拒登录，**已签发的 token 下一次请求即失效** |
+| **重置密码** | `PATCH /users/{id}/password`（管理员） | 旧密码与**该用户全部登录态**一起失效。**允许重置自己**（不构成自锁） |
+| 删除 | —— | 刻意不做：会牵连会话与审计记录（外键级联），而停用能覆盖绝大多数需求且可回退 |
+
+**"不能把自己锁在门外"是一族约束**，两个写入口各有两条：
 
 | 约束 | 防的是什么 |
 |---|---|
-| 不能改自己 | 唯一的 admin 把自己降成员工 → 再也没人能改回来（除直接改库） |
-| 不能让 admin 归零 | 两个 admin 互相降级 → 系统里没有管理员 |
-| 必须写审计 | 权限变更无痕 = 事后无法追责 |
+| 不能改自己的角色 | 唯一的 admin 把自己降成员工 → 再也没人能改回来（除直接改库） |
+| 不能停用自己的账号 | 同上，换一条路自锁 |
+| 不能让 admin 归零（改角色） | 两个 admin 互相降级 → 系统里没有管理员 |
+| 不能让 admin 归零（停用） | 同理，停用是"从另一个方向"减少管理员 |
 
-⚠️ 第二条**在 HTTP 层永远触发不到**（要降级 A 就得有 admin B 操作，那时系统里至少两个
-admin）。它是纵深防御，挡的是"将来某个直接调 service 的场景"。测试因此绕过接口层直接
-调 service 来验证它 —— 这个"跑不到的代码"有注释说明，别当成死代码删掉。
+⚠️ **后两条在 HTTP 层永远触发不到**（要降级/停用 A 就得有 admin B 操作，那时系统里至少两个
+admin）。它们是纵深防御，挡的是"将来某个直接调 service 的场景"。测试因此绕过接口层直接
+调 service 来验证 —— 这些"跑不到的代码"都有注释说明，别当成死代码删掉。
 
-⚠️ 而且它**必须先加锁再数**（`count_admins(..., for_update=True)`）：`SELECT COUNT(*)`
+⚠️ 而且它们**必须先加锁再数**（`count_admins(..., for_update=True)`）：`SELECT COUNT(*)`
 不加锁时，两个并发请求各自看到 2、各自都通过 → 真的会归零。注意"更新后再复查一次"
 **不是**等效修法 —— MySQL 默认 REPEATABLE READ 下一致性读用的是事务开始时的快照，
 复查仍会看到 2，要复查也只有加锁读才有效。
 ⚠️ 这条修复**在测试环境无法用行为验证**（SQLite 不支持 `SELECT ... FOR UPDATE`，
 SQLAlchemy 会静默忽略它 → 并发场景永远跑不出来），所以用一条"编译 MySQL 方言后
 SQL 里必须有 `FOR UPDATE`"的静态断言钉着 —— 防止它在重构时被悄悄删掉而测试全绿。
+
+### 5c. 停用 / 改角色 / 改密码，为什么都能"立刻"生效
+
+JWT 是无状态的，服务端**不吊销**已签发的 token（见「已知限制」的「登出语义」）。
+这是无状态的代价。但"不吊销"不等于"改不了"—— 本项目对**三种改变权限的动作**
+各有一个立刻生效的机制，共同点是**不在 token 里存信任**：
+
+| 动作 | 立刻生效靠什么 |
+|---|---|
+| **停用账号** | `login` 与 `get_current_user` 都实时回库查 `is_active` → 拒 |
+| **改角色** | `get_current_user` 实时回库读 `user.role`，**不信任 token 里的 `role`** |
+| **改密码** | token 里带**密码指纹**（`security.password_fingerprint`），鉴权时与当前 `password_hash` 比对 |
+
+**停用**那两道是独立的：`login`（下次登录进不来）与 `get_current_user`（手上那张票立刻作废），
+测试分开钉 —— 去掉任一道只有对应的那条用例变红。少了第二道，"停用"就只是"下次登录进不来"，
+已登录的会话还能一直用到 token 过期（默认 24 小时）。
+
+**改密码**为什么需要额外机制：前两种靠"实时查一个布尔/外键"，而"密码改没改"没有现成的比对目标 ——
+于是把 `password_hash` 的短指纹（sha256 前 16 位）写进 token，鉴权时比一次。
+bcrypt 每次换盐，所以**任何**改动 `password_hash` 的路径都会让旧 token 自动作废，
+不必在每处记得手动清理。
+
+⚠️ 指纹**可公开**：它取自 bcrypt 哈希（单向、抗反推），算出来也推不出密码，
+泄露 token 不比泄露哈希更糟。⚠️ 口径是**严格**的：不带这个 claim 的 token 一并拒掉 ——
+本项目还没上线，宽松放行会留下"老 token 永久有效"的洞。
+
+⚠️ 反面对照也被钉住了：**同一密码重新登录不会踢掉别的设备**（指纹取自哈希而非签发时间），
+多设备登录照常。
 
 ### 6. 关闭对话模型的思考模式
 
@@ -636,6 +676,6 @@ Agent 那条路的事件序列是 `status → step*N → meta → done`；纯 RA
 | 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
 | 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。**已实现**一个 dev-only 的 SSE 故障模拟来补：`frontend/mock-sse.js`（vite `configureServer` 中间件），问答页顶部有一条虚线工具条（`import.meta.env.DEV` 门控，build 时整条不进产物），或直接开 `/?mock=<模式>`。八种模式：`normal` / `break`（吐 2 帧后断开）/ `http502`（502+HTML，验 transport 判据）/ `error`（流内 error）/ `hang`（首帧前挂 3s）/ `unsaved`（`done.saved=false`）/ `truncated`（`finish_reason='length'`）/ `withconv`（`done.conversation_id` 非 null）。**流式和非流式都走 mock** —— 否则降级重试会打到真后端、真花一次钱。⚠️ 它覆盖不到：真实反代的超时行为、浏览器端的渲染细节（逐字/节流/光标）、以及真 LLM 的 usage 是否回传 |
 | 测试基建 | ⚠️ 三处 `_session_factory`（`agent_service` / `rag_service` / `conversation_service`）靠 fixture 的 docstring 提醒"都要换"，**漏 patch 的后果不是变红，而是静默写进真 MySQL**。将来加第四条流式路径时，值得收敛成一个模块级工厂，或在 conftest 里 autouse 统一替换 |
-| 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期 |
+| 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期。⚠️ 但**停用账号、改角色、改密码都能立刻生效** —— 分别靠实时查 `is_active`、实时读角色、以及 token 里的密码指纹（见第 5c 节） |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
 | Rerank | 已接入。`/chat` 默认开启，`/search` 默认关闭以便对比效果 |

@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.stats import OverviewOut
 from app.services import stats_service
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/stats", tags=["统计"])
 
 
-@router.get("/overview", summary="概览统计（按当前用户可见范围）")
+@router.get(
+    "/overview",
+    summary="概览统计（按当前用户可见范围）",
+    response_model=ApiResponse[OverviewOut],
+)
 def overview(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
