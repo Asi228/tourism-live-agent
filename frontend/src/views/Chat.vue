@@ -546,6 +546,81 @@ async function scrollToBottom() {
   if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
 }
 
+// ==================== 导出 ====================
+
+/**
+ * 当前对话的标题：列表里有就用列表的（后端按首个问题生成），
+ * 还没落库的新对话就叫"新对话"。
+ */
+function conversationTitle() {
+  if (!currentConvId.value) return '新对话'
+  const hit = conversations.value.find((c) => c.id === currentConvId.value)
+  return hit ? hit.title : `对话 ${currentConvId.value}`
+}
+
+/** 把当前对话拼成 Markdown。**只导出界面上看得到的内容** —— 脱敏过的答案
+ *  导出来就是脱敏后的，不会把无权看的原文写进文件。 */
+function buildMarkdown() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+  const modeText = mode.value === 'agent' ? 'Agent 多步' : '纯 RAG'
+  const out = [
+    `# ${conversationTitle()}`,
+    '',
+    `> 导出于 ${stamp} ｜ 模式：${modeText} ｜ ${messages.value.length} 条消息`,
+    '',
+  ]
+  for (const m of messages.value) {
+    out.push('---', '')
+    if (m.role === 'user') {
+      out.push(`**问：** ${m.content}`, '')
+      continue
+    }
+    const answer = m.error ? (m.content || '（获取失败）') : (m.data?.answer || '')
+    out.push(`**答：** ${answer}`, '')
+    // 这一轮"不完整"的原因要一起带上 —— 否则导出件看上去像完整答案，
+    // 日后回看会误以为当时就答全了（口径与界面上的提示条一致）。
+    const note = m.interrupted ? '生成中断，本次未存入历史'
+      : m.stopped ? '已停止生成（可能未存入历史）'
+      : m.cutoff ? '连接中断，回答可能不完整（已生成部分多半已存进历史）'
+      : m.unsaved ? '答案已完整返回，但这次没能存入历史'
+      : m.recovered ? '流式连接中断过一次，这条答案是用普通模式补取的'
+      : m.data?.finish_reason === 'length' ? '答案达到长度上限被截断'
+      : ''
+    if (note) out.push(`> ⚠️ ${note}`, '')
+    const sources = m.data?.sources || []
+    if (sources.length) {
+      out.push('**引用来源：**', '')
+      for (const s of sources) {
+        const page = s.page_number != null ? `第 ${s.page_number} 页` : '无页码'
+        out.push(
+          `- [${s.index}] 《${s.document_name}》${page}，相似度 ${scorePercent(s.score)}%`
+        )
+        if (s.snippet) out.push(`  > ${s.snippet}`)
+      }
+      out.push('')
+    }
+  }
+  return out.join('\n')
+}
+
+function exportConversation() {
+  if (!messages.value.length) return
+  const md = buildMarkdown()
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  // 文件名里去掉路径非法字符，否则 Windows 上会静默下载失败
+  a.download = `${conversationTitle().replace(/[\\/:*?"<>|]/g, '_')}.md`
+  a.href = url
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('已导出 Markdown')
+}
+
 function scorePercent(score) {
   // rerank 分数与余弦相似度都大致落在 0~1，展示成百分比更直观；
   // 负分（理论上向量余弦可以为负）夹到 0，避免进度条乱跳
@@ -621,6 +696,15 @@ onBeforeUnmount(() => abortStream())
             <el-radio-button value="rag">纯 RAG</el-radio-button>
             <el-radio-button value="agent">Agent 多步</el-radio-button>
           </el-radio-group>
+
+          <!-- 导出当前对话为 Markdown。**只导界面上看得到的**：
+               脱敏过的答案导出来就是脱敏后的，不会把无权看的原文写进文件。 -->
+          <el-button
+            size="default"
+            :disabled="!messages.length"
+            title="把当前对话（含引用来源）导出为 Markdown"
+            @click="exportConversation"
+          >导出对话</el-button>
         </div>
         <div class="mode-hint">{{ emptyHint }}</div>
       </el-card>
