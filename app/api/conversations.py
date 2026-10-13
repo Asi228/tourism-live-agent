@@ -9,6 +9,14 @@
 
 归属校验在 service 层：拿到别人的 id 一律报 404「会话不存在」，而不是 403 ——
 403 等于确认了"这个 id 存在，只是不归你"，白送一条可枚举的信息。
+
+响应结构用 `response_model=ApiResponse[...]` 显式声明。这两个读接口是最后补的
+（曾经全项目只有它们俩是 0），原因是它们的返回形状最"松"：`MessageOut.meta` 是
+自由 dict、`sources` 是可变长列表，看着最容易在加字段时静默丢东西。
+但实测确认可以安全补：现有代码本来就走 `MessageOut.model_validate()` +
+`model_dump()`，输出早已被 schema 约束，加 response_model 是**纯增量**
+（补 OpenAPI 文档 + 校验），不改变任何一个字节的响应体。
+DELETE 刻意不声明 —— 它只返回 `success(None, "已删除")`，没有可声明的 data。
 """
 
 import logging
@@ -17,7 +25,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.conversation import ConversationDetail, ConversationItem, MessageOut
@@ -28,7 +36,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["会话"])
 
 
-@router.get("", summary="我的会话列表（最近活跃在前，支持翻页）")
+@router.get(
+    "",
+    response_model=ApiResponse[list[ConversationItem]],
+    summary="我的会话列表（最近活跃在前，支持翻页）",
+)
 def list_conversations(
     # 上限 100：这个接口是本项目唯一能列出"更早会话"的入口，配再大也只是拉慢响应；
     # 真要看历史对话应当走详情接口，而不是把列表当全量导出。
@@ -40,6 +52,8 @@ def list_conversations(
     rows = conversation_service.list_conversations(
         db, current_user, limit=limit, offset=offset
     )
+    # 声明了 response_model 之后不再需要手工 model_dump(mode="json")：
+    # FastAPI 会按 ConversationItem 校验并序列化，两边结果是同一份。
     data = [
         ConversationItem(
             id=conv.id,
@@ -47,13 +61,17 @@ def list_conversations(
             message_count=count,
             created_at=conv.created_at,
             updated_at=conv.updated_at,
-        ).model_dump(mode="json")
+        )
         for conv, count in rows
     ]
     return success(data)
 
 
-@router.get("/{conversation_id}", summary="会话详情（默认返回最新一页消息，可往前翻）")
+@router.get(
+    "/{conversation_id}",
+    response_model=ApiResponse[ConversationDetail],
+    summary="会话详情（默认返回最新一页消息，可往前翻）",
+)
 def get_conversation(
     conversation_id: int,
     # 默认只返回**最新**一页：长会话一次全量返回会把 sources/meta 三段 JSON 全吐出去，
@@ -81,7 +99,7 @@ def get_conversation(
         has_more=has_more,
         messages=[MessageOut.model_validate(m) for m in messages],
     )
-    return success(detail.model_dump(mode="json"))
+    return success(detail)
 
 
 @router.delete("/{conversation_id}", summary="删除会话（连带它的全部消息）")
