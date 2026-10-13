@@ -28,11 +28,16 @@ const convHasOlder = ref(false)   // 这条会话在返回的这批之前还有�
 const olderLoading = ref(false)
 
 
-// 后端 `answer_mode` 的三种取值 → 标签样式与话术
+// 后端 `answer_mode` 的取值 → 标签样式与话术。
+// **这张表是"答案性质"的唯一展示口径** —— 后端加了新取值而这里没补，
+// 模板会退化成显示原始英文串（`v-if` 仍在，不会变成空白）。
 const ANSWER_MODE = {
   grounded: { text: '依据资料', type: 'success' },
   no_evidence: { text: '无可用资料', type: 'warning' },
   smalltalk: { text: '寒暄直答', type: 'info' },
+  // 命中知识库常见问题：答案来自管理端写的标准答案，**不是**模型生成的，
+  // 所以既不是"依据资料"（没引文档）也不是"无可用资料"（有依据，只是依据是 FAQ）。
+  faq: { text: '来自常见问题', type: 'primary' },
 }
 
 // `status` 事件里的 phase → 界面文案。与 ANSWER_MODE 同一张表的用法：
@@ -569,8 +574,18 @@ function buildMarkdown() {
     `# ${conversationTitle()}`,
     '',
     `> 导出于 ${stamp} ｜ 模式：${modeText} ｜ ${messages.value.length} 条消息`,
-    '',
   ]
+  // ⚠️ **导出的只是"已经加载出来的那些消息"。**
+  // 会话详情是分页的（默认只给最新一页），更早的要点「加载更早的消息」才拉得到 ——
+  // 不写这句提示，长会话的导出文件会**静默缺掉前半段**，而用户以为导的是全部。
+  if (convHasOlder.value) {
+    out.push(
+      '>',
+      '> ⚠️ **本文件不完整**：这段会话更早的消息尚未加载，未包含在导出里。'
+        + '如需完整内容，请先在界面上点「加载更早的消息」，把前面的部分翻出来后再导出。'
+    )
+  }
+  out.push('')
   for (const m of messages.value) {
     out.push('---', '')
     if (m.role === 'user') {

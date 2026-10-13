@@ -51,10 +51,31 @@ export async function streamChat(payload, handlers = {}, { signal, url } = {}) {
     throw err
   }
 
-  // ② 准备阶段就失败了 → 普通信封，不是流
+  // ② 不是流 → 普通信封。**这里有两种截然不同的东西，必须按 code 分开**：
+  //     · code === 0  → **成功**：FAQ 命中时后端直接给标准答案（答案是现成的，
+  //                     没有"逐字生成"这个过程）。这种情况要**当成一次正常问答收尾**，
+  //                     复用 meta/delta/done 三个回调，调用方一行都不用改。
+  //     · 其余 code   → 失败（越权 40400、配额 40900、限流 42900…），照旧抛出。
+  //     ⚠️ 顺序不能反：先判成功，再当失败 —— 否则 FAQ 命中会被当成"请求失败"弹出来。
   if (!contentType.includes('text/event-stream')) {
     const body = await resp.json().catch(() => null)
     const code = body?.code
+
+    if (code === 0 && body?.data) {
+      const d = body.data
+      // 与 SSE 路径同序：先 meta（引用/标签），再 delta（正文），最后 done。
+      handlers.meta?.(d)
+      handlers.delta?.({ text: d.answer })
+      handlers.done?.({
+        answer: d.answer,
+        usage: null,
+        finish_reason: null,
+        conversation_id: d.conversation_id,
+        saved: true,
+      })
+      return
+    }
+
     if (code === 40100) {
       setToken('')
       if (window.location.hash !== '#/login') window.location.hash = '#/login'

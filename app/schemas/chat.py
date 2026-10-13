@@ -56,6 +56,15 @@ class ChatResponse(BaseModel):
                     "所以「库里没这个内容」时 hit 仍是 true，改由模型照提示词回「资料不足」。"
     )
     sources: list[SourceItem]
+    answer_mode: str | None = Field(
+        default=None,
+        description="答案的来源方式。`faq` = 命中知识库常见问题，直接返回标准答案"
+                    "（此时 sources 为空、model 为 null —— 没检索也没调模型）；"
+                    "其余情况为 null。Agent 那条路另有 grounded/no_evidence/smalltalk 三种。",
+    )
+    faq_id: int | None = Field(
+        default=None, description="命中常见问题时的 FAQ id（非命中为 null）"
+    )
     searched_kb_ids: list[int] | None = Field(
         default=None, description="本次实际参与检索的知识库 id；null 表示系统管理员（不受限）"
     )

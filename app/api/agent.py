@@ -33,7 +33,7 @@ from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.agent import AgentChatRequest, AgentChatResponse
-from app.services import agent_service
+from app.services import agent_service, faq_service
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,17 @@ def agent_chat(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 🔴 FAQ 闸门**与 /api/chat 同一处**：命中即给标准答案，不进 LangGraph。
+    # 这道闸门刻意放在两条路各自的入口，而不是塞进 RAG 或 Agent 内部 ——
+    # 它是"问答入口"这一层的事，两条路都该先过它（见 faq_service 里那段的说明）。
+    faq_data = faq_service.answer_from_faq(
+        db, current_user,
+        query=payload.query, kb_ids=payload.kb_ids,
+        conversation_id=payload.conversation_id,
+    )
+    if faq_data is not None:
+        return success(faq_data, "来自常见问题（标准答案，未调用大模型）")
+
     data = agent_service.answer(
         db,
         current_user,
@@ -75,14 +86,26 @@ def agent_chat_stream(
 ):
     """流式 Agent 问答 —— 事件协议见 `app/services/agent_service.py` 的「流式（SSE）」段。
 
-    ⚠️ 与 `/api/chat/stream` 同款：**这个接口不是"总是返回 SSE"**。"Agent 未启用"、
-    越权、配额到顶这些失败发生在**响应开始之前**（`agent_service.stream_answer`
-    的准备工作），它们仍然走统一信封：HTTP 200 + `{code: 40400, …}`，JSON。
+    ⚠️ 与 `/api/chat/stream` 同款：**这个接口不是"总是返回 SSE"**，两种情况返回 JSON 信封：
+
+      ① **失败** —— "Agent 未启用"、越权、配额到顶，发生在**响应开始之前**；
+      ② **FAQ 命中**（成功）—— 答案是现成文本，没有"节点级进度"可言，不开流。
+
+    HTTP 仍 200 + `{code: 40400, …}` / `{code: 0, …}`。前端必须先判 `code === 0`
+    再决定是成功信封还是失败，详见 `frontend/src/api/stream.js`。
     只有"多步推理已经开始"之后的失败才降级成 `event: error`。
-    前端按 `content-type` 分流即可 —— 与 RAG 那条路是同一个 `stream.js`。
 
     没有 `response_model`：响应体不是那个统一信封，`StreamingResponse` 也不接受模型校验。
     """
+    # 🔴 FAQ 闸门（与 /agent/chat、/chat/stream 三处一致）
+    faq_data = faq_service.answer_from_faq(
+        db, current_user,
+        query=payload.query, kb_ids=payload.kb_ids,
+        conversation_id=payload.conversation_id,
+    )
+    if faq_data is not None:
+        return success(faq_data, "来自常见问题（标准答案，未调用大模型）")
+
     # `stream_answer` 是**普通函数**（不是生成器）：准备阶段在这里就跑完，
     # 所以上面的异常会正常向上抛、被全局处理器接住。写成生成器会把准备推迟到
     # "响应已开始"之后，越权就只能变成一个 200 流里的事件 —— 那是降级（P13 已踩定）。

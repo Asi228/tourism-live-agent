@@ -5,10 +5,11 @@
 
 import uuid
 
+import pytest
 from sqlalchemy import select
 
 from app.core.response import ErrorCode
-from app.models import FAQ_MAX_PER_KB, KnowledgeBase, KnowledgeBaseFaq
+from app.models import FAQ_MAX_PER_KB, KnowledgeBase, KnowledgeBaseFaq, Message
 
 
 def _make_kb(client, admin_headers, **extra) -> int:
@@ -176,3 +177,197 @@ def test_faq_answer_is_not_vectorized(client, make_user, session_factory):
         assert list(db.scalars(select(Document))) == []
         # 库本身还在（不是因为库没了才查不到）
         assert db.get(KnowledgeBase, kb_id) is not None
+
+
+# ==================== 命中即返回（问答入口的闸门）====================
+
+
+@pytest.fixture
+def rag_env(monkeypatch):
+    """记录 RAG 侧被调用的次数 —— 用来断言 FAQ 命中时**一次都没碰它们**。"""
+    from app.services import rag_service, vector_service
+
+    box = {"search": 0, "chat": 0}
+
+    def fake_search(db, user, query, kb_ids=None, top_k=5, rerank=False):
+        box["search"] += 1
+        return {
+            "query": query, "top_k": top_k, "searched_kb_ids": kb_ids or [],
+            "results": [], "reranked": False, "candidate_k": top_k,
+        }
+
+    def fake_chat(system, user_msg, history=None):
+        box["chat"] += 1
+        return {"answer": "这是模型生成的答案", "usage": {"total_tokens": 1},
+                "finish_reason": "stop"}
+
+    monkeypatch.setattr(vector_service, "search", fake_search)
+    monkeypatch.setattr(rag_service.llm, "chat", fake_chat)
+    return box
+
+
+def test_hit_returns_standard_answer_without_search_or_model(
+    client, make_user, rag_env, session_factory
+):
+    """🔴 核心：命中 FAQ → 直接给标准答案，**不检索、不调模型**。
+
+    「不调模型」是这个功能的主要价值之一（省 token、统一口径），
+    所以断言必须落在**调用计数**上，而不是只看返回值长什么样。
+    """
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+
+    res = client.post(
+        "/api/chat", json={"query": "年假几天"}, headers=admin["headers"]
+    ).json()
+    assert res["code"] == 0, res
+    data = res["data"]
+    assert data["answer"] == "满一年 5 天"
+    assert data["answer_mode"] == "faq"
+    assert data["faq_id"] is not None
+    assert data["sources"] == [], "FAQ 答案没有文档引用，sources 必须是空的"
+    assert data["model"] is None, "没调模型就不该伪造一个模型名"
+    assert data["usage"] is None
+    assert data["searched_kb_ids"] == [kb_id]
+    assert data["conversation_id"] is not None
+
+    assert rag_env["search"] == 0, "命中 FAQ 后不该再检索"
+    assert rag_env["chat"] == 0, "命中 FAQ 后不该再调模型"
+
+
+def test_hit_falls_back_to_the_faq_library_scope(client, make_user, rag_env):
+    """`searched_kb_ids` 诚实记下"答案出自哪个库" —— 便于回看与后续收紧口径。"""
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="报销标准", answer="住宿 900")
+
+    data = client.post(
+        "/api/chat", json={"query": "报销标准"}, headers=admin["headers"]
+    ).json()["data"]
+    assert data["searched_kb_ids"] == [kb_id]
+
+
+def test_turn_is_persisted_with_faq_meta(client, make_user, rag_env, session_factory):
+    """FAQ 那一轮照样进会话历史，且 meta 里带得动"这是 FAQ 答的"。"""
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="餐补多少", answer="每天 30")
+
+    conv_id = client.post(
+        "/api/chat", json={"query": "餐补多少"}, headers=admin["headers"]
+    ).json()["data"]["conversation_id"]
+
+    with session_factory() as db:
+        msgs = list(
+            db.scalars(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .order_by(Message.id)
+            )
+        )
+    assert [m.role for m in msgs] == ["user", "assistant"]
+    assert msgs[1].content == "每天 30"
+    assert msgs[1].meta["answer_mode"] == "faq"
+    assert msgs[1].meta["source"] == "faq"
+    assert msgs[1].sources == []
+
+
+def test_exact_match_only(client, make_user, rag_env):
+    """**精确匹配，不做模糊匹配** —— 宁可漏，不可错。
+
+    用户问"年假能不能延到下一年"，被模糊命中到"年假几天"的标准答案，
+    拿到的是"看着权威、其实答非所问"的东西，比走一趟 RAG 差得多。
+    """
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+
+    for q in ("年假几天？", "请问年假几天", "年假 几天"):
+        data = client.post(
+            "/api/chat", json={"query": q}, headers=admin["headers"]
+        ).json()["data"]
+        assert data.get("answer_mode") != "faq", f"{q!r} 不该命中 FAQ"
+    assert rag_env["search"] >= 3, "没命中就该照常走检索"
+
+
+def test_out_of_scope_kb_does_not_match(client, make_user, rag_env, session_factory):
+    """FAQ 只在**本次检索范围内**匹配 —— 选了别的库就不该命中。"""
+    admin = make_user("admin")
+    kb_a = _make_kb(client, admin["headers"])
+    kb_b = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_a, question="年假几天", answer="满一年 5 天")
+
+    data = client.post(
+        "/api/chat", json={"query": "年假几天", "kb_ids": [kb_b]},
+        headers=admin["headers"],
+    ).json()["data"]
+    assert data.get("answer_mode") != "faq"
+    assert data.get("faq_id") is None
+
+
+def test_user_without_permission_does_not_match(client, make_user, rag_env):
+    """没权限的库里的 FAQ 不该命中（否则 FAQ 成了绕开权限的后门）。"""
+    admin, other = make_user("admin"), make_user()
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+
+    data = client.post(
+        "/api/chat", json={"query": "年假几天"}, headers=other["headers"]
+    ).json()["data"]
+    assert data.get("answer_mode") != "faq"
+    assert rag_env["search"] >= 1
+
+
+def test_stream_endpoint_returns_envelope_on_faq_hit(client, make_user, rag_env):
+    """流式端点命中 FAQ 时返回**统一信封**而不是 SSE。
+
+    答案是现成的，没有"逐字生成"这个过程，硬包成 SSE 只是徒增解析成本。
+    这是**成功路径走信封的唯一情况**，所以前端必须按 code 先判成功再判失败
+    （见 `frontend/src/api/stream.js`）。
+    """
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+
+    res = client.post(
+        "/api/chat/stream", json={"query": "年假几天"}, headers=admin["headers"]
+    )
+    assert res.status_code == 200
+    assert "text/event-stream" not in res.headers.get("content-type", "")
+    body = res.json()
+    assert body["code"] == 0, body
+    assert body["data"]["answer"] == "满一年 5 天"
+    assert body["data"]["answer_mode"] == "faq"
+    assert rag_env["chat"] == 0
+
+
+def test_agent_endpoints_also_short_circuit(client, make_user, rag_env, monkeypatch):
+    """🔴 **Agent 那条路也要过这道闸门**。
+
+    否则用户切到 Agent 模式点同一个 FAQ 卡片，又拿到模型生成的答案 ——
+    "同一句话两个答案来源"的问题原样还在。
+    """
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+
+    # 非流式
+    data = client.post(
+        "/api/agent/chat", json={"query": "年假几天"}, headers=admin["headers"]
+    ).json()["data"]
+    assert data["answer"] == "满一年 5 天"
+    assert data["answer_mode"] == "faq"
+    # Agent 侧必填字段要有，否则 response_model 校验会炸
+    assert data["iterations"] == 0
+    assert data["steps"] == []
+    assert "elapsed_ms" in data
+
+    # 流式
+    res = client.post(
+        "/api/agent/chat/stream", json={"query": "年假几天"}, headers=admin["headers"]
+    )
+    assert "text/event-stream" not in res.headers.get("content-type", "")
+    assert res.json()["data"]["answer"] == "满一年 5 天"
+
+    assert rag_env["chat"] == 0, "Agent 那两条路也不该调模型"

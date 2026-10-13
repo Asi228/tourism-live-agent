@@ -41,14 +41,16 @@ class AgentStep(BaseModel):
 class AgentChatResponse(BaseModel):
     query: str
     answer: str
-    answer_mode: Literal["grounded", "no_evidence", "smalltalk"] = Field(
+    answer_mode: Literal["grounded", "no_evidence", "smalltalk", "faq"] = Field(
         default="no_evidence",
         description="本次答案的**性质**，比 hit 更细："
                     "grounded=依据知识库资料作答；"
                     "no_evidence=检索过但没有可用资料（不调模型）；"
-                    "smalltalk=判定不需要查库，寒暄式回应。"
+                    "smalltalk=判定不需要查库，寒暄式回应；"
+                    "faq=命中知识库常见问题，直接返回标准答案（没检索、没调模型）。"
                     "hit=false 时靠它区分「没有依据」和「本就不该有依据」。"
-                    "⚠️ 取值改动要同步 app/agent/graph.py 里的 ANSWER_* 常量。",
+                    "⚠️ 取值改动要同步 app/agent/graph.py 里的 ANSWER_* 常量"
+                    "与 faq_service.ANSWER_MODE_FAQ。",
     )
     hit: bool = Field(description="是否拿到了知识库资料作为依据")
     sources: list[SourceItem] = Field(default_factory=list)

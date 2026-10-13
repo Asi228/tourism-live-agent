@@ -25,7 +25,7 @@ from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.chat import ChatRequest, ChatResponse
-from app.services import rag_service
+from app.services import faq_service, rag_service
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,16 @@ def chat(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 🔴 **FAQ 闸门放在最前面**：命中就直接给标准答案，不检索、不调模型。
+    # 它属于"问答入口"这一层，不属于 RAG —— 见 faq_service 里那段的说明。
+    faq_data = faq_service.answer_from_faq(
+        db, current_user,
+        query=payload.query, kb_ids=payload.kb_ids,
+        conversation_id=payload.conversation_id,
+    )
+    if faq_data is not None:
+        return success(faq_data, "来自常见问题（标准答案，未调用大模型）")
+
     data = rag_service.answer(
         db,
         current_user,
@@ -71,12 +81,28 @@ def chat_stream(
 
     没有 `response_model`：响应体不是那个统一信封，`StreamingResponse` 也不接受模型校验。
 
-    ⚠️ **这个接口不是"总是返回 SSE"**。越权、配额到顶、限流、Milvus 挂了这些
-    失败发生在**响应开始之前**（`rag_service.stream_answer` 里的 `_prepare`），
-    它们仍然走统一信封：HTTP 200 + `{code: 40400, …}`，`content-type` 是 JSON。
+    ⚠️ **这个接口不是"总是返回 SSE"**，两种情况会返回普通 JSON 信封（HTTP 仍 200）：
+
+      ① **失败**（越权 404、配额 40900、限流 42900、Milvus 挂了 50004）——
+         它们发生在响应开始之前（`rag_service.stream_answer` 里的 `_prepare`）；
+      ② **FAQ 命中**（成功！）—— 命中的答案是现成的，没有"逐字生成"这个过程，
+         硬包成 SSE 只是徒增解析成本。**这一条是成功路径走信封的唯一情况**，
+         所以 `code` 的判读顺序很重要：前端必须先看 `code === 0` 是不是成功信封，
+         再把它当失败处理（见 `frontend/src/api/stream.js` 里那段分流）。
+
     只有"已经开始吐字之后"的失败才降级成 `event: error`（那时状态码已经发出去了）。
-    前端必须按 `content-type` 分流 —— 详见 `frontend/src/api/stream.js`。
+    前端必须按 `content-type` 分流。
     """
+    # 🔴 FAQ 闸门：在 Agent/RAG 之前。命中的答案是一段现成文本，
+    # 没有"流式生成"可言，所以直接走统一信封返回，不开 SSE。
+    faq_data = faq_service.answer_from_faq(
+        db, current_user,
+        query=payload.query, kb_ids=payload.kb_ids,
+        conversation_id=payload.conversation_id,
+    )
+    if faq_data is not None:
+        return success(faq_data, "来自常见问题（标准答案，未调用大模型）")
+
     # 注意 `stream_answer` 是**普通函数**（不是生成器）：它在这里就把准备阶段跑完，
     # 所以上面那些异常会正常向上抛、被全局处理器接住。若把它写成生成器，
     # 准备阶段会被推迟到"响应已开始"，越权就只能变成一个 200 流里的事件 —— 那是降级。
