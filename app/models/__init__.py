@@ -26,6 +26,12 @@ from app.models.document import (
 )
 from app.models.document_chunk import DocumentChunk
 from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base_faq import (
+    ANSWER_MAX_LENGTH as FAQ_ANSWER_MAX_LENGTH,
+    FAQ_MAX_PER_KB,
+    QUESTION_MAX_LENGTH as FAQ_QUESTION_MAX_LENGTH,
+    KnowledgeBaseFaq,
+)
 from app.models.knowledge_base_member import KnowledgeBaseMember
 from app.models.message import ALL_ROLES, ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.message_feedback import (
@@ -51,6 +57,9 @@ __all__ = [
     "ALL_REASONS",
     "ALL_ROLES",
     "ALL_STATUSES",
+    "FAQ_ANSWER_MAX_LENGTH",
+    "FAQ_MAX_PER_KB",
+    "FAQ_QUESTION_MAX_LENGTH",
     "FEEDBACK_COMMENT_MAX_LENGTH",
     "MEMORY_MAX_LENGTH",
     "RATING_DOWN",
@@ -68,6 +77,7 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "KnowledgeBase",
+    "KnowledgeBaseFaq",
     "KnowledgeBaseMember",
     "Message",
     "MessageFeedback",

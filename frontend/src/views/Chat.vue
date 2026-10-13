@@ -1,8 +1,8 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, chunkApi, conversationApi, feedbackApi, knowledgeApi, streamChat } from '../api'
+import { chatApi, chunkApi, conversationApi, faqApi, feedbackApi, knowledgeApi, streamChat } from '../api'
 import ConversationList from '../components/ConversationList.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 
@@ -677,9 +677,37 @@ async function openSource(s) {
   }
 }
 
-/**
- * 导出当前对话为 Markdown 前的辅助：确认当前会话标题。
- */
+// ==================== 常见问题（FAQ 置顶）====================
+//
+// 只在**单选了一个知识库**时展示：FAQ 是挂在库上的，多选或全库检索时
+// 无法回答"这些卡片属于哪个库"，硬凑只会误导。
+const faqs = ref([])
+const singleKbId = computed(() =>
+  selectedKbs.value.length === 1 ? selectedKbs.value[0] : null
+)
+
+async function loadFaqs() {
+  if (singleKbId.value == null) {
+    faqs.value = []
+    return
+  }
+  try {
+    const body = await faqApi.list(singleKbId.value)
+    faqs.value = body.data || []
+  } catch {
+    faqs.value = [] // 无权或库里没配，静默略过 —— 置顶区不该挡住正常问答
+  }
+}
+
+watch(singleKbId, loadFaqs)
+
+/** 点 FAQ 卡片 = 用这个问题直接提问（省掉一次打字）。 */
+async function askFaq(f) {
+  query.value = f.question
+  await ask()
+}
+
+/** 导出当前对话为 Markdown 前的辅助：确认当前会话标题。 */
 function exportConversation() {
   if (!messages.value.length) return
   const md = buildMarkdown()
@@ -705,6 +733,8 @@ function scorePercent(score) {
 
 onMounted(async () => {
   await Promise.all([loadKbList(), loadConversations()])
+  // FAQ 依赖知识库列表，等它回来再拉一次（首次渲染时 selectedKbs 还是空的）
+  await loadFaqs()
 })
 
 // 离开页面时别让流还挂着：它占着一条连接和一个后端线程，done 回调还会写已卸载组件的状态
@@ -782,6 +812,22 @@ onBeforeUnmount(() => abortStream())
           >导出对话</el-button>
         </div>
         <div class="mode-hint">{{ emptyHint }}</div>
+      </el-card>
+
+      <!-- 常见问题置顶。**只在单选了一个知识库时出现** —— FAQ 挂在库上，
+           多选或全库检索时说不清这些卡片属于谁，硬凑只会误导。
+           点卡片直接用这个问题提问，省掉一次打字，也绕开一次模型调用。 -->
+      <el-card v-if="faqs.length" class="faq-card">
+        <div class="faq-head">常见问题</div>
+        <div class="faq-list">
+          <button
+            v-for="f in faqs"
+            :key="f.id"
+            class="faq-item"
+            :title="f.answer"
+            @click="askFaq(f)"
+          >{{ f.question }}</button>
+        </div>
       </el-card>
 
       <el-card class="body-card">
@@ -1347,6 +1393,46 @@ onBeforeUnmount(() => abortStream())
   flex-direction: column;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+/* ---- 常见问题置顶 ---- */
+.faq-card :deep(.el-card__body) {
+  padding: 10px 16px;
+}
+
+.faq-head {
+  margin-bottom: 8px;
+  font-size: var(--el-font-size-extra-small);
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+}
+
+.faq-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 用原生 button 而不是 el-tag：它要能点击触发提问，语义上就是个按钮 */
+.faq-item {
+  max-width: 240px;
+  padding: 5px 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 14px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-regular);
+  font-size: var(--el-font-size-extra-small);
+  line-height: 1.6;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.faq-item:hover {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
 
 /* ---- 引用溯源 ---- */

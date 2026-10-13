@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { knowledgeApi, userApi, vectorApi } from '../api'
+import { knowledgeApi, faqApi, userApi, vectorApi } from '../api'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -36,6 +36,70 @@ function canManage(kb) {
 
 const permissionText = { read: '只读', write: '可写', admin: '管理' }
 const permissionTagType = { read: 'info', write: 'warning', admin: 'success' }
+
+// ==================== 常见问题（FAQ）====================
+// 库级 admin 才能改；配好的 FAQ 会在问答页该库下置顶展示。
+const faqVisible = ref(false)
+const faqKb = ref(null)
+const faqs = ref([])
+const faqLoading = ref(false)
+const faqDraft = reactive({ question: '', answer: '' })
+const FAQ_MAX = 10
+
+async function openFaq(kb) {
+  faqKb.value = kb
+  faqDraft.question = ''
+  faqDraft.answer = ''
+  faqVisible.value = true
+  await loadFaqs()
+}
+
+async function loadFaqs() {
+  if (!faqKb.value) return
+  faqLoading.value = true
+  try {
+    const body = await faqApi.list(faqKb.value.id)
+    faqs.value = body.data || []
+  } catch {
+    faqs.value = []
+  } finally {
+    faqLoading.value = false
+  }
+}
+
+async function addFaq() {
+  const q = faqDraft.question.trim()
+  const a = faqDraft.answer.trim()
+  if (!q || !a) return
+  try {
+    await faqApi.create({
+      knowledge_base_id: faqKb.value.id,
+      question: q,
+      answer: a,
+      sort_order: faqs.value.length,
+    })
+    faqDraft.question = ''
+    faqDraft.answer = ''
+    ElMessage.success('已添加')
+    await loadFaqs()
+  } catch {
+    /* 拦截器已提示（含"已达 10 条上限"） */
+  }
+}
+
+async function removeFaq(row) {
+  try {
+    await ElMessageBox.confirm(`删除「${row.question}」？`, '提示', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await faqApi.remove(row.id)
+    await loadFaqs()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
 
 // ---- 向量库自检 ----
 const vectorLoading = ref(false)
@@ -295,6 +359,7 @@ onMounted(load)
                  是 require_admin。给库级 admin 开这个入口只会让他"看得到列表、加不了人" ——
                  与其做个半开的能力，不如先把口径收齐（后端放宽接口后再一起放开）。 -->
             <el-button v-if="user.isAdmin" link type="primary" @click="openMembers(row)">成员</el-button>
+            <el-button v-if="canManage(row)" link type="primary" @click="openFaq(row)">常见问题</el-button>
             <el-button v-if="canManage(row)" link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button v-if="user.isAdmin" link type="danger" @click="removeKb(row)">删除</el-button>
           </template>
@@ -306,6 +371,55 @@ onMounted(load)
         <span v-else class="hint">请联系管理员为你授权</span>
       </el-empty>
     </el-card>
+
+    <!-- 常见问题（FAQ）。配好的条目会在问答页这个库下置顶 ——
+         高频问题不用每次都调模型，也顺带统一了口径。 -->
+    <el-dialog
+      v-model="faqVisible"
+      :title="faqKb ? `常见问题 · ${faqKb.name}` : '常见问题'"
+      width="640px"
+    >
+      <div class="faq-tip">
+        最多 {{ FAQ_MAX }} 条（{{ faqs.length }}/{{ FAQ_MAX }}）。答案<b>不参与检索</b> ——
+        它是命中即返回的快捷方式，与 RAG 两条独立的路。
+      </div>
+
+      <el-table v-loading="faqLoading" :data="faqs" size="small" max-height="320">
+        <el-table-column prop="question" label="问题" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="answer" label="标准答案" min-width="240" show-overflow-tooltip />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="danger" @click="removeFaq(row)">删除</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <span class="hint">还没有配置常见问题</span>
+        </template>
+      </el-table>
+
+      <div class="faq-add">
+        <el-input
+          v-model="faqDraft.question"
+          placeholder="问题，如：年假可以休几天"
+          maxlength="200"
+        />
+        <el-input
+          v-model="faqDraft.answer"
+          type="textarea"
+          :rows="2"
+          maxlength="2000"
+          placeholder="标准答案"
+        />
+        <el-button
+          type="primary"
+          :disabled="!faqDraft.question.trim() || !faqDraft.answer.trim() || faqs.length >= FAQ_MAX"
+          @click="addFaq"
+        >添加</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="faqVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 新建 / 编辑 -->
     <el-dialog v-model="editVisible" :title="editing ? '编辑知识库' : '新建知识库'" width="480px">
@@ -377,6 +491,21 @@ onMounted(load)
   margin-left: 10px;
   color: var(--el-text-color-secondary);
   font-size: var(--el-font-size-extra-small);
+}
+
+/* ---- 常见问题 ---- */
+.faq-tip {
+  margin-bottom: 10px;
+  font-size: var(--el-font-size-extra-small);
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
+}
+
+.faq-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
 }
 .owner-line {
   margin-bottom: 10px;

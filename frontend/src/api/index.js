@@ -143,6 +143,15 @@ export const feedbackApi = {
   get: (messageId) => http.get(`/messages/${messageId}/feedback`),
 }
 
+// 常见问题（FAQ 置顶）。**不进向量库、不参与检索** —— 命中即返回，
+// 与 RAG 是两条独立的路，混进来会让"这个答案来自哪份文档"说不清。
+export const faqApi = {
+  list: (kbId) => http.get('/faqs', { params: { kb_id: kbId } }),
+  create: (payload) => http.post('/faqs', payload),
+  update: (id, payload) => http.patch(`/faqs/${id}`, payload),
+  remove: (id) => http.delete(`/faqs/${id}`),
+}
+
 // 引用溯源：点答案里的 [n] → 取这块**完整**正文（列表里的 snippet 是截断过的）。
 export const chunkApi = {
   get: (chunkId) => http.get(`/chunks/${chunkId}`),
