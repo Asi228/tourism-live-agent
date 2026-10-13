@@ -70,3 +70,17 @@ def _admin_section(db: Session, user: User, allowed: list[int] | None) -> dict |
         "vector_count": vector_count,
         "unlimited_scope": allowed is None,
     }
+
+
+def trends(db: Session, user: User, days: int = 7) -> dict:
+    """概览页图表用的趋势数据。
+
+    口径与 `overview` **完全一致**（同一个 `get_accessible_kb_ids`），
+    否则会出现"概览说 3 份文档、图表说 5 份"这种自相矛盾。
+    """
+    allowed = knowledge_service.get_accessible_kb_ids(db, user)
+    return {
+        "days": days,
+        "question_trend": stats_repository.question_trend(db, user.id, days),
+        "documents_by_kb": stats_repository.documents_by_kb(db, allowed),
+    }

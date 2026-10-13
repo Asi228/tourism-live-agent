@@ -59,3 +59,30 @@ class OverviewOut(BaseModel):
     recent_questions: list[RecentQuestion] = Field(default_factory=list)
     # 非管理员是 null（不是 0）—— 前端据此整块不渲染，避免显示"用户 0 人"的假数字
     admin: OverviewAdmin | None = None
+
+
+class TrendPoint(BaseModel):
+    """趋势里的一个点（一天一个）。"""
+
+    date: str = Field(description="ISO 日期，如 2026-10-12")
+    count: int
+
+
+class KbDocCount(BaseModel):
+    """一个知识库的文档数。"""
+
+    knowledge_base_id: int
+    count: int
+
+
+class TrendsOut(BaseModel):
+    """概览页图表用的趋势数据。
+
+    与 `overview` **分成两个接口**：首屏只该拿要显示的数字，图表数据按需再取。
+    尤其 `question_trend` 里补了一堆 count=0 的点（没有提问的日子也要有，
+    否则折线断格），对首屏来说是纯噪音。
+    """
+
+    days: int = Field(description="question_trend 覆盖的天数")
+    question_trend: list[TrendPoint] = Field(default_factory=list)
+    documents_by_kb: list[KbDocCount] = Field(default_factory=list)

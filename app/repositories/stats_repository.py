@@ -7,7 +7,7 @@ repository 的职责从"管某张表"变成"管某张表 + 某些统计"，边�
 全部是**只读聚合**，不产生业务对象，所以这里直接返回元组/dict 而不是 ORM 实体。
 """
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -111,3 +111,70 @@ def recent_questions(db: Session, user_id: int, limit: int = 5) -> list[dict]:
 
 def count_users(db: Session) -> int:
     return db.scalar(select(func.count()).select_from(User)) or 0
+
+
+def question_trend(db: Session, user_id: int, days: int = 7) -> list[dict]:
+    """近 N 天**每天**的提问数，返回 `[{"date": "2026-10-12", "count": 3}, ...]` 按日期升序。
+
+    **没有提问的日子也要出现（count=0）** —— 折线图靠连续的点连线，
+    缺一天那条线就断一格，看起来像数据丢了而不是没人提问。
+
+    ⚠️ 分组刻意放在 **Python 侧**（把 created_at 取回来 group by）而不是 SQL 的
+    `GROUP BY DATE(created_at)`：后者有三个坑 —— ① MySQL 的 DATE() 用服务器时区、
+    而 Python 的 date.today() 用本地时区，两边差几小时就会把今天的数算到昨天；
+    ② SQLite 与 MySQL 的日期函数不一样，测试库和生产库会对不上；③ 套了函数的列
+    用不上索引。这里数据量是"一个人的提问数"，取回来分组没有压力。
+
+    口径与 `question_counts` 一致：`messages.role=user` + `Conversation.user_id`。
+    """
+    today = date.today()
+    start = datetime.combine(today - timedelta(days=days - 1), time.min)
+    stamps = (
+        db.execute(
+            select(Message.created_at)
+            .select_from(Message)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(
+                Message.role == ROLE_USER,
+                Message.created_at >= start,
+                Conversation.user_id == user_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_day: dict[str, int] = {}
+    for ts in stamps:
+        key = ts.date().isoformat()
+        by_day[key] = by_day.get(key, 0) + 1
+
+    return [
+        {
+            "date": (today - timedelta(days=offset)).isoformat(),
+            "count": by_day.get((today - timedelta(days=offset)).isoformat(), 0),
+        }
+        for offset in range(days - 1, -1, -1)
+    ]
+
+
+def documents_by_kb(db: Session, kb_ids: list[int] | None, limit: int = 10) -> list[dict]:
+    """各知识库的文档数，按数量倒序（概览页横向柱状图用）。
+
+    口径与 `document_counts` 共用同一个 `kb_ids` 约定：`None` = 不受限（管理员），
+    `[]` = 没有任何可见库 → 直接返回空。**不能把 [] 当 None**，否则无权用户
+    会拿到全公司的分布。
+    """
+    if kb_ids == []:
+        return []
+    stmt = (
+        select(Document.knowledge_base_id, func.count().label("n"))
+        .group_by(Document.knowledge_base_id)
+        .order_by(func.count().desc())
+        .limit(limit)
+    )
+    if kb_ids is not None:
+        stmt = stmt.where(Document.knowledge_base_id.in_(kb_ids))
+    return [
+        {"knowledge_base_id": kb_id, "count": count}
+        for kb_id, count in db.execute(stmt).all()
+    ]
