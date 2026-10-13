@@ -26,7 +26,7 @@ from app.api.deps import get_current_user
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.memory import MemoryCreate, MemoryOut
+from app.schemas.memory import MemoryCreate, MemoryOut, MemoryUpdate
 from app.services import memory_service
 
 logger = logging.getLogger(__name__)
@@ -69,3 +69,26 @@ def delete_memory(
 ):
     memory_service.delete_memory(db, current_user, memory_id)
     return success(None, "已删除")
+
+
+@router.patch(
+    "/{memory_id}",
+    response_model=ApiResponse[MemoryOut],
+    summary="修改一条长期记忆（换内容 / 切换是否拼进提示词）",
+)
+def update_memory(
+    memory_id: int,
+    payload: MemoryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """改内容或切换开关，二者至少给一个（都不给返回 40000）。
+
+    ⚠️ `is_enabled=False` **只是不拼进提示词**，数据仍在列表里、能编辑、能开回来。
+    想彻底不要一条记忆请用 DELETE。这个区分是刻意的：用户常常只是想"这条先别用"。
+    """
+    row = memory_service.update_memory(
+        db, current_user, memory_id,
+        content=payload.content, is_enabled=payload.is_enabled,
+    )
+    return success(MemoryOut.model_validate(row), "已更新")

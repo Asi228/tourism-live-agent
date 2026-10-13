@@ -130,6 +130,9 @@ export const memoryApi = {
   // 注意：写进去就会存下来；但它**会不会拼进提示词**由服务端开关 USER_MEMORY_ENABLED 决定。
   list: () => http.get('/memories'),
   create: (content) => http.post('/memories', { content }),
+  // PATCH：两个字段都可选但至少给一个 —— 换内容传 { content }，切换开关传 { is_enabled }。
+  // is_enabled=false 只是"暂时不拼进提示词"，数据仍在列表里，能开回来。
+  update: (id, payload) => http.patch(`/memories/${id}`, payload),
   remove: (id) => http.delete(`/memories/${id}`),
 }
 

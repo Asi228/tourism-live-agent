@@ -22,7 +22,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -42,6 +42,15 @@ class UserMemory(Base):
         ForeignKey("users.id"), index=True, nullable=False, comment="归属用户，只有本人能读写"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="记忆正文")
+    # 单条开关：**只影响"拼不拼进提示词"，不拦写入、不拦读取**（列表照样看得到）。
+    # 关掉一条比重删它轻 —— 用户常常只是想"这条先别用"，过几天又要用回来。
+    # ⚠️ 这与全局的 `USER_MEMORY_ENABLED` 是两个层次，别混：那个管"整个功能开不开"，
+    # 这个管"这一条用不用"。存量上限 `USER_MEMORY_MAX_PER_USER` 数的是**全部**条
+    #（含关掉的）—— 它管的是库里存多少，不是送进提示词多少。
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False,
+        comment="False 表示暂时不拼进提示词（数据仍在，可随时开回来）",
+    )
     source_conversation_id: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,

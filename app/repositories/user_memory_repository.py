@@ -10,17 +10,22 @@ from app.models.user_memory import UserMemory
 logger = logging.getLogger(__name__)
 
 
-def list_by_user(db: Session, user_id: int, limit: int | None = None) -> list[UserMemory]:
+def list_by_user(
+    db: Session, user_id: int, limit: int | None = None, enabled_only: bool = False
+) -> list[UserMemory]:
     """取某用户的记忆，**最近更新的在前**。
 
     按 `updated_at DESC` 再按 `id DESC`：MySQL 的 DATETIME 只到秒，
     同一秒写入的两条只按时间排会得到不确定的顺序（列表和提示词都会跟着抖）。
+
+    `enabled_only=True` 只取**启用中**的 —— 给提示词用（拼不拼由用户单条决定）。
+    列表接口必须传 False：被关掉的记忆在管理界面里照样要看得见、能改回来，
+    否则用户关掉一条就再也找不到它了。
     """
-    stmt = (
-        select(UserMemory)
-        .where(UserMemory.user_id == user_id)
-        .order_by(UserMemory.updated_at.desc(), UserMemory.id.desc())
-    )
+    stmt = select(UserMemory).where(UserMemory.user_id == user_id)
+    if enabled_only:
+        stmt = stmt.where(UserMemory.is_enabled.is_(True))
+    stmt = stmt.order_by(UserMemory.updated_at.desc(), UserMemory.id.desc())
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(db.scalars(stmt))

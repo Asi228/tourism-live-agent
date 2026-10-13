@@ -269,3 +269,139 @@ def test_agent_path_also_gets_memory(client, make_user, agent_env, monkeypatch):
     ]
     assert generate_systems, "没有发生生成调用"
     assert "我在财务部" in generate_systems[-1]
+
+
+# ==================== 编辑与单条开关（PATCH） ====================
+
+
+def test_patch_updates_content(client, make_user):
+    """改正文，且响应回显改后的值。"""
+    u = make_user()
+    mem_id = _remember(client, u, "我在财务部")["data"]["id"]
+
+    res = client.patch(
+        f"/api/memories/{mem_id}", json={"content": "我在技术部"}, headers=u["headers"]
+    ).json()
+    assert res["code"] == 0, res
+    assert res["data"]["id"] == mem_id
+    assert res["data"]["content"] == "我在技术部"
+
+    listed = client.get("/api/memories", headers=u["headers"]).json()["data"]
+    assert [m["content"] for m in listed] == ["我在技术部"]
+
+
+def test_patch_rejects_empty_and_blank_content(client, make_user):
+    """空串由 schema 的 min_length 拦（40000），全空白由 service 拦（同码）。
+
+    两条路都要钉：只钉一条的话，另一条被删掉时这里还是绿的。
+    """
+    u = make_user()
+    mem_id = _remember(client, u, "我在财务部")["data"]["id"]
+
+    for bad in ("", "   "):
+        res = client.patch(
+            f"/api/memories/{mem_id}", json={"content": bad}, headers=u["headers"]
+        ).json()
+        assert res["code"] == ErrorCode.PARAM_ERROR, (bad, res)
+
+    # 原文没被改坏
+    listed = client.get("/api/memories", headers=u["headers"]).json()["data"]
+    assert listed[0]["content"] == "我在财务部"
+
+
+def test_patch_requires_at_least_one_field(client, make_user):
+    """两个字段都不给是调用方的 bug —— 返回 40000 而不是静默返回 200。"""
+    u = make_user()
+    mem_id = _remember(client, u, "我在财务部")["data"]["id"]
+
+    res = client.patch(f"/api/memories/{mem_id}", json={}, headers=u["headers"]).json()
+    assert res["code"] == ErrorCode.PARAM_ERROR, res
+
+
+def test_patch_other_users_memory_is_not_found(client, make_user):
+    """别人的 id 一律 404（403 等于白送"这个 id 存在"）。"""
+    a, b = make_user(), make_user()
+    mem_id = _remember(client, b, "我在财务部")["data"]["id"]
+
+    res = client.patch(
+        f"/api/memories/{mem_id}", json={"content": "hacked"}, headers=a["headers"]
+    ).json()
+    assert res["code"] == ErrorCode.NOT_FOUND, res
+    # 对方的数据没被动过
+    assert client.get("/api/memories", headers=b["headers"]).json()["data"][0]["content"] == "我在财务部"
+
+
+def test_disabled_memory_is_not_injected_into_prompt(client, make_user, chat_env, monkeypatch):
+    """🔴 核心新行为：关掉一条 → 不进提示词，但**数据仍在列表里**。
+
+    前半段"开着时确实进得去"是前提校验 —— 没有它，后半段那个 not in 可能是
+    "从来没进过去"造成的假绿。
+    """
+    monkeypatch.setattr(settings, "USER_MEMORY_ENABLED", True)
+    u = make_user()
+    mem_id = _remember(client, u, "我在财务部")["data"]["id"]
+
+    _ask(client, u)
+    assert "我在财务部" in chat_env["chat"][-1]["system"]
+
+    res = client.patch(
+        f"/api/memories/{mem_id}", json={"is_enabled": False}, headers=u["headers"]
+    ).json()
+    assert res["code"] == 0, res
+    assert res["data"]["is_enabled"] is False
+
+    _ask(client, u)
+    assert "我在财务部" not in chat_env["chat"][-1]["system"]
+
+    # 关掉只是不拼进提示词 —— 列表里照样看得见，才谈得上"开回来"
+    listed = client.get("/api/memories", headers=u["headers"]).json()["data"]
+    assert [m["content"] for m in listed] == ["我在财务部"]
+    assert listed[0]["is_enabled"] is False
+
+
+def test_reenabled_memory_comes_back_into_prompt(client, make_user, chat_env, monkeypatch):
+    """关掉再开回来 → 重新进提示词。可逆，这正是开关与删除的本质区别。"""
+    monkeypatch.setattr(settings, "USER_MEMORY_ENABLED", True)
+    u = make_user()
+    mem_id = _remember(client, u, "我在财务部")["data"]["id"]
+
+    client.patch(f"/api/memories/{mem_id}", json={"is_enabled": False}, headers=u["headers"])
+    client.patch(f"/api/memories/{mem_id}", json={"is_enabled": True}, headers=u["headers"])
+
+    _ask(client, u)
+    assert "我在财务部" in chat_env["chat"][-1]["system"]
+
+
+def test_cap_counts_disabled_memories_too(client, make_user, monkeypatch):
+    """存量上限数的是**全部**条（含关掉的）。
+
+    它管"库里存多少"（不可逆），与 `USER_MEMORY_MAX_ITEMS` 管的"送进提示词多少"
+    （可逆）不是一回事 —— 关掉一条不该就此腾出容量。
+    """
+    monkeypatch.setattr(settings, "USER_MEMORY_MAX_PER_USER", 1)
+    u = make_user()
+    mem_id = _remember(client, u, "第一条")["data"]["id"]
+
+    client.patch(f"/api/memories/{mem_id}", json={"is_enabled": False}, headers=u["headers"])
+    res = _remember(client, u, "第二条")
+    assert res["code"] == ErrorCode.RESOURCE_LIMIT_EXCEEDED, res
+
+
+def test_max_items_counts_only_enabled(client, make_user, chat_env, monkeypatch):
+    """`USER_MEMORY_MAX_ITEMS` 只数**启用中**的几条 —— 关掉的不占名额。
+
+    与上一条正好是一对：上限（存量）数全部，配额（进提示词）只数启用的。
+    """
+    monkeypatch.setattr(settings, "USER_MEMORY_ENABLED", True)
+    monkeypatch.setattr(settings, "USER_MEMORY_MAX_ITEMS", 1)
+    u = make_user()
+    _remember(client, u, "旧的一条")
+    newer = _remember(client, u, "新的一条")["data"]["id"]
+
+    # 把更新的那条关掉 → 名额应该让给旧的那条
+    client.patch(f"/api/memories/{newer}", json={"is_enabled": False}, headers=u["headers"])
+
+    _ask(client, u)
+    system = chat_env["chat"][-1]["system"]
+    assert "旧的一条" in system
+    assert "新的一条" not in system

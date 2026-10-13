@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.user_memory import CONTENT_MAX_LENGTH
 
@@ -33,6 +33,10 @@ class MemoryOut(BaseModel):
 
     id: int
     content: str
+    is_enabled: bool = Field(
+        default=True,
+        description="False 表示暂时不拼进提示词（数据仍在，可随时开回来）",
+    )
     source_conversation_id: int | None = Field(
         default=None,
         description=(
@@ -42,3 +46,25 @@ class MemoryOut(BaseModel):
     )
     created_at: datetime
     updated_at: datetime = Field(description="最近一次修改时间 —— 拼提示词时按它倒序")
+
+
+class MemoryUpdate(BaseModel):
+    """改一条记忆。两个字段都可选，但**至少要给一个**。
+
+    ⚠️ 刻意不做"整条替换"（PUT 语义）：改内容时不该被要求把开关也重发一遍，
+    反过来也一样。两个都不给属于调用方的 bug，返回 40000 而不是静默成功。
+    """
+
+    content: str | None = Field(
+        default=None, min_length=1, max_length=CONTENT_MAX_LENGTH,
+        description=f"新的记忆正文，最多 {CONTENT_MAX_LENGTH} 字；不传表示不改",
+    )
+    is_enabled: bool | None = Field(
+        default=None, description="是否拼进提示词；不传表示不改"
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "MemoryUpdate":
+        if self.content is None and self.is_enabled is None:
+            raise ValueError("content 和 is_enabled 至少要提供一个")
+        return self

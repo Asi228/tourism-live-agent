@@ -89,6 +89,48 @@ def delete_memory(db: Session, user: User, memory_id: int) -> None:
     logger.info("删除长期记忆 user=%s memory_id=%s", user.username, memory_id)
 
 
+def update_memory(
+    db: Session,
+    user: User,
+    memory_id: int,
+    content: str | None = None,
+    is_enabled: bool | None = None,
+) -> UserMemory:
+    """改一条记忆：换内容 / 切换是否拼进提示词。两个都可以不给（=没改任何东西），
+    由 schema 层先拦掉那种调用。
+
+    ⚠️ **开关只影响提示词，不影响数据**：关掉的记忆照样在列表里、能编辑、能开回来。
+    这正是它和 `delete_memory` 的区别 —— 关掉是"先别用"，删掉是"不要了"。
+
+    归属校验同其余写操作：别人的 id 一律 404（`get_owned` 把 user_id 写进 WHERE）。
+    """
+    if content is None and is_enabled is None:
+        raise AppException(ErrorCode.PARAM_ERROR, "没有需要修改的内容")
+
+    row = user_memory_repository.get_owned(db, memory_id, user.id)
+    if row is None:
+        raise AppException(ErrorCode.NOT_FOUND, "记忆不存在")
+
+    if content is not None:
+        text = (content or "").strip()
+        if not text:
+            raise AppException(ErrorCode.PARAM_ERROR, "记忆内容不能为空")
+        if len(text) > CONTENT_MAX_LENGTH:
+            raise AppException(
+                ErrorCode.PARAM_ERROR, f"一条记忆最多 {CONTENT_MAX_LENGTH} 字，请拆成多条"
+            )
+        row.content = text
+    if is_enabled is not None:
+        row.is_enabled = is_enabled
+
+    db.commit()
+    logger.info(
+        "修改长期记忆 user=%s memory_id=%s content=%s enabled=%s",
+        user.username, memory_id, content is not None, is_enabled,
+    )
+    return row
+
+
 def section_for_prompt(db: Session, user: User) -> str:
     """给提示词用的记忆段 —— 开关关、条数为 0、或没有任何记忆时都返回空串。
 
@@ -101,7 +143,9 @@ def section_for_prompt(db: Session, user: User) -> str:
     if limit <= 0:
         return ""
 
-    rows = user_memory_repository.list_by_user(db, user.id, limit=limit)
+    rows = user_memory_repository.list_by_user(
+        db, user.id, limit=limit, enabled_only=True
+    )
     section = prompt.build_memory_section(
         [m.content for m in rows], settings.USER_MEMORY_MAX_CHARS
     )
