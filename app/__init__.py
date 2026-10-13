@@ -12,6 +12,7 @@ from app.api import (
     chat,
     conversations,
     documents,
+    feedback,
     health,
     knowledge,
     memories,
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(agent.router, prefix=settings.API_PREFIX)
     app.include_router(conversations.router, prefix=settings.API_PREFIX)
     app.include_router(memories.router, prefix=settings.API_PREFIX)
+    app.include_router(feedback.router, prefix=settings.API_PREFIX)
     app.include_router(stats.router, prefix=settings.API_PREFIX)
     app.include_router(audit.router, prefix=settings.API_PREFIX)
 

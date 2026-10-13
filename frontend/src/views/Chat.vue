@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, knowledgeApi, streamChat } from '../api'
+import { chatApi, conversationApi, feedbackApi, knowledgeApi, streamChat } from '../api'
 import ConversationList from '../components/ConversationList.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 
@@ -605,6 +605,61 @@ function buildMarkdown() {
   return out.join('\n')
 }
 
+// ==================== 答案反馈（Bad Case 闭环）====================
+
+const FEEDBACK_REASONS = ['答案错误', '与问题无关', '文不对题', '信息过时', '其他']
+const feedbackPending = ref(null) // 正在填差评原因的那条消息
+const fbReason = ref('')
+const fbComment = ref('')
+// el-dialog 的 v-model 要布尔值，而 feedbackPending 是个对象 ——
+// 用 computed 派生，避免两套状态各自维护而不同步
+const feedbackDialogOpen = computed({
+  get: () => feedbackPending.value != null,
+  set: (v) => { if (!v) feedbackPending.value = null },
+})
+
+async function sendFeedback(m, rating, reason = null, comment = null) {
+  const before = m.myFeedback
+  m.myFeedback = rating // 先本地点亮，失败再退回
+  try {
+    await feedbackApi.submit(m.id, { rating, reason, comment })
+    ElMessage.success('感谢反馈')
+  } catch {
+    m.myFeedback = before
+    /* 拦截器已提示 */
+  }
+}
+
+function openDownFeedback(m) {
+  // 已经点过"没用"再点一次 = 改成"有用"（改主意是常态，后端是 upsert）
+  if (m.myFeedback === 'down') {
+    sendFeedback(m, 'up')
+    return
+  }
+  feedbackPending.value = m
+  fbReason.value = FEEDBACK_REASONS[0]
+  fbComment.value = ''
+}
+
+async function confirmDownFeedback() {
+  const m = feedbackPending.value
+  if (!m) return
+  await sendFeedback(m, 'down', fbReason.value || null, fbComment.value.trim() || null)
+  feedbackPending.value = null
+}
+
+function cancelDownFeedback() {
+  feedbackPending.value = null
+}
+
+/**
+ * 反馈状态**只维护当前会话的内存态**，翻历史会话时不回显旧评价。
+ *
+ * 为什么不回显：那需要给每条消息单独发一个 GET（一页 50 条 = 50 个请求），
+ * 代价远大于"看到自己半年前点过赞"的收益。而**重新打分是 upsert**，
+ * 用户在历史会话里再点一次会覆盖旧值，不会攒出脏数据 —— 所以这个取舍成立。
+ */
+
 function exportConversation() {
   if (!messages.value.length) return
   const md = buildMarkdown()
@@ -808,6 +863,25 @@ onBeforeUnmount(() => abortStream())
                     <span v-if="m.data.skipped_orphans">⚠ 跳过孤儿向量 {{ m.data.skipped_orphans }} 条</span>
                   </div>
 
+                  <!-- 答案反馈（Bad Case 闭环）。只出现在 assistant 消息上，
+                       而且**流式生成中不显示** —— 让用户在答案还在往外吐时就打分，
+                       打的是半截内容，数据没有意义。 -->
+                  <div v-if="!m.streaming && m.id != null" class="feedback">
+                    <el-button
+                      size="small"
+                      text
+                      :type="m.myFeedback === 'up' ? 'success' : 'info'"
+                      @click="sendFeedback(m, 'up')"
+                    >有用</el-button>
+                    <el-button
+                      size="small"
+                      text
+                      :type="m.myFeedback === 'down' ? 'danger' : 'info'"
+                      @click="openDownFeedback(m)"
+                    >没用</el-button>
+                    <span v-if="m.myFeedback" class="feedback-done">已反馈</span>
+                  </div>
+
                   <!-- Agent 轨迹：这是"它自己怎么决定走的"唯一证据 -->
                   <el-collapse v-if="m.mode === 'agent' && m.data.steps?.length" class="trace">
                     <el-collapse-item :title="`执行轨迹（${m.data.steps.length} 步）`">
@@ -859,6 +933,31 @@ onBeforeUnmount(() => abortStream())
           </div>
         </div>
       </el-card>
+
+      <!-- 差评原因弹窗。只在点「没用」时弹 —— 好评不需要追问原因，
+           让用户为"点个赞"再过一道弹窗会直接劝退。 -->
+      <el-dialog
+        v-model="feedbackDialogOpen"
+        title="这条回答有什么问题？"
+        width="420px"
+        :close-on-click-modal="false"
+      >
+        <el-radio-group v-model="fbReason" class="fb-reasons">
+          <el-radio v-for="r in FEEDBACK_REASONS" :key="r" :value="r">{{ r }}</el-radio>
+        </el-radio-group>
+        <el-input
+          v-model="fbComment"
+          type="textarea"
+          :rows="3"
+          maxlength="500"
+          show-word-limit
+          placeholder="补充一下具体情况（可选），比如正确答案应该是什么"
+        />
+        <template #footer>
+          <el-button @click="cancelDownFeedback">取消</el-button>
+          <el-button type="primary" @click="confirmDownFeedback">提交</el-button>
+        </template>
+      </el-dialog>
 
       <el-card class="input-card">
         <div class="input-row">
@@ -1168,5 +1267,26 @@ onBeforeUnmount(() => abortStream())
   margin-top: 6px;
   font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
+}
+
+/* ---- 答案反馈 ---- */
+.feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.feedback-done {
+  margin-left: 4px;
+  font-size: var(--el-font-size-extra-small);
+  color: var(--el-text-color-secondary);
+}
+
+.fb-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
 }
 </style>

@@ -28,6 +28,14 @@ from app.models.document_chunk import DocumentChunk
 from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_base_member import KnowledgeBaseMember
 from app.models.message import ALL_ROLES, ROLE_ASSISTANT, ROLE_USER, Message
+from app.models.message_feedback import (
+    ALL_RATINGS,
+    ALL_REASONS,
+    COMMENT_MAX_LENGTH as FEEDBACK_COMMENT_MAX_LENGTH,
+    RATING_DOWN,
+    RATING_UP,
+    MessageFeedback,
+)
 from app.models.role import Role
 from app.models.user import User
 from app.models.user_memory import CONTENT_MAX_LENGTH as MEMORY_MAX_LENGTH, UserMemory
@@ -39,9 +47,14 @@ __all__ = [
     "ACTION_MEMBER_REVOKE",
     "ACTION_ROLE_CHANGE",
     "ALL_ACTIONS",
+    "ALL_RATINGS",
+    "ALL_REASONS",
     "ALL_ROLES",
     "ALL_STATUSES",
+    "FEEDBACK_COMMENT_MAX_LENGTH",
     "MEMORY_MAX_LENGTH",
+    "RATING_DOWN",
+    "RATING_UP",
     "ROLE_ASSISTANT",
     "ROLE_USER",
     "STATUS_COMPLETED",
@@ -57,6 +70,7 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeBaseMember",
     "Message",
+    "MessageFeedback",
     "Role",
     "User",
     "UserMemory",

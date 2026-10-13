@@ -136,6 +136,13 @@ export const memoryApi = {
   remove: (id) => http.delete(`/memories/${id}`),
 }
 
+// 答案反馈（Bad Case 闭环）。submit 是 **upsert**：同一条消息重复提交会更新，
+// 不会报"你已经评价过了" —— 用户改主意是常态。
+export const feedbackApi = {
+  submit: (messageId, payload) => http.post(`/messages/${messageId}/feedback`, payload),
+  get: (messageId) => http.get(`/messages/${messageId}/feedback`),
+}
+
 // 流式问答单独放一个文件（`stream.js`）：它**不能用 axios** ——
 // 拦截器整条建立在"响应体是统一信封"之上，而 SSE 是一帧帧事件。
 // 所以它走原生 fetch，并自己补回 401 跳登录与错误提示。

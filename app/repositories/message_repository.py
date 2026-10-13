@@ -10,6 +10,16 @@ from app.models.message import Message
 logger = logging.getLogger(__name__)
 
 
+def get_by_id(db: Session, message_id: int) -> Message | None:
+    """按主键取一条消息。
+
+    ⚠️ **不做归属判断** —— 归属是会话的属性（消息挂在会话下），
+    该由调用方走 `conversation_service.get_owned` 判定。
+    这里只负责"有没有这条记录"，避免数据访问层自己发明一套权限语义。
+    """
+    return db.get(Message, message_id)
+
+
 def list_by_conversation(db: Session, conversation_id: int) -> list[Message]:
     """按时间正序取一个会话的全部消息。"""
     stmt = (
