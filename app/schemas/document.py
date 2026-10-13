@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DocumentOut(BaseModel):
@@ -36,6 +36,26 @@ class DocumentStatusOut(BaseModel):
     status: str
     chunk_count: int
     error_msg: str | None = None
+
+
+class ChunkDetailOut(BaseModel):
+    """引用溯源用的一个块：完整正文 + 它出自哪儿。
+
+    与 `ChunkOut` 的区别（**刻意分成两个**，不复用）：
+      · `ChunkOut`      —— 切分结果列表用，不带文档信息（调用方已知文档）
+      · `ChunkDetailOut` —— 溯源弹窗用，必须自带文档名/页码/知识库，
+        否则前端拿到一个 chunk_id 还得再查一次文档
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    document_id: int
+    document_name: str = Field(description="原始文件名（展示用）")
+    knowledge_base_id: int
+    chunk_index: int = Field(description="在文档内的序号，从 0 开始")
+    page_number: int | None = None
+    char_count: int
+    content: str = Field(description="**完整**正文（不是问答里的 snippet 摘要）")
 
 
 class ChunkOut(BaseModel):

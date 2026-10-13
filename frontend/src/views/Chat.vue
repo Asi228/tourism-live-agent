@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, feedbackApi, knowledgeApi, streamChat } from '../api'
+import { chatApi, chunkApi, conversationApi, feedbackApi, knowledgeApi, streamChat } from '../api'
 import ConversationList from '../components/ConversationList.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 
@@ -652,14 +652,34 @@ function cancelDownFeedback() {
   feedbackPending.value = null
 }
 
-/**
- * 反馈状态**只维护当前会话的内存态**，翻历史会话时不回显旧评价。
- *
- * 为什么不回显：那需要给每条消息单独发一个 GET（一页 50 条 = 50 个请求），
- * 代价远大于"看到自己半年前点过赞"的收益。而**重新打分是 upsert**，
- * 用户在历史会话里再点一次会覆盖旧值，不会攒出脏数据 —— 所以这个取舍成立。
- */
+// ==================== 引用溯源 ====================
 
+const sourceDetail = ref(null)
+const sourceLoading = ref(false)
+const sourceDialogOpen = computed({
+  get: () => sourceDetail.value != null,
+  set: (v) => { if (!v) sourceDetail.value = null },
+})
+
+/** 点引用编号 → 拉这块**完整**原文并弹窗。
+ *  失败不外抛：溯源是辅助功能，查不到（比如引用的文档已被删）不该打断阅读。 */
+async function openSource(s) {
+  if (!s?.chunk_id) return
+  sourceDetail.value = { loading: true, index: s.index, source: s }
+  sourceLoading.value = true
+  try {
+    const body = await chunkApi.get(s.chunk_id)
+    sourceDetail.value = { loading: false, index: s.index, source: s, data: body.data }
+  } catch {
+    sourceDetail.value = null // 拦截器已提示
+  } finally {
+    sourceLoading.value = false
+  }
+}
+
+/**
+ * 导出当前对话为 Markdown 前的辅助：确认当前会话标题。
+ */
 function exportConversation() {
   if (!messages.value.length) return
   const md = buildMarkdown()
@@ -906,15 +926,27 @@ onBeforeUnmount(() => abortStream())
                   <!-- 引用来源：编号与答案里的 [n] 一一对应 -->
                   <div v-if="m.data.sources?.length" class="sources">
                     <div class="sources-title">引用来源</div>
-                    <div v-for="s in m.data.sources" :key="s.chunk_id" class="source">
-                      <div class="source-head">
-                        <el-tag size="small" type="primary">[{{ s.index }}]</el-tag>
-                        <span class="doc-name">{{ s.document_name }}</span>
-                        <span v-if="s.page_number != null" class="page">第 {{ s.page_number }} 页</span>
-                        <span class="score">相似度 {{ scorePercent(s.score) }}%</span>
-                      </div>
-                      <div class="snippet">{{ s.snippet }}</div>
-                    </div>
+                        <div
+                          v-for="s in m.data.sources"
+                          :key="s.chunk_id"
+                          class="source"
+                        >
+                          <!-- 引用编号可点击 → 弹窗看**完整**原文（溯源）。
+                               列表里的 snippet 是截断过的，点进去才是全貌。 -->
+                          <div class="source-head">
+                            <el-tag
+                              size="small"
+                              type="primary"
+                              class="cite-tag"
+                              title="点击查看完整原文"
+                              @click="openSource(s)"
+                            >[{{ s.index }}]</el-tag>
+                            <span class="doc-name">{{ s.document_name }}</span>
+                            <span v-if="s.page_number != null" class="page">第 {{ s.page_number }} 页</span>
+                            <span class="score">相似度 {{ scorePercent(s.score) }}%</span>
+                          </div>
+                          <div class="snippet">{{ s.snippet }}</div>
+                        </div>
                   </div>
                 </template>
               </div>
@@ -956,6 +988,33 @@ onBeforeUnmount(() => abortStream())
         <template #footer>
           <el-button @click="cancelDownFeedback">取消</el-button>
           <el-button type="primary" @click="confirmDownFeedback">提交</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 引用溯源弹窗：点答案里的 [n] 看这段引用的**完整**原文。
+           列表里显示的是 snippet（截断过的），这里才是全貌 ——
+           用户点引用就是想看"被截掉的那部分"。 -->
+      <el-dialog
+        v-model="sourceDialogOpen"
+        :title="sourceDetail?.data
+          ? `引用 [${sourceDetail.index}] 原文 · ${sourceDetail.data.document_name}`
+          : `引用 [${sourceDetail?.index}] `
+        "
+        width="640px"
+      >
+        <div v-if="sourceLoading" class="src-loading">加载中…</div>
+        <template v-else-if="sourceDetail?.data">
+          <div class="src-meta">
+            <span>《{{ sourceDetail.data.document_name }}》</span>
+            <span v-if="sourceDetail.data.page_number != null">第 {{ sourceDetail.data.page_number }} 页</span>
+            <span>第 {{ sourceDetail.data.chunk_index + 1 }} 块</span>
+            <span>{{ sourceDetail.data.char_count }} 字</span>
+            <span class="src-score">相似度 {{ scorePercent(sourceDetail.source.score) }}%</span>
+          </div>
+          <pre class="src-body">{{ sourceDetail.data.content }}</pre>
+        </template>
+        <template #footer>
+          <el-button @click="sourceDetail = null">关闭</el-button>
         </template>
       </el-dialog>
 
@@ -1288,5 +1347,44 @@ onBeforeUnmount(() => abortStream())
   flex-direction: column;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+/* ---- 引用溯源 ---- */
+.cite-tag {
+  cursor: pointer;
+}
+
+.src-loading {
+  padding: 20px 0;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+}
+
+.src-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: var(--el-font-size-extra-small);
+  color: var(--el-text-color-secondary);
+}
+
+.src-score {
+  color: var(--el-color-primary);
+}
+
+/* 原文用 <pre>：制度文档里的换行和缩进本身就是信息，
+   换成普通 div 会把它们吃掉。 */
+.src-body {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

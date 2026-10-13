@@ -28,6 +28,7 @@ from app.models.document import (
     STATUS_PROCESSING,
     Document,
 )
+from app.models.document_chunk import DocumentChunk
 from app.models.user import User
 from app.rag import cleaner, loader, splitter
 from app.repositories import document_chunk_repository, document_repository
@@ -198,6 +199,24 @@ def _ensure_doc_read(db: Session, user: User, doc: Document) -> None:
     except AppException:
         # 把知识库的"不存在/无权限"换成文档口径，避免从 message 反推出知识库是否存在
         raise AppException(ErrorCode.NOT_FOUND, NO_ACCESS_MSG)
+
+
+def get_chunk_with_document(
+    db: Session, user: User, chunk_id: int
+) -> tuple[DocumentChunk, Document]:
+    """按 id 取一个切分块 + 它所属的文档（**引用溯源**用）。
+
+    点答案里的 `[1]` 要看到"那段原文出自哪份文档的哪一页"，所以块和文档
+    一起返回 —— 让前端再发一个文档详情请求既慢又多一次越权面。
+
+    ⚠️ 权限 = 文档所属知识库的读权限（没有独立于知识库的文档权限）。
+    没权限与不存在**共用同一个 404**，不泄露"这个 chunk_id 存在"。
+    """
+    chunk = document_chunk_repository.get_by_id(db, chunk_id)
+    if chunk is None:
+        raise AppException(ErrorCode.NOT_FOUND, NO_ACCESS_MSG)
+    doc = get_document(db, user, chunk.document_id)
+    return chunk, doc
 
 
 def list_chunks(db: Session, user: User, document_id: int):

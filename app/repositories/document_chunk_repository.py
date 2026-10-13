@@ -7,6 +7,15 @@ from sqlalchemy.orm import Session
 from app.models.document_chunk import DocumentChunk
 
 
+def get_by_id(db: Session, chunk_id: int) -> DocumentChunk | None:
+    """按主键取一个切分块（**引用溯源**用）。
+
+    ⚠️ 同 `message_repository.get_by_id`：这里**不做归属判断** ——
+    块的权限 = 文档的权限 = 文档所属知识库的权限，该由 service 层判定。
+    """
+    return db.get(DocumentChunk, chunk_id)
+
+
 def list_by_document(db: Session, document_id: int) -> list[DocumentChunk]:
     stmt = (
         select(DocumentChunk)

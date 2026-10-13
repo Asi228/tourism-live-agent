@@ -10,6 +10,7 @@ from app.api import (
     audit,
     auth,
     chat,
+    chunks,
     conversations,
     documents,
     feedback,
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations.router, prefix=settings.API_PREFIX)
     app.include_router(memories.router, prefix=settings.API_PREFIX)
     app.include_router(feedback.router, prefix=settings.API_PREFIX)
+    app.include_router(chunks.router, prefix=settings.API_PREFIX)
     app.include_router(stats.router, prefix=settings.API_PREFIX)
     app.include_router(audit.router, prefix=settings.API_PREFIX)
 
