@@ -25,6 +25,9 @@ const CONV_PAGE_SIZE = 50
 // 三段 JSON 全吐出来，响应又大又慢。
 const DETAIL_PAGE_SIZE = 50
 const convHasOlder = ref(false)   // 这条会话在返回的这批之前还有更早的消息
+// `openConversation` 的竞态令牌：每次切会话自增，请求回来时对不上就丢弃。
+// 详见该函数里的说明（`asking` 守卫拦不住"快速连点两个会话"）。
+let openSeq = 0
 const olderLoading = ref(false)
 
 
@@ -175,13 +178,20 @@ async function openConversation(id) {
     return
   }
   currentConvId.value = id
+  // ⚠️ **竞态令牌**：`asking` 守卫只拦"回答中"，拦不住"快速连点两个会话"。
+  // 那种情况下两次 `detail` 请求并发，谁后回来谁说了算 —— 点 A 再点 B 时若 A 后到，
+  // 就会变成 currentConvId=B 而列表里是 A 的消息（答非所问，且看不出哪里错了）。
+  // 每次切换自增一次，回来时对不上就整段丢弃。
+  const seq = ++openSeq
   try {
     // 只取最新一页；更早的由"加载更早的消息"按需拉（before_id 游标）
     const body = await conversationApi.detail(id, { limit: DETAIL_PAGE_SIZE })
+    if (seq !== openSeq) return // 期间用户又切走了，这份结果作废
     messages.value = (body.data?.messages || []).map(toMessage)
     convHasOlder.value = body.data?.has_more === true
     await scrollToBottom()
   } catch {
+    if (seq !== openSeq) return
     messages.value = []
     convHasOlder.value = false
   }
@@ -322,7 +332,7 @@ async function askStream(payload, agentMode = false) {
   const slot = reactive({
     role: 'assistant',
     mode: agentMode ? 'agent' : 'rag',
-    data: { answer: '', sources: [], hit: null, reranked: null, steps: [] },
+    data: { answer: '', sources: [], hit: null, reranked: null, steps: [], answer_mode: null },
     streaming: true,
     // ⑤ `status` 事件点亮它：非空表示"后端已开工、但第一个节点还没回来"
     phase: null,
@@ -373,6 +383,10 @@ async function askStream(payload, agentMode = false) {
         Object.assign(slot.data, {
           sources: d.sources || [],
           hit: d.hit,
+          // ⚠️ `answer_mode` 必须在这里接：它是「答案性质」标签的唯一来源。
+          // 漏了这一步的后果很隐蔽 —— 标签只在"降级重试"和"翻历史"两条路上显示，
+          // 而**正常流式回答（唯一入口）永远不显示**，没人会立刻发现。
+          answer_mode: d.answer_mode,
           reranked: d.reranked,
           searched_kb_ids: d.searched_kb_ids,
           skipped_orphans: d.skipped_orphans,
@@ -420,6 +434,8 @@ async function askStream(payload, agentMode = false) {
         // 与历史回放同源：后端把 finish_reason 写进了 meta，前端展开进 data，
         // 所以模板里"当场答的"与"翻出来的老消息"用同一个判据（见 truncated 分支）。
         slot.data.finish_reason = d.finish_reason
+        // 同上：done 里也带一份 answer_mode（meta 那一帧万一没到，这里是兜底）
+        if (d.answer_mode) slot.data.answer_mode = d.answer_mode
         // 后端只在"答案完整返回、但落库失败"时给 saved=false ——
         // 这是用户知道"这轮没进历史"的唯一通道，必须提示出来。
         if (d.saved === false) slot.unsaved = true

@@ -98,16 +98,24 @@ async function saveEdit(memory) {
   }
 }
 
-async function toggleMemory(memory) {
-  // 先本地翻转，失败再翻回来：开关是最频繁的操作，等一轮往返会让点击发涩
-  const before = memory.is_enabled
-  memory.is_enabled = !before
+/**
+ * 切换单条开关。
+ *
+ * ⚠️ **值必须从 el-switch 传进来，不能自己再翻一次。**
+ * Element Plus 的 switch 先 `emit('update:modelValue', val)`、**然后**才
+ * `emit('change', val)`（源码 switch.vue 的 handleChange，两行紧邻）。
+ * 也就是说 `@change` 触发时，`v-model` 已经把这个新值写进 `m.is_enabled` 了。
+ * 再写一句 `memory.is_enabled = !memory.is_enabled` 就是**把它翻回旧值**，
+ * PATCH 发出去的正是旧值 —— 表现是"点了开关自己弹回去、改动不生效"。
+ */
+async function toggleMemory(memory, value) {
   try {
-    const body = await memoryApi.update(memory.id, { is_enabled: memory.is_enabled })
+    const body = await memoryApi.update(memory.id, { is_enabled: value })
     const idx = memories.value.findIndex((m) => m.id === memory.id)
     if (idx >= 0) memories.value[idx] = body.data
   } catch {
-    memory.is_enabled = before
+    // 只有失败才回滚 —— 成功时以服务端返回的权威值为准
+    memory.is_enabled = !value
     /* 拦截器已提示 */
   }
 }
@@ -151,12 +159,13 @@ onMounted(loadMemories)
             <span v-else class="mem-text" :title="m.content">{{ m.content }}</span>
 
             <span class="mem-ops">
-              <!-- 单条开关：只影响拼不拼进提示词，数据仍在 -->
+              <!-- 单条开关：只影响拼不拼进提示词，数据仍在。
+                   ⚠️ 必须把新值 `v` 传下去 —— 见 toggleMemory 的说明。 -->
               <el-switch
                 v-model="m.is_enabled"
                 size="small"
                 title="关闭后这条暂时不拼进提示词，数据仍保留"
-                @change="toggleMemory(m)"
+                @change="(v) => toggleMemory(m, v)"
               />
               <template v-if="editingId === m.id">
                 <span class="mem-op" title="保存" @click="saveEdit(m)">✓</span>
