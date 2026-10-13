@@ -199,7 +199,7 @@ onUnmounted(stopPolling)
 </script>
 
 <template>
-  <el-card shadow="never">
+  <el-card>
     <template #header>
       <div class="card-head">
         <div class="left">
@@ -294,11 +294,6 @@ onUnmounted(stopPolling)
 </template>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
 .left,
 .right {
   display: flex;

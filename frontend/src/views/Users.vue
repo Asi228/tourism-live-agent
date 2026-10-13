@@ -263,7 +263,7 @@ onMounted(load)
 
 <template>
   <div>
-    <el-card shadow="never">
+    <el-card>
       <template #header>
         <div class="card-head">
           <span>用户管理</span>
@@ -428,15 +428,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.head-actions {
-  display: flex;
-  gap: 8px;
-}
 .tip {
   margin-bottom: 12px;
 }

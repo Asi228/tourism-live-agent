@@ -169,7 +169,7 @@ async function doRegister() {
 .card {
   width: 380px;
   padding: 28px 28px 20px;
-  background: #fff;
+  background: var(--el-bg-color);
   border-radius: 12px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
 }

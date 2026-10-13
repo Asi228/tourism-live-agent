@@ -18,12 +18,14 @@ const routes = [
     // 而不是一个功能列表。`meta.admin` 的页面由菜单层隐藏，路由层只做登录校验。
     redirect: '/dashboard',
     children: [
-      { path: 'dashboard', name: 'dashboard', component: () => import('../views/Dashboard.vue') },
-      { path: 'knowledge', name: 'knowledge', component: () => import('../views/Knowledge.vue') },
-      { path: 'documents', name: 'documents', component: () => import('../views/Documents.vue') },
-      { path: 'chat', name: 'chat', component: () => import('../views/Chat.vue') },
-      { path: 'users', name: 'users', component: () => import('../views/Users.vue'), meta: { admin: true } },
-      { path: 'system', name: 'system', component: () => import('../views/System.vue'), meta: { admin: true } },
+      // meta.title 由布局层消费（顶栏标题、以后的面包屑）—— 别只写在组件里，
+      // 否则每加一个页面就要去改 MainLayout。
+      { path: 'dashboard', name: 'dashboard', component: () => import('../views/Dashboard.vue'), meta: { title: '概览' } },
+      { path: 'knowledge', name: 'knowledge', component: () => import('../views/Knowledge.vue'), meta: { title: '知识库' } },
+      { path: 'documents', name: 'documents', component: () => import('../views/Documents.vue'), meta: { title: '文档管理' } },
+      { path: 'chat', name: 'chat', component: () => import('../views/Chat.vue'), meta: { title: '智能问答' } },
+      { path: 'users', name: 'users', component: () => import('../views/Users.vue'), meta: { title: '用户管理', admin: true } },
+      { path: 'system', name: 'system', component: () => import('../views/System.vue'), meta: { title: '系统状态', admin: true } },
     ],
   },
   // 兜底：手输错地址时回首页，而不是白屏

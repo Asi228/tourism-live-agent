@@ -1,0 +1,45 @@
+/* 全局公共样式。
+ *
+ * 以前这些类在每个页面的 <style scoped> 里各写一遍 —— `.card-head` 重复了 5 份、
+ * `.head-actions` 3 份（而且 System 那份比另外两份多一句 align-items，已经出现了漂移的苗头）。
+ * 重复的代价是"改一处要改五处，迟早不一致"，所以收敛到这里。
+ *
+ * 放在这里而不是 rem/px 变量表，是因为它们只做布局，不含设计令牌。
+ */
+
+/* ---- 基座：先归零浏览器默认外边距 ----
+ *
+ * 🔴 这是"页面级多出一条滚动条"的根因，别再往页面内部找了：
+ *   · 浏览器默认 `body { margin: 8px }`，而 Element Plus **不带任何 reset**
+ *     （实测 `dist/index.css` 里没有 html/body 元素选择器）。
+ *   · 外壳 `.layout` 是 `height: 100%`（原 100vh），于是文档总高 = 视口高 + 上下各 8px
+ *     → 根滚动容器永远有 16px 可滚 → **每个页面都挂着一条外层滚动条**。
+ *   · 它的位置在最右边、和卡片内的滚动条并排，看起来就是"两条滚动条"；
+ *     但它的可滚距离只有 16px，内容再多也不变 —— 这是它和真·内容溢出的区别。
+ *
+ * `height: 100%` 三件套是配套：#app 撑满 body，.layout 才能用 100%（而不是 100vh）
+ * 拿到确定高度；改用 100% 也顺带绕开了移动端 100vh 地址栏抖动的老问题。 */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+/* 卡片标题行：左标题、右操作区。各页共用同一套间距，视觉才统一。
+   加 padding-bottom + border-bottom：EP 的 el-card header 默认**不带边框**，
+   标题和表格糊在一起，层级就立不起来。 */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+/* 标题行右侧的按钮组。align-items 取 System 那版（另两版漏了，会与左侧标题基线不齐）。 */
+.head-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}

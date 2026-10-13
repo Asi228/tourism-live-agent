@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { chatApi, conversationApi, knowledgeApi, memoryApi, streamChat } from '../api'
+import { chatApi, conversationApi, knowledgeApi, streamChat } from '../api'
+import ConversationList from '../components/ConversationList.vue'
+import MemoryPanel from '../components/MemoryPanel.vue'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -25,12 +27,6 @@ const DETAIL_PAGE_SIZE = 50
 const convHasOlder = ref(false)   // 这条会话在返回的这批之前还有更早的消息
 const olderLoading = ref(false)
 
-// ---- 长期记忆（Phase 11）----
-// 与会话内的"上文"不是一回事：它是**跨会话**仍然成立的事实（"我在财务部"）。
-// 写入必须显式（后端不做自动提炼），所以这里只给一个输入框 + 列表 + 删除。
-const memories = ref([])
-const memDraft = ref('')
-const memSaving = ref(false)
 
 // 后端 `answer_mode` 的三种取值 → 标签样式与话术
 const ANSWER_MODE = {
@@ -257,56 +253,6 @@ async function removeConversation(conv) {
   }
 }
 
-function formatTime(s) {
-  if (!s) return ''
-  const d = new Date(s)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n) => String(n).padStart(2, '0')
-  const sameDay = d.toDateString() === new Date().toDateString()
-  return sameDay ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : `${d.getMonth() + 1}/${d.getDate()}`
-}
-
-// ==================== 长期记忆 ====================
-
-async function loadMemories() {
-  try {
-    const body = await memoryApi.list()
-    memories.value = body.data || []
-  } catch {
-    memories.value = []
-  }
-}
-
-async function addMemory() {
-  const text = memDraft.value.trim()
-  if (!text || memSaving.value) return
-  memSaving.value = true
-  try {
-    const body = await memoryApi.create(text)
-    // 后端按"最近更新在前"返回，新写的排最前，与列表顺序一致
-    memories.value = [body.data, ...memories.value]
-    memDraft.value = ''
-    ElMessage.success('已记住')
-  } catch {
-    /* 拦截器已提示 */
-  } finally {
-    memSaving.value = false
-  }
-}
-
-async function removeMemory(memory) {
-  try {
-    await ElMessageBox.confirm('删除这条长期记忆？', '提示', { type: 'warning' })
-  } catch {
-    return
-  }
-  try {
-    await memoryApi.remove(memory.id)
-    memories.value = memories.value.filter((m) => m.id !== memory.id)
-  } catch {
-    /* 拦截器已提示 */
-  }
-}
 
 // ==================== 提问 ====================
 
@@ -608,7 +554,7 @@ function scorePercent(score) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadKbList(), loadConversations(), loadMemories()])
+  await Promise.all([loadKbList(), loadConversations()])
 })
 
 // 离开页面时别让流还挂着：它占着一条连接和一个后端线程，done 回调还会写已卸载组件的状态
@@ -619,63 +565,17 @@ onBeforeUnmount(() => abortStream())
   <div class="chat-page">
     <!-- 左：会话列表 -->
     <aside class="side">
-      <el-button type="primary" class="new-btn" @click="newConversation">＋ 新对话</el-button>
-      <div class="conv-list">
-        <div
-          v-for="c in conversations"
-          :key="c.id"
-          class="conv-item"
-          :class="{ active: c.id === currentConvId }"
-          @click="openConversation(c.id)"
-        >
-          <div class="conv-title">{{ c.title }}</div>
-          <div class="conv-meta">
-            <span>{{ c.message_count }} 条 · {{ formatTime(c.updated_at) }}</span>
-            <span class="conv-del" title="删除" @click.stop="removeConversation(c)">×</span>
-          </div>
-        </div>
-        <div v-if="!conversations.length" class="conv-empty">还没有对话，直接在右边提问即可</div>
-        <el-button
-          v-if="convHasMore"
-          text
-          size="small"
-          class="conv-more"
-          :loading="convLoading"
-          @click="loadConversations({ append: true })"
-        >加载更多</el-button>
-      </div>
-
-      <!-- 长期记忆（跨会话）。写进去就存下了；会不会拼进提示词由服务端开关决定。 -->
-      <div class="mem-block">
-        <div class="mem-head">
-          <span>我的记忆</span>
-          <span class="mem-count" v-if="memories.length">{{ memories.length }}</span>
-        </div>
-        <div class="mem-add">
-          <el-input
-            v-model="memDraft"
-            size="small"
-            placeholder="记住一件事，如：我在财务部"
-            maxlength="200"
-            @keyup.enter="addMemory"
-          />
-          <el-button
-            size="small"
-            :disabled="!memDraft.trim()"
-            :loading="memSaving"
-            @click="addMemory"
-          >记住</el-button>
-        </div>
-        <div class="mem-list">
-          <div v-for="m in memories" :key="m.id" class="mem-item">
-            <span class="mem-text" :title="m.content">{{ m.content }}</span>
-            <span class="mem-del" title="删除" @click="removeMemory(m)">×</span>
-          </div>
-          <div v-if="!memories.length" class="mem-empty">
-            还没有记忆。写一条会在后续问答里作为背景带上（需服务端开启长期记忆开关）
-          </div>
-        </div>
-      </div>
+      <ConversationList
+        :conversations="conversations"
+        :current-id="currentConvId"
+        :loading="convLoading"
+        :has-more="convHasMore"
+        @new="newConversation"
+        @select="openConversation"
+        @remove="removeConversation"
+        @load-more="loadConversations({ append: true })"
+      />
+      <MemoryPanel />
     </aside>
 
     <!-- 右：对话区 -->
@@ -704,7 +604,7 @@ onBeforeUnmount(() => abortStream())
         </span>
       </div>
 
-      <el-card shadow="never" class="head-card">
+      <el-card class="head-card">
         <div class="head-row">
           <el-select
             v-model="selectedKbs"
@@ -725,7 +625,7 @@ onBeforeUnmount(() => abortStream())
         <div class="mode-hint">{{ emptyHint }}</div>
       </el-card>
 
-      <el-card shadow="never" class="body-card">
+      <el-card class="body-card">
         <div ref="scroller" class="scroller">
           <el-empty v-if="!messages.length" description="还没有提问">
             <div class="empty-tips">
@@ -876,7 +776,7 @@ onBeforeUnmount(() => abortStream())
         </div>
       </el-card>
 
-      <el-card shadow="never" class="input-card">
+      <el-card class="input-card">
         <div class="input-row">
           <el-input
             v-model="query"
@@ -914,150 +814,29 @@ onBeforeUnmount(() => abortStream())
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.new-btn {
-  width: 100%;
-}
-.conv-list {
-  flex: 1;
-  overflow-y: auto;
-  background: #fff;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  padding: 6px;
-}
-.conv-item {
-  padding: 8px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  margin-bottom: 4px;
-}
-.conv-item:hover {
-  background: var(--el-fill-color-light);
-}
-.conv-item.active {
-  background: var(--el-color-primary-light-9);
-}
-.conv-title {
-  font-size: 13px;
-  line-height: 1.4;
-  word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.conv-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-}
-.conv-del {
-  padding: 0 4px;
-  border-radius: 3px;
-  visibility: hidden;
-}
-.conv-item:hover .conv-del {
-  visibility: visible;
-}
-.conv-del:hover {
-  color: var(--el-color-danger);
-  background: var(--el-color-danger-light-9);
-}
-.conv-empty {
-  padding: 12px 10px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--el-text-color-secondary);
-}
-
-/* ---- 长期记忆 ---- */
-.mem-block {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background: #fff;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  padding: 8px;
-}
-
-.mem-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--el-text-color-regular);
-}
-
-.mem-count {
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-}
-
-.mem-add {
-  display: flex;
-  gap: 6px;
-}
-
-.mem-list {
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.mem-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 4px 2px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-/* 记忆可能很长，列表里最多显示两行；完整内容靠 title 悬浮看 */
-.mem-text {
-  flex: 1;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-all;
-}
-
-.mem-del {
-  flex: none;
-  cursor: pointer;
-  color: var(--el-text-color-secondary);
-}
-
-.mem-del:hover {
-  color: var(--el-color-danger);
-}
-
-.mem-empty {
-  padding: 6px 2px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--el-text-color-secondary);
-}
-.conv-more {
-  width: 100%;
-  margin-top: 4px;
-  color: var(--el-text-color-secondary);
+  /* 与 .main-col 同一个坑：flex 子项 min-height 默认 auto（=内容高度）→ 拒绝收缩。
+     侧边栏内容一多就把 .chat-page 顶出去，el-main 的滚动条又出来了 */
+  min-height: 0;
 }
 
 /* ---- 右侧对话区 ---- */
 .main-col {
   flex: 1;
   min-width: 0;
+  /* flex 子项的 min-height 默认是 auto（= 内容高度）→ **拒绝被压缩**。
+     不归零的话，三张卡片内容一多就顶破 .chat-page 的 100%，
+     而 el-main 自带 overflow:auto → 页面级出现第二条滚动条 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 三张卡片都要归零：body-card 靠 flex:1 吸收剩余高度，
+   另外两张若拒绝收缩，总量就把 .chat-page 顶出去（外层滚动条就是这么来的） */
+.head-card,
+.input-card,
+.body-card {
+  min-height: 0;
 }
 .head-card :deep(.el-card__body),
 .input-card :deep(.el-card__body) {
@@ -1082,11 +861,19 @@ onBeforeUnmount(() => abortStream())
 .body-card :deep(.el-card__body) {
   height: 100%;
   padding: 0;
+  /* EP 给 `.el-card__body` 默认带 `overflow: auto`（见 theme-chalk/el-card.css）。
+     不关掉它，卡片体自己就是一条滚动条，和下面 `.scroller` 那条并排出现 ——
+     看上去像"页面右边有两根滑块"。滚动只该由 .scroller 负责。 */
+  overflow: hidden;
 }
 .scroller {
   height: 100%;
   overflow-y: auto;
   padding: 16px;
+  /* 全站没有 box-sizing 重置（EP 的 base.css 里 border-box 出现 0 次），而 content-box
+     下 `height:100%` + 上下 padding 的实际占位是 100% + 32px —— 那 32px 既会把父级顶出
+     可滚内容（喂给上面那条多余的滚动条），也会把消息区底部裁掉。 */
+  box-sizing: border-box;
 }
 
 /* "加载更早的消息"：只在详情返回 has_more=true 时出现，居中放在消息列表顶部 */
@@ -1123,12 +910,12 @@ onBeforeUnmount(() => abortStream())
 }
 .user-bubble {
   background: var(--el-color-primary);
-  color: #fff;
+  color: var(--el-color-white);
   white-space: pre-wrap;
   word-break: break-word;
 }
 .agent-bubble {
-  background: #fff;
+  background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
 }
 .asking {
