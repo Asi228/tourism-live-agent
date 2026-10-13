@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.db.session import SessionLocal
+from app.db import session as db_session
 from app.models.document import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -91,12 +91,14 @@ def process_document(document_id: int) -> None:
     """解析 → 清洗 → 切分 → 入库。**必须在后台执行**，会自己开 session。
 
     设计要点：
-    - 用模块级 SessionLocal（而不是在函数里 from app.db.session import ...），
-      这样测试可以 monkeypatch 掉它，让后台任务写进 SQLite 而不是真库。
+    - session 统一走 `db_session.new_session()` —— 它就是一个**可替换点**
+      （`app.db.session.new_session`），测试换那一处，后台任务就会写进 SQLite
+      而不是真库。以前这里用的是模块级 `SessionLocal`，于是"要 patch 的地方"
+      凭空多了一处（漏掉它的后果不是测试变红，而是**静默写真库**）。
     - 任何异常都不往外抛：后台任务的异常没人接，抛出去只会变成日志里一行 traceback，
       而文档会永远卡在 processing。这里全部吃掉并落到 status=failed + error_msg。
     """
-    with SessionLocal() as db:
+    with db_session.new_session() as db:
         doc = document_repository.get_by_id(db, document_id)
         if doc is None:
             logger.warning("文档不存在，跳过处理 doc_id=%s", document_id)

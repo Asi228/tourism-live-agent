@@ -20,6 +20,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.db import session as db_session
 from app.models import Document, DocumentChunk, User
 from app.rag import vector_store
 from app.services import document_service, vector_service
@@ -31,7 +32,7 @@ FAKE_VECTOR = [0.01] * settings.EMBEDDING_DIM
 def upload_env(tmp_path, monkeypatch, session_factory):
     """上传目录指到临时目录，并让后台解析任务写测试库（同 Phase 4 的做法）。"""
     monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
-    monkeypatch.setattr(document_service, "SessionLocal", session_factory)
+    monkeypatch.setattr(db_session, "new_session", session_factory)
     return tmp_path
 
 

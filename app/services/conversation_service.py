@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.db.session import SessionLocal
+from app.db import session as db_session
 from app.models.conversation import TITLE_MAX_LENGTH, Conversation
 from app.models.message import ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.user import User
@@ -32,10 +32,8 @@ from app.services import knowledge_service
 
 logger = logging.getLogger(__name__)
 
-# 流式收尾（补摘要/裁剪）要**自己开一个 session**，理由见 `maintain_after_stream`。
-# 做成模块级变量而不是直接调 `SessionLocal()`，是为了给测试一个明确的替换点 ——
-# 与 rag_service / agent_service 的写法一致。
-_session_factory = SessionLocal
+# 流式收尾（补摘要/裁剪）要自己开一个 session —— 统一走 `db_session.new_session()`，
+# 理由见 `maintain_after_stream`；"测试怎么换库"见 app/db/session.py。
 
 # 引用的资料已经无权访问时，用来替换答案正文的固定话术。
 # 不用空字符串：空字符串在前端看起来像"这条消息坏了"，而这其实是一个**明确的状态**。
@@ -216,7 +214,7 @@ def maintain_after_stream(conversation_id: int) -> None:
     客户端在 `done` 一到就断开时这一步会被跳过 —— 同样只是推迟，不丢数据。
     """
     try:
-        with _session_factory() as db:
+        with db_session.new_session() as db:
             conv = db.get(Conversation, conversation_id)
             if conv is None:
                 logger.warning("流式收尾失败：会话已不存在 conv=%s", conversation_id)

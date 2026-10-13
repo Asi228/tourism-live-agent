@@ -16,6 +16,7 @@ from app.agent import graph as graph_mod
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.db import session as db_session
 from app.models import Conversation, Message
 from app.services import agent_service, conversation_service
 
@@ -45,13 +46,11 @@ def _out(text: str) -> dict:
 def agent_env(monkeypatch, session_factory):
     """替掉 LLM 与检索工具，并把**流式落库**指向测试库。
 
-    ⚠️ 两个 `_session_factory` 都要换：
-      · `agent_service`        —— 跑图、写审计、落对话
-      · `conversation_service` —— `done` 之后的收尾维护（`maintain_after_stream`）
-    不换就会写进**真 MySQL**。
+    ⚠️ 流式那几段用的 session **只有一个来源**：`app.db.session.new_session`。
+    换这一处就够 —— 以前 `agent_service` / `conversation_service` 各存一份
+    `_session_factory`，fixture 里得写两遍警告，漏一个就静默写进**真 MySQL**。
     """
-    monkeypatch.setattr(agent_service, "_session_factory", session_factory)
-    monkeypatch.setattr(conversation_service, "_session_factory", session_factory)
+    monkeypatch.setattr(db_session, "new_session", session_factory)
 
     box: dict = {
         "analyze": "NEED",
@@ -263,7 +262,7 @@ def test_graph_uses_stream_session_not_request_one(
     而 `/api/agent/chat`（同步）的用例一条都不会红。
 
     所以这里不猜" session 是不是活的"，而是直接比对**对象身份**：图拿到的 db
-    必须是 `_session_factory()` 产出的那一个。
+    必须是 `new_session()` 产出的那一个。
     """
     from app.services import agent_service as mod
 
@@ -284,14 +283,18 @@ def test_graph_uses_stream_session_not_request_one(
         produced.append(s)
         return s
 
-    monkeypatch.setattr(mod, "_session_factory", spy_factory)
+    # 收敛之后只有一个替换点：`app.db.session.new_session`
+    monkeypatch.setattr(db_session, "new_session", spy_factory)
 
     user = make_user("admin")
     _, _, frames = _stream(client, user, {"query": "年假几天"})
 
     assert frames[-1][0] == "done", "这次流程本身应当是成功的"
     assert built_with, "图一次都没装配"
-    assert built_with[0] is produced[-1], (
+    # ⚠️ 比的是 `produced[0]` 而不是 `[-1]`：`new_session` 现在被**两处**共用 ——
+    # `agent_service` 先开一个来跑图，`done` 之后 `conversation_service` 的收尾维护
+    # 再开一个。图拿到的是**第一个**。
+    assert built_with[0] is produced[0], (
         "图用的不是流式阶段新开的 session —— 它多半又抓回了请求那个，"
         "生产上会在响应开始后拿到一个已关闭的 session"
     )

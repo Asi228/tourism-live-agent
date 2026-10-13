@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
+from app.db import session as db_session
 from app.models import Conversation, Message
 from app.rag import llm as llm_module
 from app.rag import prompt
@@ -41,15 +42,13 @@ def _hit(content: str = "员工入职满一年可享受带薪年假 5 天。") -
 def stream_env(monkeypatch, session_factory):
     """替掉检索与流式 LLM，并把**流式落库**指向测试库。
 
-    ⚠️ 两个 `_session_factory` 都要换掉：流式路径是自己开 session 的（不能复用
-    请求那个，见 `_persist_after_stream` 的说明），不换就会写进**真 MySQL**。
-      · `rag_service`           —— 落库
-      · `conversation_service`  —— `done` 之后的收尾维护（`maintain_after_stream`）
+    ⚠️ 流式那几段用的 session **只有一个来源**：`app.db.session.new_session`
+    （流式路径不能复用请求那个 session，见 `_persist_after_stream` 的说明）。
+    换这一处就够，不换就是静默写进**真 MySQL**。
 
     `fail_at`：让流在第 N 块之前抛错，用来验证"中途失败不留半截"。
     """
-    monkeypatch.setattr(rag_service, "_session_factory", session_factory)
-    monkeypatch.setattr(conversation_service, "_session_factory", session_factory)
+    monkeypatch.setattr(db_session, "new_session", session_factory)
 
     box: dict = {
         "results": [_hit()],
@@ -305,7 +304,7 @@ def test_stream_done_saved_false_when_persist_fails(
     def broken_factory():
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(rag_service, "_session_factory", broken_factory)
+    monkeypatch.setattr(db_session, "new_session", broken_factory)
 
     _, _, events = _stream(client, make_user("admin"), {"query": "年假几天"})
 

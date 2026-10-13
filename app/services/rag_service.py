@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.db.session import SessionLocal
+from app.db import session as db_session
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.rag import llm, prompt
@@ -48,10 +48,8 @@ from app.services import conversation_service, memory_service, vector_service
 
 logger = logging.getLogger(__name__)
 
-# 流式路径落库要**自己开一个 session**（理由见 `_persist_after_stream`）。
-# 做成模块级变量而不是每次直接调 `SessionLocal()`，是为了给测试一个明确的替换点：
-# 用例可以把它指向测试库，而不用去猜"该 patch 哪个模块里的哪个名字"。
-_session_factory = SessionLocal
+# 流式路径落库要自己开一个 session —— 统一走 `db_session.new_session()`
+#（理由见 `_persist_after_stream`；"测试怎么换库"见 app/db/session.py）。
 
 
 def _no_hit(
@@ -496,7 +494,7 @@ def _persist_after_stream(
     在 `done` 事件**之后**补做 —— 两步必须一起推迟（见 `append_turn` 的说明）。
     """
     try:
-        with _session_factory() as db:
+        with db_session.new_session() as db:
             user = db.get(User, user_id)
             if user is None:
                 logger.warning("流式落库失败：用户已不存在 user_id=%s", user_id)

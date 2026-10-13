@@ -3,7 +3,7 @@
 测试不会碰真实 MySQL，也不会在项目目录留下上传文件：
   - 数据库用 conftest 的 SQLite 内存库（dependency_overrides）
   - 上传目录 monkeypatch 到 pytest 的 tmp_path
-  - 后台任务用的 SessionLocal 也 monkeypatch 成测试 session 工厂
+  - 后台任务用的 session 工厂（`app.db.session.new_session`）也 monkeypatch 成测试库
 """
 
 import io
@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app.config import CHUNK_SIZE_HARD_LIMIT, Settings, settings
+from app.db import session as db_session
 from app.models import Document, DocumentChunk
 from app.rag import cleaner, loader, splitter
 from app.services import document_service
@@ -29,7 +30,7 @@ def doc_env(tmp_path, monkeypatch, session_factory):
     monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
     # process_document 是后台任务，会自己开 session；
     # 不换掉它就会连真实 MySQL，测试数据就漏进开发库了
-    monkeypatch.setattr(document_service, "SessionLocal", session_factory)
+    monkeypatch.setattr(db_session, "new_session", session_factory)
     return tmp_path
 
 

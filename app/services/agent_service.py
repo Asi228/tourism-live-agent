@@ -21,7 +21,7 @@ from app.agent.graph import ANSWER_NO_EVIDENCE, build_graph
 from app.config import settings
 from app.core.exceptions import AppException
 from app.core.response import ErrorCode
-from app.db.session import SessionLocal
+from app.db import session as db_session
 from app.models.user import User
 from app.repositories import agent_log_repository
 from app.services import conversation_service
@@ -260,10 +260,8 @@ def answer(
 # 同步生成器 + Starlette 线程池迭代）。代价是心跳仍然发不出去 —— 与 rag_service
 # 那条路的结论一致，等真要部署到反代后面再一起解决。
 
-# 流式路径要**自己开一个 session**（理由见 `rag_service._persist_after_stream`）。
-# 做成模块级变量而不是直接调 `SessionLocal()`，是为了给测试一个明确的替换点 ——
-# 与 rag_service 同款，用例把它指向测试库即可，否则会写进真 MySQL。
-_session_factory = SessionLocal
+# 流式路径要自己开一个 session —— 统一走 `db_session.new_session()`；
+# 理由（以及"测试怎么换库"）都写在那个函数上，见 app/db/session.py。
 
 
 def stream_answer(
@@ -316,7 +314,7 @@ def _agent_stream_events(
 
     saved_id: int | None = None
 
-    with _session_factory() as db:
+    with db_session.new_session() as db:
         user = db.get(User, user_id)
         if user is None:
             logger.warning("Agent 流式：用户已不存在 user_id=%s", user_id)
