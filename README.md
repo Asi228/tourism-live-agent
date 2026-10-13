@@ -162,6 +162,7 @@ RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest 
 | GET | `/vector/health` · POST `/vector/purge-orphans` | 向量自检 / 清理孤儿向量（管理员） |
 | GET | `/health` | 健康检查（MySQL / Milvus / Redis），逐项 `ok/fail`；3 秒内复用结果 |
 | GET | `/stats/overview` | **概览统计**（按当前用户可见范围）：库数 / 文档数（按状态）/ 我的提问数（今日·累计）/ 最近文档与提问。管理员额外给用户数与向量条数（非管理员该段是 `null`，前端整块不渲染） |
+| GET | `/stats/trends` | **趋势数据**（概览页图表用，与 overview 口径完全一致）：近 N 天每天提问数（`days` 1–90，**没有提问的日子也补 0**，否则折线断格）、各知识库文档数（按数量倒序） |
 | GET · POST · PATCH | `/users` · `/users/{id}/role` · `/users/{id}/status` · `/users/{id}/password` | 用户列表（默认最小字段，`?full=true` 带邮箱与注册时间）/ **开通账号**（可指定初始角色） / **改角色**（管理员，见第 5 节的三条约束） / **停用·启用**（立刻拒登录，已签发 token 下一次请求即失效） / **重置密码**（旧密码与该用户所有登录态一起失效，见第 5c 节） |
 | GET | `/users/{id}/grants` | 某人被授权了哪些库（管理员）—— 从"人"这一侧看权限全貌 |
 | GET | `/audit` · `/audit/actions` | 管理操作审计（管理员）：**开通账号 / 停用·启用 / 重置密码** / 改角色 / 授权 / 撤销 / 建库 / 删库 / **改可见性**，带操作者与对象名**快照**。支持 `action`、`actor_id` 筛选与 `before_id` keyset 翻页（响应 `{items, has_more}`）；`/audit/actions` 下发动作清单供前端渲染筛选下拉 |
@@ -590,7 +591,7 @@ Agent 那条路的事件序列是 `status → step*N → meta → done`；纯 RA
   但会标一行"本次未存入历史"，并靠 `done.saved=false` / `error` 让用户知道 —— 落库失败时答案
   仍完整交付，`saved=false` 就是"这轮没进历史"的唯一通知通道（前端已消费）。
 - **落库用另一个 session**。Starlette 对**同步生成器**用线程池迭代，`next()` 落在哪个线程不保证，
-  而 SQLAlchemy 的 `Session` 不是线程安全的 —— 所以流式路径自己开 session（`rag_service._session_factory`）。
+  而 SQLAlchemy 的 `Session` 不是线程安全的 —— 所以流式路径自己开 session（`app.db.session.new_session()`）。
   也正因为会话是"落库成功才真正存在"，**新会话的 id 只在 `done` 事件里给**（`meta` 里回显的是客户端
   自己传进来的那个）。
 - **用量要显式要（`stream_usage=True`）**。langchain-openai 只在"没传自定义 base_url（或走 LangSmith
@@ -675,7 +676,7 @@ Agent 那条路的事件序列是 `status → step*N → meta → done`；纯 RA
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
 | 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
 | 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。**已实现**一个 dev-only 的 SSE 故障模拟来补：`frontend/mock-sse.js`（vite `configureServer` 中间件），问答页顶部有一条虚线工具条（`import.meta.env.DEV` 门控，build 时整条不进产物），或直接开 `/?mock=<模式>`。八种模式：`normal` / `break`（吐 2 帧后断开）/ `http502`（502+HTML，验 transport 判据）/ `error`（流内 error）/ `hang`（首帧前挂 3s）/ `unsaved`（`done.saved=false`）/ `truncated`（`finish_reason='length'`）/ `withconv`（`done.conversation_id` 非 null）。**流式和非流式都走 mock** —— 否则降级重试会打到真后端、真花一次钱。⚠️ 它覆盖不到：真实反代的超时行为、浏览器端的渲染细节（逐字/节流/光标）、以及真 LLM 的 usage 是否回传 |
-| 测试基建 | ⚠️ 三处 `_session_factory`（`agent_service` / `rag_service` / `conversation_service`）靠 fixture 的 docstring 提醒"都要换"，**漏 patch 的后果不是变红，而是静默写进真 MySQL**。将来加第四条流式路径时，值得收敛成一个模块级工厂，或在 conftest 里 autouse 统一替换 |
+| 测试基建 | ✅ **已收敛**：所有"自己开 session"的路径（流式落库 / `done` 之后的收尾维护 / 后台文档解析）统一走 `app.db.session.new_session()` —— 测试只需 patch **这一处**。以前是**四处**各存一份工厂（`agent_service` / `rag_service` / `conversation_service` / `document_service`），靠 fixture 的 docstring 提醒"都要换"，而**漏 patch 的后果不是测试变红，而是静默写进真 MySQL**。⚠️ 今后新增"自己开 session"的路径请一律走它，别再引入第二个来源 |
 | 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期。⚠️ 但**停用账号、改角色、改密码都能立刻生效** —— 分别靠实时查 `is_active`、实时读角色、以及 token 里的密码指纹（见第 5c 节） |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
 | Rerank | 已接入。`/chat` 默认开启，`/search` 默认关闭以便对比效果 |
