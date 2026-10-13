@@ -15,6 +15,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { memoryApi } from '../api'
+import { toggleMemoryState } from '../utils/memoryToggle'
 
 // ---- 长期记忆（Phase 11）----
 // 与会话内的"上文"不是一回事：它是**跨会话**仍然成立的事实（"我在财务部"）。
@@ -99,25 +100,11 @@ async function saveEdit(memory) {
 }
 
 /**
- * 切换单条开关。
- *
- * ⚠️ **值必须从 el-switch 传进来，不能自己再翻一次。**
- * Element Plus 的 switch 先 `emit('update:modelValue', val)`、**然后**才
- * `emit('change', val)`（源码 switch.vue 的 handleChange，两行紧邻）。
- * 也就是说 `@change` 触发时，`v-model` 已经把这个新值写进 `m.is_enabled` 了。
- * 再写一句 `memory.is_enabled = !memory.is_enabled` 就是**把它翻回旧值**，
- * PATCH 发出去的正是旧值 —— 表现是"点了开关自己弹回去、改动不生效"。
+ * 切换单条开关。逻辑在 `src/utils/memoryToggle.js` ——
+ * 那份有完整的踩坑注释（EP switch 的 emit 顺序）和测试（`npm test` 守着）。
  */
-async function toggleMemory(memory, value) {
-  try {
-    const body = await memoryApi.update(memory.id, { is_enabled: value })
-    const idx = memories.value.findIndex((m) => m.id === memory.id)
-    if (idx >= 0) memories.value[idx] = body.data
-  } catch {
-    // 只有失败才回滚 —— 成功时以服务端返回的权威值为准
-    memory.is_enabled = !value
-    /* 拦截器已提示 */
-  }
+function toggleMemory(memory, value) {
+  return toggleMemoryState(memory, value, { api: memoryApi, list: memories.value })
 }
 
 onMounted(loadMemories)

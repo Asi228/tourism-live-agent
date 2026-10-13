@@ -5,6 +5,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { chatApi, chunkApi, conversationApi, faqApi, feedbackApi, knowledgeApi, streamChat } from '../api'
 import ConversationList from '../components/ConversationList.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
+// 三处**纯逻辑**搬进 utils/，这样它们能被 `node --test` 直接跑（`npm test`）——
+// 今天栽过的跟头（answer_mode 漏接线、导出缺分页提示、开关翻错值）全长在这三块里。
+import { answerModeTag } from '../utils/answerMode'
+import { buildConversationMarkdown, formatStamp, scorePercent } from '../utils/exportMarkdown'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -31,19 +35,9 @@ let openSeq = 0
 const olderLoading = ref(false)
 
 
-// 后端 `answer_mode` 的取值 → 标签样式与话术。
-// **这张表是"答案性质"的唯一展示口径** —— 后端加了新取值而这里没补，
-// 模板会退化成显示原始英文串（`v-if` 仍在，不会变成空白）。
-const ANSWER_MODE = {
-  grounded: { text: '依据资料', type: 'success' },
-  no_evidence: { text: '无可用资料', type: 'warning' },
-  smalltalk: { text: '寒暄直答', type: 'info' },
-  // 命中知识库常见问题：答案来自管理端写的标准答案，**不是**模型生成的，
-  // 所以既不是"依据资料"（没引文档）也不是"无可用资料"（有依据，只是依据是 FAQ）。
-  faq: { text: '来自常见问题', type: 'primary' },
-}
+// 「答案性质」的展示映射表搬去了 `src/utils/answerMode.js`（`npm test` 守着它）。
 
-// `status` 事件里的 phase → 界面文案。与 ANSWER_MODE 同一张表的用法：
+// `status` 事件里的 phase → 界面文案。与 `utils/answerMode.js` 的映射同一套用法：
 // 后端新增 phase 时这里补一行就行，**绝不在模板里写死** ——
 // 否则后端哪天吐 phase:"generating"，界面会拿一句"正在判定要不要查库"撒谎。
 const PHASE_TEXT = {
@@ -579,62 +573,8 @@ function conversationTitle() {
   return hit ? hit.title : `对话 ${currentConvId.value}`
 }
 
-/** 把当前对话拼成 Markdown。**只导出界面上看得到的内容** —— 脱敏过的答案
- *  导出来就是脱敏后的，不会把无权看的原文写进文件。 */
-function buildMarkdown() {
-  const now = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
-  const modeText = mode.value === 'agent' ? 'Agent 多步' : '纯 RAG'
-  const out = [
-    `# ${conversationTitle()}`,
-    '',
-    `> 导出于 ${stamp} ｜ 模式：${modeText} ｜ ${messages.value.length} 条消息`,
-  ]
-  // ⚠️ **导出的只是"已经加载出来的那些消息"。**
-  // 会话详情是分页的（默认只给最新一页），更早的要点「加载更早的消息」才拉得到 ——
-  // 不写这句提示，长会话的导出文件会**静默缺掉前半段**，而用户以为导的是全部。
-  if (convHasOlder.value) {
-    out.push(
-      '>',
-      '> ⚠️ **本文件不完整**：这段会话更早的消息尚未加载，未包含在导出里。'
-        + '如需完整内容，请先在界面上点「加载更早的消息」，把前面的部分翻出来后再导出。'
-    )
-  }
-  out.push('')
-  for (const m of messages.value) {
-    out.push('---', '')
-    if (m.role === 'user') {
-      out.push(`**问：** ${m.content}`, '')
-      continue
-    }
-    const answer = m.error ? (m.content || '（获取失败）') : (m.data?.answer || '')
-    out.push(`**答：** ${answer}`, '')
-    // 这一轮"不完整"的原因要一起带上 —— 否则导出件看上去像完整答案，
-    // 日后回看会误以为当时就答全了（口径与界面上的提示条一致）。
-    const note = m.interrupted ? '生成中断，本次未存入历史'
-      : m.stopped ? '已停止生成（可能未存入历史）'
-      : m.cutoff ? '连接中断，回答可能不完整（已生成部分多半已存进历史）'
-      : m.unsaved ? '答案已完整返回，但这次没能存入历史'
-      : m.recovered ? '流式连接中断过一次，这条答案是用普通模式补取的'
-      : m.data?.finish_reason === 'length' ? '答案达到长度上限被截断'
-      : ''
-    if (note) out.push(`> ⚠️ ${note}`, '')
-    const sources = m.data?.sources || []
-    if (sources.length) {
-      out.push('**引用来源：**', '')
-      for (const s of sources) {
-        const page = s.page_number != null ? `第 ${s.page_number} 页` : '无页码'
-        out.push(
-          `- [${s.index}] 《${s.document_name}》${page}，相似度 ${scorePercent(s.score)}%`
-        )
-        if (s.snippet) out.push(`  > ${s.snippet}`)
-      }
-      out.push('')
-    }
-  }
-  return out.join('\n')
-}
+// 「拼 Markdown（含分页不完整警告）/ 时间戳 / 相似度百分数」搬去了
+// `src/utils/exportMarkdown.js` —— 那边有测试专门守着 hasOlder 这类分支。
 
 // ==================== 答案反馈（Bad Case 闭环）====================
 
@@ -741,7 +681,13 @@ async function askFaq(f) {
 /** 导出当前对话为 Markdown 前的辅助：确认当前会话标题。 */
 function exportConversation() {
   if (!messages.value.length) return
-  const md = buildMarkdown()
+  const md = buildConversationMarkdown({
+    title: conversationTitle(),
+    mode: mode.value,
+    messages: messages.value,
+    hasOlder: convHasOlder.value,
+    stamp: formatStamp(new Date()),
+  })
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -753,13 +699,6 @@ function exportConversation() {
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
   ElMessage.success('已导出 Markdown')
-}
-
-function scorePercent(score) {
-  // rerank 分数与余弦相似度都大致落在 0~1，展示成百分比更直观；
-  // 负分（理论上向量余弦可以为负）夹到 0，避免进度条乱跳
-  const v = Math.max(0, Math.min(1, Number(score) || 0))
-  return Math.round(v * 100)
 }
 
 onMounted(async () => {
@@ -931,8 +870,8 @@ onBeforeUnmount(() => abortStream())
 
                   <!-- 元信息：接口不同、回放历史与实时回答的字段也略有差异，逐项判空 -->
                   <div class="meta">
-                    <el-tag v-if="m.data.answer_mode" size="small" :type="(ANSWER_MODE[m.data.answer_mode] || {}).type || 'info'">
-                      {{ (ANSWER_MODE[m.data.answer_mode] || {}).text || m.data.answer_mode }}
+                    <el-tag v-if="m.data.answer_mode" size="small" :type="answerModeTag(m.data.answer_mode).type">
+                      {{ answerModeTag(m.data.answer_mode).text }}
                     </el-tag>
                     <!-- 脱敏消息：当时的口径全都取不回来了（meta 只剩 source），
                          不能说成"未使用知识库资料" —— 它其实用过资料，只是现在无权看了 -->
