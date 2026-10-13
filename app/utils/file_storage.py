@@ -105,7 +105,12 @@ async def save_upload(upload: UploadFile, knowledge_base_id: int) -> SavedFile:
     except OSError as e:
         target.unlink(missing_ok=True)
         logger.exception("写入上传文件失败 path=%s", target)
-        raise AppException(ErrorCode.FILE_ERROR, f"文件保存失败：{e}") from e
+        # ⚠️ **不要把 `e` 拼进 message**：`OSError` 的字符串里带着文件的**绝对路径**
+        # （`[Errno 28] No space left on device: 'E:\\...\\uploads\\xxx.md'`），
+        # 而 message 是**要回给客户端**的 —— 那等于把服务端的目录结构送给用户。
+        # 原文已经进日志了（上面那行 exception），这里只给一句能看懂的话。
+        # 口径与其余上游异常一致：**上游原文只进日志**。
+        raise AppException(ErrorCode.FILE_ERROR, "文件保存失败，请稍后重试") from e
     finally:
         await upload.close()
 

@@ -54,6 +54,11 @@ SYSTEM_ADMIN_ROLE = "admin"
 # "不存在"和"无权访问"对外必须是同一句话，否则等于把枚举能力还回来了
 NO_ACCESS_MSG = "知识库不存在或无权访问"
 
+# `update_kb` 里要额外剔掉 null 的字段：这些列在库里是 NOT NULL，
+# 显式传 null 进来被 setattr 上去，直到 commit 才炸（见 `update_kb` 的说明）。
+# `description` 是 nullable，**刻意不在这个集合里** —— 传 null 表示清空它。
+_NOT_NULL_UPDATE_FIELDS = frozenset({"name", "is_public"})
+
 
 # ==================== 权限判定 ====================
 
@@ -195,8 +200,20 @@ def update_kb(
 ) -> KnowledgeBase:
     kb = ensure_kb_permission(db, user, kb_id, PERM_ADMIN)
 
-    # exclude_unset：只更新客户端真正传上来的字段，没传的保持不变
-    fields = payload.model_dump(exclude_unset=True)
+    # exclude_unset：只更新客户端真正传上来的字段，没传的保持不变。
+    #
+    # ⚠️ **但它挡不住"显式传 null"** —— 传了就算 set。所以 `{"name": null}` 会原样
+    # 留在 fields 里，被 setattr 到 NOT NULL 列上，一路走到 commit 才炸（59999）——
+    # 从报错完全看不出是这里。所以对 NOT NULL 的字段再剔一次 None。
+    # "没传"和"传 null"在更新接口里语义相同：都是**不改这一项**。
+    #
+    # ⚠️ `description` 是 nullable 的**例外**，不在剔除名单里：
+    # 传 null 表示"清空描述"，那是合法意图，不能一起抹掉。
+    fields = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset=True).items()
+        if not (v is None and k in _NOT_NULL_UPDATE_FIELDS)
+    }
     if "name" in fields:
         # 必须比对 id：真库列排序规则是 utf8mb4_unicode_ci（大小写不敏感），
         # 把 "Tech" 改成 "tech" 会查到这条记录自己，不比对 id 就误报"名称已存在"

@@ -8,6 +8,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.document import Document
+    from app.models.knowledge_base_faq import KnowledgeBaseFaq
     from app.models.knowledge_base_member import KnowledgeBaseMember
     from app.models.user import User
 
@@ -54,6 +55,15 @@ class KnowledgeBase(Base):
     # 两条路都铺上，行为才在 MySQL 和 SQLite 下一致。
     documents: Mapped[list["Document"]] = relationship(
         back_populates="knowledge_base",
+        cascade="all, delete-orphan",
+    )
+
+    # FAQ 同理 —— **这条是补的**：FAQ 表当初只写了数据库侧的 ON DELETE CASCADE，
+    # 漏了 ORM 这一路，于是测试库（SQLite 不开外键）里 `delete_kb` 会留下孤儿 FAQ，
+    # 而生产库（MySQL）会级联删掉 —— 两边行为不一致，且测试看不见这个差异。
+    # 不设 `back_populates`：KnowledgeBaseFaq 那边不需要反向引用，
+    # 硬加会逼它也声明一个只为了配对的 relationship。
+    faqs: Mapped[list["KnowledgeBaseFaq"]] = relationship(
         cascade="all, delete-orphan",
     )
 

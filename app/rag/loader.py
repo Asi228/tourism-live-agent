@@ -33,7 +33,11 @@ def _load_pdf(path: Path) -> list[PageText]:
     try:
         reader = PdfReader(str(path))
     except Exception as e:  # noqa: BLE001 — pypdf 的异常类型不稳定，统一转成文件异常
-        raise AppException(ErrorCode.FILE_ERROR, f"PDF 解析失败：{e}") from e
+        # ⚠️ **原文只进日志**：pypdf 的异常里常带着文件的绝对路径，
+        # 而 message 会经 document_service 落库、再由接口回给客户端 ——
+        # 拼进去等于把服务端目录结构送出去。
+        logger.warning("PDF 打开失败 path=%s: %s", path, e)
+        raise AppException(ErrorCode.FILE_ERROR, "PDF 打开失败，文件可能已损坏") from e
 
     pages: list[PageText] = []
     for index, page in enumerate(reader.pages, start=1):
@@ -60,7 +64,9 @@ def _load_text(path: Path) -> list[PageText]:
         except UnicodeDecodeError:
             continue
         except OSError as e:
-            raise AppException(ErrorCode.FILE_ERROR, f"文件读取失败：{e}") from e
+            # 同上：`OSError` 里带绝对路径，原文进日志、message 给人话
+            logger.warning("文本读取失败 path=%s: %s", path, e)
+            raise AppException(ErrorCode.FILE_ERROR, "文件读取失败，请重新上传") from e
     raise AppException(
         ErrorCode.FILE_ERROR,
         f"文本编码无法识别（已尝试 {' / '.join(TEXT_ENCODINGS)}）",

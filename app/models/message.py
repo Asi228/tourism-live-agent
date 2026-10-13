@@ -15,6 +15,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:  # 只为类型标注，运行时不需要（避免模块级循环引用）
     from app.models.conversation import Conversation
+    from app.models.message_feedback import MessageFeedback
 
 # 角色。用常量而不是裸字符串：拼错 "assistant" 这种错很难在测试里被发现
 ROLE_USER = "user"
@@ -57,6 +58,14 @@ class Message(Base):
     )
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+    # 删消息时连带删掉它的评价 —— **与 KnowledgeBase.faqs 同源的补漏**：
+    # 这张表也只写了数据库侧的 ON DELETE CASCADE，而 SQLite（测试库）不开外键约束，
+    # 于是"删会话删到消息"这条路上，反馈会在测试库里变成孤儿、在 MySQL 里被级联删 ——
+    # 两边不一致，且测试看不见。
+    feedbacks: Mapped[list["MessageFeedback"]] = relationship(
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<Message id={self.id} conv={self.conversation_id} role={self.role}>"

@@ -71,19 +71,25 @@ def ensure_conversation(
     这样 LLM 失败时不会留下空会话。
     """
     if conversation_id is None:
-        _ensure_room_for_new_conversation(db, user)
+        ensure_room_for_new_conversation(db, user)
         conv = conversation_repository.create(db, user.id, _make_title(first_query))
         logger.info("新建会话 user=%s conv_id=%s", user.username, conv.id)
         return conv
     return get_owned(db, user, conversation_id)
 
 
-def _ensure_room_for_new_conversation(db: Session, user: User) -> None:
+def ensure_room_for_new_conversation(db: Session, user: User) -> None:
     """新建会话前先看配额，超了**拒绝并提示**。
 
     为什么不是"悄悄删掉最旧的会话"：那等于替用户决定"哪段对话可以不要了"。
     用户对历史对话的预期是只增不减，静默删除比让他自己面对 200 个旧会话糟糕得多
     —— 前者是数据损坏，后者只是麻烦。所以这里选"明确的失败"，不选"顺滑的丢失"。
+
+    ⚠️ **流式路径必须把它提到"响应开始之前"单独调一次**（见
+    `agent_service.stream_answer`）：放在生成器里的话，会话数到顶时 40900 会变成
+    一个 200 流里的事件，而不是统一信封 —— 前端只能看到"断流"，
+    用户完全不知道是自己配额满了。所以这个函数是**公开**的，
+    不是 `ensure_conversation` 的私有细节。
     """
     cap = settings.CONVERSATION_MAX_PER_USER
     if cap <= 0:

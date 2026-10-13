@@ -279,8 +279,17 @@ def stream_answer(
     FastAPI 只在开始迭代 body 时才发响应头，准备工作必须赶在那之前完成，
     "Agent 未启用" / 越权 404 / 配额到顶才能走统一信封，而不是降级成流里的 error。
 
-    准备工作里**只做归属校验**：会话不是自己的要趁早 404（也顺带省下一整轮多步
-    推理的钱）。历史、摘要、图本身都推迟到流式阶段 —— 因为那里必须用**新 session**，
+    准备工作里做两件事：
+      · **归属校验** —— 会话不是自己的要趁早 404（也顺带省下一整轮多步推理的钱）；
+      · **新会话的配额检查** —— 必须在响应开始**之前**。
+
+    ⚠️ 配额这一项曾经漏在这里（只做了 `get_owned`），而含配额检查的
+    `ensure_conversation` 在生成器里 —— 结果是会话数到顶时 40900 降级成一个
+    200 流里的事件，前端只看到"断流"，用户根本不知道是自己配额满了。
+    RAG 那条路是对的（`_prepare` 在 return 之前就调了 `ensure_conversation`），
+    这里对齐它。真正的**创建**仍然留在流式阶段（那里要用新 session）。
+
+    历史、摘要、图本身都推迟到流式阶段 —— 因为那里必须用**新 session**，
     见 `_agent_stream_events` 的说明。
     """
     if not settings.AGENT_ENABLED:
@@ -289,6 +298,11 @@ def stream_answer(
         )
     if conversation_id is not None:
         conversation_service.get_owned(db, user, conversation_id)
+    else:
+        # 只**检查**、不创建：创建要等到流式阶段的新 session 里做。
+        # 检查与创建之间有个极小的 TOCTOU 窗口（用户在别处同时开了新会话），
+        # 但那个窗口的代价只是"少拦一次"，而把它放到响应之后代价是"错误表达不了"。
+        conversation_service.ensure_room_for_new_conversation(db, user)
 
     return _agent_stream_events(user.id, query, kb_ids, top_k, conversation_id)
 
