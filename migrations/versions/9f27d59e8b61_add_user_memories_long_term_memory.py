@@ -26,8 +26,8 @@ def upgrade() -> None:
     sa.Column('user_id', sa.Integer(), nullable=False, comment='归属用户，只有本人能读写'),
     sa.Column('content', sa.Text(), nullable=False, comment='记忆正文'),
     sa.Column('source_conversation_id', sa.Integer(), nullable=True, comment='产生它的会话 id（仅作追溯、无外键；**可能指向已删除的会话**）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

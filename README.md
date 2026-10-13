@@ -135,6 +135,22 @@ RUN_MYSQL_INTEGRATION=1  pytest tests/test_migrations.py -v             # 迁移
 RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest -v
 ```
 
+### 🔴 改了模型或迁移之后，必须多做一步
+
+```bash
+RUN_MYSQL_INTEGRATION=1 pytest tests/test_migrations.py -v   # 别跳过
+alembic upgrade head                                         # 把真库推到代码 head
+```
+
+**`pytest -q` 全绿不算过。** 原因是：测试库是 **SQLite 内存库 + `create_all` 照模型现建**，
+它永远与模型自洽 —— 所以它抓不到"代码 head 与真库版本不一致"这件事。
+`test_migrations.py` 里的 drift 用例就是为此存在的，但它默认跳过（要连真 MySQL）。
+
+这不是理论风险：2026-10-13 有 5 个 commit 就是这么漏过去的 —— 本地 SQLite 375 条全绿，
+而真库停在 `6f5b38de538b`、代码 head 已到 `c7e2a94b6d18`，
+三个新接口在真库上全是 `Unknown column` / `Table doesn't exist`。
+**没在真库跑过的迁移，等于没验证过。**
+
 ---
 
 ## 接口一览

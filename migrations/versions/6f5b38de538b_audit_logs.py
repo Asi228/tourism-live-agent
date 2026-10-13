@@ -30,7 +30,7 @@ def upgrade() -> None:
     sa.Column('target_id', sa.Integer(), nullable=False, comment='对象 ID'),
     sa.Column('target_name', sa.String(length=128), nullable=True, comment='对象名称快照（同样为了事后可读）'),
     sa.Column('detail', sa.JSON(), nullable=True, comment='变更内容，如 {"from":"employee","to":"admin"}'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_audit_logs_action'), 'audit_logs', ['action'], unique=False)

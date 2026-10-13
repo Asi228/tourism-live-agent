@@ -39,7 +39,7 @@ def upgrade() -> None:
     sa.Column('code', sa.String(length=32), nullable=False, comment='角色标识'),
     sa.Column('name', sa.String(length=64), nullable=False, comment='角色名称'),
     sa.Column('description', sa.String(length=255), nullable=True),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('code')
     )
@@ -50,8 +50,8 @@ def upgrade() -> None:
     sa.Column('password_hash', sa.String(length=128), nullable=False, comment='bcrypt 哈希'),
     sa.Column('role_id', sa.Integer(), nullable=False, comment='角色外键'),
     sa.Column('is_active', sa.Boolean(), server_default='1', nullable=False, comment='是否启用'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['role_id'], ['roles.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -70,7 +70,7 @@ def upgrade() -> None:
     sa.Column('total_tokens', sa.Integer(), server_default='0', nullable=False, comment='本次消耗的 token 合计'),
     sa.Column('elapsed_ms', sa.Integer(), server_default='0', nullable=False, comment='总耗时（毫秒）'),
     sa.Column('error_msg', sa.String(length=500), nullable=True, comment='失败原因（不含堆栈）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -80,8 +80,8 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False, comment='会话归属，只有本人能看'),
     sa.Column('title', sa.String(length=60), nullable=False, comment='取自首个问题，便于在列表里认出来'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -93,8 +93,8 @@ def upgrade() -> None:
     sa.Column('description', sa.String(length=512), nullable=True),
     sa.Column('owner_id', sa.Integer(), nullable=False, comment='创建者'),
     sa.Column('is_public', sa.Boolean(), server_default='0', nullable=False, comment='True 表示所有登录用户都可读，省去逐个授权'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['owner_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -113,8 +113,8 @@ def upgrade() -> None:
     sa.Column('chunk_count', sa.Integer(), server_default='0', nullable=False),
     sa.Column('char_count', sa.Integer(), server_default='0', nullable=False, comment='清洗后总字符数'),
     sa.Column('error_msg', sa.Text(), nullable=True, comment='处理失败原因（给用户看的，不含堆栈）'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['knowledge_base_id'], ['knowledge_bases.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['uploader_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
@@ -127,7 +127,7 @@ def upgrade() -> None:
     sa.Column('knowledge_base_id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('permission', sa.String(length=16), nullable=False, comment='read / write / admin'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['knowledge_base_id'], ['knowledge_bases.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
@@ -142,7 +142,7 @@ def upgrade() -> None:
     sa.Column('content', sa.Text(), nullable=False, comment='问题原文 / 答案正文'),
     sa.Column('sources', sa.JSON(), nullable=True, comment='引用列表，与答案里的 [n] 编号一一对应'),
     sa.Column('meta', sa.JSON(), nullable=True, comment='展示用杂项：answer_mode / hit / reranked / usage / elapsed_ms / model / searched_kb_ids'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -156,7 +156,7 @@ def upgrade() -> None:
     sa.Column('page_number', sa.Integer(), nullable=True, comment='起始页码（PDF 从 1 开始；纯文本类文档为 NULL）'),
     sa.Column('char_count', sa.Integer(), nullable=False, comment='本块字符数'),
     sa.Column('meta', sa.JSON(), nullable=True, comment='预留扩展：标题、来源行号等'),
-    sa.Column('created_at', sa.DateTime(), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['document_id'], ['documents.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('document_id', 'chunk_index', name='uq_doc_chunk_index')
