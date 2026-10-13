@@ -11,6 +11,27 @@ collection 名字与 MySQL 表 document_chunks 同名 —— 两边存的是同�
 权限过滤在这里落地：
   search() 的 kb_ids 参数会变成 Milvus 的 filter 表达式 `knowledge_base_id in [...]`。
   **过滤发生在检索阶段**，不是"先全量检索再判权限"。
+
+关于导入方式 —— **别把它提到文件顶部**（这不是随手写的风格）：
+
+  本模块顶层 `import pymilvus`，而它是个重包：实测**首次导入约 1.1 秒**
+  （pymilvus 带 grpc 等一串依赖），且导入失败时会直接抛异常。
+  所以**所有使用方都写成函数内局部 import，并且一律包在 `try` 里**：
+
+      try:
+          from app.rag import vector_store
+          vector_store.xxx()
+      except Exception:
+          ...          # Milvus 不可用只影响这一步
+
+  这样两件事同时成立：
+    · 不碰 Milvus 的路径（纯文档解析、MySQL 探活等）**不付那 1.1 秒**；
+    · **Milvus 环境坏掉不会让整个应用起不来** —— 影响面被限制在调用点那一个
+      `try` 里：删库时清不掉向量、概览里向量数显示 "-"、探活报 fail，
+      而其它功能照常。
+
+  提到顶层会让上面两条一起失效（导入失败就是**整个 app 启动失败**）。
+  调用点：`document_service` / `knowledge_service` / `stats_service` / `api/health`。
 """
 
 import logging

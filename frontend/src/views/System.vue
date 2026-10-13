@@ -9,6 +9,7 @@
  * 重复一个入口是刻意的 —— 排障时人第一个会来的地方是"系统状态"，不是"知识库"。
  */
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { auditApi, systemApi, vectorApi } from '../api'
 
@@ -56,6 +57,42 @@ async function loadVector() {
     /* 忽略 */
   } finally {
     vectorLoading.value = false
+  }
+}
+
+// 清理孤儿向量 —— **真删 Milvus 数据、不可逆**，所以走确认框，且只在真有孤儿时
+// 才出现按钮（没有条目时这个操作本来也没有意义）。
+//
+// ⚠️ 它此前没有 UI 入口：注释里写着"放在应急调试台里"，但调试台并没有做这个按钮，
+//    页面上那句"请用应急调试台"因此是一条**指向不存在功能**的指引（而且还是死链：
+//    dev 下前端在 5173、调试台在 8000，`/devtools/` 会被 vite 的 SPA fallback 接住
+//    又回到前端自己）。现在补成真入口。
+const purging = ref(false)
+
+async function purgeOrphans() {
+  const n = vectorHealth.value?.orphan_vector_count ?? 0
+  if (!n) return
+  try {
+    await ElMessageBox.confirm(
+      `确定清理 ${n} 条孤儿向量？`
+      + '\n\n孤儿向量 = 所属知识库已删除、却还留在 Milvus 里的向量：'
+      + '它们会被检索命中、白占 top_k 名额，却取不到正文。'
+      + '\n\n这是真删 Milvus 数据，不可逆。',
+      '清理孤儿向量',
+      { type: 'warning', confirmButtonText: '确定清理', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  purging.value = true
+  try {
+    const body = await vectorApi.purgeOrphans()
+    ElMessage.success(body.message || '已清理孤儿向量')
+    await loadVector() // 重新自检，让数字当场变对
+  } catch {
+    /* 失败原因由 http 拦截器统一提示 */
+  } finally {
+    purging.value = false
   }
 }
 
@@ -143,7 +180,7 @@ onMounted(loadAll)
 
 <template>
   <div class="sys">
-    <el-card shadow="never">
+    <el-card>
       <template #header>
         <div class="card-head">
           <span>
@@ -173,11 +210,25 @@ onMounted(loadAll)
       </div>
     </el-card>
 
-    <el-card v-loading="vectorLoading" shadow="never">
+    <el-card v-loading="vectorLoading">
       <template #header>
         <div class="card-head">
           <span>向量库</span>
-          <el-button size="small" :loading="vectorLoading" @click="loadVector">自检</el-button>
+          <div class="head-actions">
+            <!-- 只在真有孤儿时出现：没有条目时这个操作本身没有意义，
+                 而它是**不可逆的真删**，少一个可点的地方就少一次手滑机会 -->
+            <el-button
+              v-if="vectorHealth && vectorHealth.orphan_vector_count"
+              size="small"
+              type="danger"
+              plain
+              :loading="purging"
+              @click="purgeOrphans"
+            >
+              清理孤儿向量（{{ vectorHealth.orphan_vector_count }}）
+            </el-button>
+            <el-button size="small" :loading="vectorLoading" @click="loadVector">自检</el-button>
+          </div>
         </div>
       </template>
       <template v-if="vectorHealth">
@@ -205,15 +256,15 @@ onMounted(loadAll)
             <code>{{ vectorHealth.collection }}</code>
             <template v-if="!vectorHealth.collection_exists">（尚未创建）</template>
             <br>
-            清理孤儿向量请用<a href="/devtools/" target="_blank" rel="noopener">应急调试台</a>
-            （真删数据的操作刻意不放在主界面）。
+            孤儿向量 = 所属知识库已删、却还留在 Milvus 里的向量：会被检索命中、白占
+            top_k 名额却取不到正文。有条目时上方会出现「清理孤儿向量」（真删数据、不可逆）。
           </div>
         </template>
       </template>
       <el-empty v-else description="尚未自检" :image-size="60" />
     </el-card>
 
-    <el-card v-loading="auditLoading" shadow="never">
+    <el-card v-loading="auditLoading">
       <template #header>
         <div class="card-head">
           <span>最近管理动作</span>
@@ -275,16 +326,6 @@ onMounted(loadAll)
   flex-direction: column;
   gap: 14px;
 }
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.head-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
 .more-wrap {
   margin-top: 10px;
   text-align: center;
@@ -300,7 +341,7 @@ onMounted(loadAll)
 .dep {
   padding: 12px;
   border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 .dep.bad {
   border-color: var(--el-color-danger);

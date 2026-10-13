@@ -204,7 +204,7 @@ onMounted(load)
     <!-- 向量库自检：devtools 里唯一有日常运维价值、而前端一直没有的功能。
          孤儿向量 / 向量缺失都会静默改变检索结果，documents 表里却没有对应字段，
          从任何界面上都看不出来 —— 所以给它一个正式入口，而不是埋在应急调试台里。 -->
-    <el-card v-if="user.isAdmin" v-loading="vectorLoading" shadow="never" class="vector-card">
+    <el-card v-if="user.isAdmin" v-loading="vectorLoading" class="vector-card">
       <template #header>
         <div class="card-head">
           <span>向量库自检</span>
@@ -256,7 +256,7 @@ onMounted(load)
       <div v-else class="vector-empty">点右上角「自检」查看向量库状态</div>
     </el-card>
 
-    <el-card shadow="never">
+    <el-card>
       <template #header>
         <div class="card-head">
           <span>知识库</span>
@@ -369,15 +369,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.head-actions {
-  display: flex;
-  gap: 8px;
-}
 .hint {
   color: var(--el-text-color-secondary);
   font-size: 13px;
