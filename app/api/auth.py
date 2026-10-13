@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.config import settings
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RegisterRequest
+from app.schemas.auth import AuthConfigOut, LoginRequest, RegisterRequest
 from app.schemas.user import UserOut
 from app.services import auth_service
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["认证"])
 
 
-@router.get("/config", summary="公开的认证配置")
+@router.get("/config", response_model=ApiResponse[AuthConfigOut], summary="公开的认证配置")
 def auth_config():
     """登录页需要知道的事（**无需登录**）。
 

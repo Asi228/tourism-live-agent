@@ -28,6 +28,17 @@ class RegisterRequest(BaseModel):
     )
 
 
+class AuthConfigOut(BaseModel):
+    """公开的认证配置（`GET /auth/config`，**不需要登录**）。
+
+    目前只有一项：自助注册开没开 —— 登录页据此决定显不显示「注册」页签。
+    放进 schema 是为了让"这个匿名接口到底会说出什么"有一处明确的清单，
+    将来想往里加东西时会先看到这份声明（而不是顺手多丢一个字段出去）。
+    """
+
+    allow_register: bool
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=72)

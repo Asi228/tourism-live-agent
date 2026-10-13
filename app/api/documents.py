@@ -88,7 +88,11 @@ def get_document_status(
     return success(status.model_dump(mode="json"))
 
 
-@router.get("/{document_id}/chunks", summary="查看切分结果（含页码，用于核对切分效果）")
+@router.get(
+    "/{document_id}/chunks",
+    response_model=ApiResponse[list[ChunkOut]],
+    summary="查看切分结果（含页码，用于核对切分效果）",
+)
 def list_chunks(
     document_id: int,
     current_user: User = Depends(get_current_user),

@@ -25,10 +25,11 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import rate_limit, require_admin
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import (
+    GrantOut,
     PasswordResetRequest,
     RoleUpdateRequest,
     StatusUpdateRequest,
@@ -155,7 +156,11 @@ def update_user_role(
     return success(data, f"已把 {data['username']} 改为 {payload.role_code}")
 
 
-@router.get("/{user_id}/grants", summary="查看某人被授权的知识库（仅系统管理员）")
+@router.get(
+    "/{user_id}/grants",
+    response_model=ApiResponse[list[GrantOut]],
+    summary="查看某人被授权的知识库（仅系统管理员）",
+)
 def list_user_grants(
     user_id: int,
     admin: User = Depends(require_admin),

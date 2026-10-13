@@ -66,6 +66,20 @@ class UserDetail(BaseModel):
     role: RoleOut
 
 
+class GrantOut(BaseModel):
+    """某人被授权的一个知识库（`GET /users/{id}/grants`）。
+
+    由 service **手拼 dict** 产出 —— 这类地方最容易出"键名写错、前端拿不到值"
+    且毫无报错的问题，所以这个 schema 同时充当那份 dict 的契约。
+    """
+
+    knowledge_base_id: int
+    # 库可能已被删除（成员行由数据库级联清掉，service 里只是防御性判空）
+    knowledge_base_name: str | None = None
+    permission: str
+    granted_at: datetime
+
+
 class RoleUpdateRequest(BaseModel):
     """改角色的入参。只收 role_code —— 不用 role_id：code 是稳定契约，id 不是。"""
 

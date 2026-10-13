@@ -15,9 +15,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
-from app.core.response import success
+from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.system import VectorHealthOut
 from app.services import vector_service
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/vector", tags=["向量库运维"])
 
 
-@router.get("/health", summary="向量库自检（仅系统管理员）")
+@router.get(
+    "/health",
+    response_model=ApiResponse[VectorHealthOut],
+    summary="向量库自检（仅系统管理员）",
+)
 def vector_health(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),

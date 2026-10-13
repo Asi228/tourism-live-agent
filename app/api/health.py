@@ -22,8 +22,9 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.core import redis_client
-from app.core.response import ErrorCode, error, success
+from app.core.response import ApiResponse, ErrorCode, error, success
 from app.db.session import engine
+from app.schemas.system import HealthOut
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def _reset_cache() -> None:
     _cache = None
 
 
-@router.get("/health", summary="健康检查")
+@router.get("/health", response_model=ApiResponse[HealthOut], summary="健康检查")
 def health():
     """健康检查：MySQL / Milvus / Redis 各探一次（3 秒内复用结果）。
 
