@@ -850,7 +850,7 @@ onBeforeUnmount(() => abortStream())
 }
 .mode-hint {
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   line-height: 1.6;
 }
@@ -889,7 +889,7 @@ onBeforeUnmount(() => abortStream())
   line-height: 1.9;
 }
 .tips-note {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .msg {
   display: flex;
@@ -981,7 +981,7 @@ onBeforeUnmount(() => abortStream())
   border: 1px dashed var(--el-color-warning);
   border-radius: 6px;
   background: var(--el-fill-color-lighter);
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .mock-bar-label {
   font-weight: 600;
@@ -993,7 +993,7 @@ onBeforeUnmount(() => abortStream())
   border-radius: 4px;
   background: var(--el-bg-color);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .mock-btn.on {
   border-color: var(--el-color-warning);
@@ -1011,13 +1011,13 @@ onBeforeUnmount(() => abortStream())
 /* 流中途断了：正文保留，只在下面加一行说明（并说清没进历史）。 */
 .stream-note {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-color-warning);
 }
 /* 正在等 / 正在重取：不是错误，只是"还在动"的说明，用中性色跟 stream-note 区分。 */
 .stream-hint {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .err {
@@ -1031,7 +1031,7 @@ onBeforeUnmount(() => abortStream())
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px dashed var(--el-border-color-lighter);
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .trace {
@@ -1039,7 +1039,7 @@ onBeforeUnmount(() => abortStream())
 }
 .trace-detail {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .sources {
   margin-top: 10px;
@@ -1047,7 +1047,7 @@ onBeforeUnmount(() => abortStream())
   border-top: 1px dashed var(--el-border-color-lighter);
 }
 .sources-title {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   margin-bottom: 6px;
 }
@@ -1060,7 +1060,7 @@ onBeforeUnmount(() => abortStream())
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .doc-name {
   font-weight: 600;
@@ -1071,7 +1071,7 @@ onBeforeUnmount(() => abortStream())
 }
 .snippet {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-regular);
   line-height: 1.7;
 }
@@ -1082,7 +1082,7 @@ onBeforeUnmount(() => abortStream())
 }
 .foot-hint {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 </style>

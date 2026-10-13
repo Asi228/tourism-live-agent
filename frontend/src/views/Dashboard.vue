@@ -273,7 +273,7 @@ onMounted(load)
   line-height: 1.2;
 }
 .label {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   margin-top: 2px;
 }
@@ -346,7 +346,7 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .cols {
   display: grid;
@@ -369,7 +369,7 @@ onMounted(load)
   line-height: 1.5;
 }
 .q-meta {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   margin-top: 2px;
 }

@@ -309,7 +309,7 @@ onUnmounted(stopPolling)
 .chunk-head {
   display: flex;
   gap: 14px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   margin-bottom: 6px;
 }

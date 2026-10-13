@@ -183,7 +183,7 @@ async function doRegister() {
 }
 .sub {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   line-height: 1.6;
 }

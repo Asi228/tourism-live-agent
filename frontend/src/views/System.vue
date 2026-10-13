@@ -357,7 +357,7 @@ onMounted(loadAll)
 }
 .dep-note {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .vector-grid {
@@ -384,7 +384,7 @@ onMounted(loadAll)
   color: var(--el-color-warning);
 }
 .vlabel {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .down {
@@ -394,7 +394,7 @@ onMounted(loadAll)
 }
 .hint {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   line-height: 1.7;
 }

@@ -118,7 +118,7 @@ function formatTime(s) {
 }
 .conv-empty {
   padding: 12px 10px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.7;
   color: var(--el-text-color-secondary);
 }

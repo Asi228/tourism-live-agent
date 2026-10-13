@@ -376,7 +376,7 @@ onMounted(load)
 .form-hint {
   margin-left: 10px;
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
 }
 .owner-line {
   margin-bottom: 10px;
@@ -417,12 +417,12 @@ onMounted(load)
   color: var(--el-color-warning);
 }
 .vector-label {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .vector-meta {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 .vector-warn {
@@ -431,7 +431,7 @@ onMounted(load)
   border-radius: 6px;
   background: var(--el-color-warning-light-9);
   color: var(--el-text-color-regular);
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.7;
 }
 .vector-down {

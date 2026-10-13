@@ -433,7 +433,7 @@ onMounted(load)
 }
 .hint {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
 </style>

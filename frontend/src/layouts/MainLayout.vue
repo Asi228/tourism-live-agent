@@ -2,18 +2,10 @@
 import { onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import {
-  ChatDotRound,
-  Collection,
-  Document,
-  Monitor,
-  Odometer,
-  Reading,
-  SwitchButton,
-  User,
-} from '@element-plus/icons-vue'
+import { Reading, SwitchButton } from '@element-plus/icons-vue'
 
 import { useUserStore } from '../stores/user'
+import { NAV_ITEMS } from '../router/nav'
 
 const route = useRoute()
 const router = useRouter()
@@ -61,33 +53,17 @@ async function handleLogout() {
         </div>
       </div>
 
+      <!-- 菜单由 NAV_ITEMS 驱动（见 router/nav.js）：文字、图标、管理员过滤
+           都从那一条来，路由的 meta.title 也是它生成的 —— 以前这里手写 6 个
+           <span>、路由里再手写 6 个 meta.title，加页面要改两处，改漏就叫
+           "顶栏与菜单对不上"，而这种漂移编译不报错。 -->
       <el-menu :default-active="route.path" router class="menu">
-        <el-menu-item index="/dashboard">
-          <el-icon><Odometer /></el-icon>
-          <span>概览</span>
-        </el-menu-item>
-        <el-menu-item index="/knowledge">
-          <el-icon><Collection /></el-icon>
-          <span>知识库</span>
-        </el-menu-item>
-        <el-menu-item index="/documents">
-          <el-icon><Document /></el-icon>
-          <span>文档管理</span>
-        </el-menu-item>
-        <el-menu-item index="/chat">
-          <el-icon><ChatDotRound /></el-icon>
-          <span>智能问答</span>
-        </el-menu-item>
-        <!-- 管理入口只对管理员渲染。这是"权限差异感"：员工看不到的入口干脆不出现，
-             而不是点进去才被后端拒。后端 require_admin 仍然强校验（这里只是体验层）。 -->
-        <template v-if="user.isAdmin">
-          <el-menu-item index="/users">
-            <el-icon><User /></el-icon>
-            <span>用户管理</span>
-          </el-menu-item>
-          <el-menu-item index="/system">
-            <el-icon><Monitor /></el-icon>
-            <span>系统状态</span>
+        <template v-for="item in NAV_ITEMS" :key="item.path">
+          <!-- 管理入口只对管理员渲染。这是"权限差异感"：员工看不到的入口干脆不出现，
+               而不是点进去才被后端拒。后端 require_admin 仍然强校验（这里只是体验层）。 -->
+          <el-menu-item v-if="!item.admin || user.isAdmin" :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.title }}</span>
           </el-menu-item>
         </template>
       </el-menu>
@@ -105,9 +81,11 @@ async function handleLogout() {
 
     <el-container>
       <el-header class="header">
-        <!-- 显示**当前页标题**（来自路由 meta.title）。产品名在侧边栏品牌区 ——
-             两边都放同一句大字，用户会分不清"我现在在哪一页" -->
-        <div class="header-title">{{ route.meta.title || '概览' }}</div>
+        <!-- 显示**当前页标题**（来自路由 meta.title，由 router/nav.js 的 NAV_ITEMS 生成）。
+             产品名在侧边栏品牌区 —— 两边都放同一句大字，用户会分不清"我现在在哪一页"。
+             ⚠️ **刻意没有 `|| '概览'` 兜底**：那个兜底会在"新页面忘了配 title"时
+             显示一个谎（用户以为自己还在概览页）。宁可空着，也不说谎。 -->
+        <div class="header-title">{{ route.meta.title }}</div>
         <div class="header-right">
           <el-tag v-if="user.roleName" size="small" type="info">{{ user.roleName }}</el-tag>
           <span class="username">{{ user.displayName }}</span>
@@ -166,7 +144,7 @@ async function handleLogout() {
   font-weight: 600;
 }
 .brand-sub {
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
   margin-top: 2px;
 }
@@ -197,7 +175,7 @@ async function handleLogout() {
 }
 .aside-foot {
   padding: 12px 16px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   border-top: 1px solid var(--el-border-color-lighter);
 }
 .aside-foot a {

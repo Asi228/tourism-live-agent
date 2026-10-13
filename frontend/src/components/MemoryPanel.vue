@@ -117,7 +117,7 @@ onMounted(loadMemories)
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   font-weight: 600;
   color: var(--el-text-color-regular);
 }
@@ -142,7 +142,7 @@ onMounted(loadMemories)
   align-items: flex-start;
   gap: 6px;
   padding: 4px 2px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.6;
 }
 
@@ -168,7 +168,7 @@ onMounted(loadMemories)
 
 .mem-empty {
   padding: 6px 2px;
-  font-size: 12px;
+  font-size: var(--el-font-size-extra-small);
   line-height: 1.7;
   color: var(--el-text-color-secondary);
 }
