@@ -36,7 +36,14 @@ class SourceItem(BaseModel):
     document_name: str
     knowledge_base_id: int
     page_number: int | None = Field(default=None, description="PDF 的页码；txt/md 为 null")
-    score: float = Field(description="余弦相似度，越大越相关")
+    score: float | None = Field(
+        default=None,
+        description=(
+            "余弦相似度，越大越相关。**文档级命中为 null** —— "
+            "Agent 的文档任务（总结/对比）取的是整篇文档，没有「相似度」这个概念；"
+            "前端对 null 显示「整篇文档」。编一个 1.0 会显示成「相似度 100%」，是假精度"
+        ),
+    )
     snippet: str = Field(description="正文摘要，便于前端展示引用")
 
 

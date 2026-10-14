@@ -72,7 +72,7 @@ export function buildConversationMarkdown({ title, mode, messages, hasOlder, sta
       for (const s of sources) {
         const page = s.page_number != null ? `第 ${s.page_number} 页` : '无页码'
         out.push(
-          `- [${s.index}] 《${s.document_name}》${page}，相似度 ${scorePercent(s.score)}%`
+          `- [${s.index}] 《${s.document_name}》${page}，${sourceScoreText(s.score)}`
         )
         if (s.snippet) out.push(`  > ${s.snippet}`)
       }
@@ -88,4 +88,15 @@ export function scorePercent(score) {
   // 负分（理论上向量余弦可以为负）夹到 0，避免进度条乱跳
   const v = Math.max(0, Math.min(1, Number(score) || 0))
   return Math.round(v * 100)
+}
+
+/**
+ * 引用来源的「相关性」文案，界面与导出共用。
+ *
+ * 检索命中 → `相似度 87%`；**文档级命中（score 为 null）→ `整篇文档`** ——
+ * Agent 的文档任务（总结/对比）取的是整篇文档，没有"相似度"这个概念。
+ * 直接走 scorePercent 会显示"相似度 0%"（Number(null)=0），那是误导：看起来像不相关。
+ */
+export function sourceScoreText(score) {
+  return score == null ? '整篇文档' : `相似度 ${scorePercent(score)}%`
 }

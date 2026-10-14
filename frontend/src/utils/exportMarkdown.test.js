@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildConversationMarkdown, formatStamp, scorePercent } from './exportMarkdown.js'
+import { buildConversationMarkdown, formatStamp, scorePercent, sourceScoreText } from './exportMarkdown.js'
 
 const STAMP = '2026-10-13 23:39'
 
@@ -121,4 +121,30 @@ test('scorePercent：0~1 → 0~100、边界夹紧、坏输入不炸', () => {
   assert.equal(scorePercent(1.7), 100) // 别让进度条冲出 100
   assert.equal(scorePercent(null), 0)
   assert.equal(scorePercent('abc'), 0) // NaN → 0，不炸模板
+})
+
+test('sourceScoreText：文档级命中（score=null）显示「整篇文档」，不是「相似度 0%」', () => {
+  // 🔴 这是 Agent 文档任务（总结/对比）的来源形状：取的是整篇文档，没有相似度。
+  // 直接走 scorePercent 会得到 0% —— 看起来像"完全不相关"，是误导。
+  assert.equal(sourceScoreText(null), '整篇文档')
+  assert.equal(sourceScoreText(undefined), '整篇文档')
+  assert.equal(sourceScoreText(0.876), '相似度 88%')
+  assert.equal(sourceScoreText(0), '相似度 0%') // 真的有 0 分与"没有分数"是两回事
+})
+
+test('文档任务来源在导出件里写「整篇文档」', () => {
+  const md = build([
+    {
+      id: 2,
+      role: 'assistant',
+      data: {
+        answer: '对比结果',
+        sources: [
+          { index: 1, document_name: '员工考勤与休假管理制度.md', page_number: null, score: null, snippet: '全文' },
+        ],
+      },
+    },
+  ])
+  assert.ok(md.includes('- [1] 《员工考勤与休假管理制度.md》无页码，整篇文档'))
+  assert.ok(!md.includes('相似度 0%'), '不能把"没有分数"渲染成 0%')
 })

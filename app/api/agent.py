@@ -72,7 +72,9 @@ def agent_chat(
         top_k=payload.top_k,
         conversation_id=payload.conversation_id,
     )
-    message = "检索 %s 轮" % data["iterations"] if data["hit"] else "未使用知识库资料"
+    # 中性说法：文档任务的 iterations 也是 1，但那是"取了一轮文档"而非"检索了一轮" ——
+    # 走的是哪条路，真正的证据在 steps 里，不在这一句里替用户猜
+    message = "已获取资料（%s 轮）" % data["iterations"] if data["hit"] else "未使用知识库资料"
     return success(data, message)
 
 

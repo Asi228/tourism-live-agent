@@ -8,7 +8,7 @@ import MemoryPanel from '../components/MemoryPanel.vue'
 // 三处**纯逻辑**搬进 utils/，这样它们能被 `node --test` 直接跑（`npm test`）——
 // 今天栽过的跟头（answer_mode 漏接线、导出缺分页提示、开关翻错值）全长在这三块里。
 import { answerModeTag } from '../utils/answerMode'
-import { buildConversationMarkdown, formatStamp, scorePercent } from '../utils/exportMarkdown'
+import { buildConversationMarkdown, formatStamp, sourceScoreText } from '../utils/exportMarkdown'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -959,7 +959,7 @@ onBeforeUnmount(() => abortStream())
                             >[{{ s.index }}]</el-tag>
                             <span class="doc-name">{{ s.document_name }}</span>
                             <span v-if="s.page_number != null" class="page">第 {{ s.page_number }} 页</span>
-                            <span class="score">相似度 {{ scorePercent(s.score) }}%</span>
+                            <span class="score">{{ sourceScoreText(s.score) }}</span>
                           </div>
                           <div class="snippet">{{ s.snippet }}</div>
                         </div>
@@ -1025,7 +1025,7 @@ onBeforeUnmount(() => abortStream())
             <span v-if="sourceDetail.data.page_number != null">第 {{ sourceDetail.data.page_number }} 页</span>
             <span>第 {{ sourceDetail.data.chunk_index + 1 }} 块</span>
             <span>{{ sourceDetail.data.char_count }} 字</span>
-            <span class="src-score">相似度 {{ scorePercent(sourceDetail.source.score) }}%</span>
+            <span class="src-score">{{ sourceScoreText(sourceDetail.source.score) }}</span>
           </div>
           <pre class="src-body">{{ sourceDetail.data.content }}</pre>
         </template>

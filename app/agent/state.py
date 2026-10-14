@@ -30,6 +30,14 @@ class AgentState(TypedDict, total=False):
     # ---------- analyze 节点（LLM 决策）----------
     # 这个问题要不要查知识库？"你好"、"你能做什么"这类不该白跑一次检索
     need_retrieval: bool
+    # 怎么取得答案 —— analyze 输出的**路由指令**（三者之一）：
+    #   "search"：语义检索（默认，拿不准都归它）
+    #   "docs"  ：用户点名了某几份文档，走 fetch_docs 取全文再生成（总结 / 对比）
+    #   "skip"  ：寒暄 / 系统性问题，不取数
+    # need_retrieval 保留为它的粗粒度投影（mode != "skip"），旧调用方与 generate 的判断不动。
+    mode: str
+    # mode="docs" 时，模型从问题里点出的文档关键词（最多 3 个，见 graph._parse_analyze）
+    doc_names: list[str]
 
     # ---------- retrieve / evaluate 的累积 ----------
     retrieval_query: str      # 本轮实际使用的检索词（evaluate 可能改写它）

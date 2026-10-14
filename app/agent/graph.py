@@ -2,25 +2,28 @@
 
 **为什么这里需要状态机，而不是几行顺序调用**：
 
-    "要不要检索" → 取决于问题本身；
+    "要怎么取数"（检索 / 取指定文档 / 不取） → 取决于问题本身；
     "还要不要再检索一次" → 取决于**上一轮检索回来的资料够不够**。
 
 第二件事是顺序调用表达不了的：它需要「条件分支 + 回到上一步的循环 + 跨轮累积的状态」。
 LangGraph 的 StateGraph 正好把这三样变成显式的东西 ——
 图长什么样，Agent 的决策逻辑就长什么样，可以被画出来、被测试、被讲清楚。
 
-     analyze ──不需要检索──→ generate → END
+     analyze ──SKIP──→ generate → END
         │
-     需要检索
-        ↓
-     retrieve → evaluate ──够──→ generate → END
-                   │
-                不够且没到轮数上限
-                   └──────→ 回到 retrieve
+        ├─ SEARCH → retrieve → evaluate ──够──→ generate → END
+        │                         │
+        │                      不够且没到轮数上限
+        │                         └──────→ 回到 retrieve
+        │
+        └─ DOCS → fetch_docs → generate → END
+                 （取点名文档的全文：总结 / 对比；
+                   一份都没匹配到则**回落成检索**，误判的代价约等于零）
 
 **三道成本闸门**（Agent 比纯 RAG 多调几次模型，必须掐住）：
   1. `AGENT_MAX_ITERATIONS`：最多检索几轮（默认 2），到顶强制生成
-  2. 判定节点 `max_tokens=8`：只要一个词，不给它长篇大论的机会
+  2. 判定节点输出极短（`max_tokens` 8~32）：只要一个指令，不给它长篇大论的机会；
+     文档任务另有 `MAX_DOC_FETCH=3`（最多取三份文档）与"每份分预算"
   3. 调用方还会传 `recursion_limit`（LangGraph 自带的硬闸门，超限抛 GraphRecursionError）
 """
 
@@ -40,15 +43,24 @@ from app.services import memory_service
 
 logger = logging.getLogger(__name__)
 
-# 判定节点只要一个词。压到个位数既省钱，也让它没法"解释一堆"导致解析变脆。
+# 判定节点的输出上限。analyze 要输出三种指令之一（SEARCH / DOCS: a | b / SKIP），
+# 比"一个词"长一点（得容下文档名），但仍然压得很紧 —— 没有"解释一堆"的空间，
+# 输出短既是省钱，也让解析不脆；evaluate 保持 8 不动（它是真的只要一个词）。
 DECIDE_MAX_TOKENS = 8
+ANALYZE_MAX_TOKENS = 32
 
-ANALYZE_SYSTEM = """你是企业知识库问答系统的调度器。判断用户这句话**需不需要查询公司内部知识库**。
+# 文档任务一次最多取几份文档（成本闸门）。"对比两份"是典型场景，给到 3 留一点余量。
+MAX_DOC_FETCH = 3
 
-需要查：关于公司制度、流程、规定、产品的具体业务问题。
-不需要查：问候、自我介绍、"你能做什么"这类系统性问题。
+ANALYZE_SYSTEM = """你是企业知识库问答系统的调度器。判断用户这句话要怎么处理，只输出对应格式之一：
 
-只输出一个词：NEED 或 SKIP。不要解释，不要标点。"""
+· 问具体的业务问题（制度、流程、规定）→ 输出：SEARCH
+· 要针对**某几份具名文档**做操作（总结 / 对比 / 提取要点），句子里提到了文档关键词
+  → 输出：DOCS: 关键词1 | 关键词2
+  （关键词给**最有区分度的短词**，如"考勤"、"报销"；别带"制度""文档"这类通用后缀）
+· 问候、自我介绍、"你能做什么"这类系统性问题 → 输出：SKIP
+
+只输出上述格式之一，不要解释。"""
 
 EVALUATE_SYSTEM = """你是检索质量判断器。给你一个问题和一批已检索到的资料，判断**仅凭这些资料能否回答这个问题**。
 
@@ -89,6 +101,24 @@ def _business_hint(query: str) -> str | None:
     return None
 
 
+# 文档任务特征词：出现它们时**不**走业务词的规则短路 —— 用户可能是在点名某几份文档。
+# 例："对比考勤和报销制度"里"考勤"会命中业务词，但真正的意图是 DOCS（取全文再对比），
+# 短路成 SEARCH 会漏掉这个能力。
+#
+# 代价是对称地算过的：这类句子会多花一次 analyze 的模型调用；而**多判**成 DOCS 的
+# 代价 ≈ 0（文档名匹配不上会回落检索，见 fetch_docs）——漏判则功能静默失效。
+# 所以宁可多问模型一次。
+_DOC_TASK_WORDS = ("对比", "比较", "总结", "归纳", "提取", "梳理", "整理", "两份")
+
+
+def _doc_task_hint(query: str) -> str | None:
+    q = query or ""
+    for word in _DOC_TASK_WORDS:
+        if word in q:
+            return word
+    return None
+
+
 # generate 节点的三种产出模式。它回答的是"这次答案**性质**是什么"：
 # 只看 hit 分不清「检索了但没资料」与「压根没检索（寒暄直答）」，
 # 而这两者的可信度完全不同 —— 前者是"没有依据"，后者是"本就不该有依据"。
@@ -102,21 +132,26 @@ def _step(node: str, started: float, **detail) -> dict:
     return {"node": node, "ms": int((time.monotonic() - started) * 1000), **detail}
 
 
-def _parse_analyze(text: str) -> bool:
-    """解析 NEED / SKIP。**拿不准时默认去检索** —— 宁可多花一次检索的钱，
-    也不能让知识库问答凭空作答。"""
-    t = (text or "").strip().upper()
-    if not t:
-        return True
-    if "SKIP" in t:
-        return False
-    if "NEED" in t:
-        return True
-    if t.startswith("NO"):
-        return False
-    if t.startswith("YES"):
-        return True
-    return True
+def _parse_analyze(text: str) -> tuple[str, list[str]]:
+    """解析调度器的输出 → `(mode, doc_names)`，mode ∈ {"search", "docs", "skip"}。
+
+    拿不准时一律默认 "search" —— 与旧版 NEED/SKIP 同一个降级方向：
+    宁可多花一次检索的钱，也不能让知识库问答凭空作答（或反过来漏掉取数）。
+    """
+    t = (text or "").strip()
+
+    m = re.search(r"DOCS?\s*[:：]\s*(.+)", t, re.I)
+    if m:
+        # 分隔符兼容中英文：| ｜ , ， 、 /
+        names = [x.strip() for x in re.split(r"[|｜,，、/]", m.group(1)) if x.strip()]
+        names = [n[:40] for n in names[:MAX_DOC_FETCH]]  # 最多 3 份（成本闸门）
+        # 说了 DOCS 却没给出名字（模型跑偏）→ 当检索处理，别空转一轮
+        return ("docs", names) if names else ("search", [])
+
+    u = t.upper()
+    if "SKIP" in u or u.startswith("NO"):
+        return "skip", []
+    return "search", []
 
 
 def _parse_evaluate(text: str) -> tuple[bool, str | None]:
@@ -168,27 +203,32 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         started = time.monotonic()
 
         # 规则先手：命中业务词就不问模型了 —— 省一次调用，也堵住 SKIP 误判。
+        # ⚠️ 例外：句子里出现"对比 / 总结"这类文档任务词时不短路 —— 用户可能是在
+        # 点名某几份文档，要交给模型区分 SEARCH 与 DOCS（见 _DOC_TASK_WORDS 的代价分析）。
         hint = _business_hint(state["query"])
-        if hint:
+        if hint and not _doc_task_hint(state["query"]):
             return {
                 "need_retrieval": True,
+                "mode": "search",
                 "steps": state.get("steps", []) + [
-                    _step("analyze", started, decision="NEED", rule="business_word:%s" % hint)
+                    _step("analyze", started, decision="SEARCH", rule="business_word:%s" % hint)
                 ],
             }
 
         try:
             out = llm.chat(
-                ANALYZE_SYSTEM, state["query"], max_tokens=DECIDE_MAX_TOKENS, temperature=0
+                ANALYZE_SYSTEM, state["query"], max_tokens=ANALYZE_MAX_TOKENS, temperature=0
             )
-            need = _parse_analyze(out["answer"])
-            decision, tokens = out["answer"].strip()[:12], out["usage"] or {}
+            mode, names = _parse_analyze(out["answer"])
+            decision, tokens = out["answer"].strip()[:40], out["usage"] or {}
         except Exception as exc:  # noqa: BLE001
             # 判定失败不致命：当作"需要检索"继续走下去（失败要降级，不能整个问答挂掉）
             logger.warning("Agent 判定节点失败，按「需要检索」继续：%s", str(exc)[:200])
-            need, decision, tokens = True, "(判定失败→默认检索)", {}
+            mode, names, decision, tokens = "search", [], "(判定失败→默认检索)", {}
         return {
-            "need_retrieval": need,
+            "need_retrieval": mode != "skip",
+            "mode": mode,
+            "doc_names": names,
             "steps": state.get("steps", []) + [_step("analyze", started, decision=decision)],
             "usage": _accumulate(state.get("usage"), tokens),
         }
@@ -216,6 +256,75 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
                 _step("retrieve", started, iteration=iteration, query=keyword,
                       hits=len(got.get("results", [])), added=len(merged) - before,
                       total=len(merged))
+            ],
+        }
+
+    def fetch_docs(state: AgentState) -> dict:
+        """取「用户点名的文档」全文（文档任务：总结 / 对比）。
+
+        取来的块与检索结果**同构**（document_name / content / score…），
+        下游的拼上下文、生成引用全部复用同一条路 —— 它在图里只是"另一种取数"。
+
+        两条刻意的设计：
+          1. **匹配失败 → 回落普通检索**（而不是直接报"没找到"）。用户可能把名字
+             说得不一样（"考勤规定" vs《员工考勤与休假管理制度》），检索是保底；
+             LIKE 匹配是本地查询，零成本 —— 所以"模型多判了 DOCS"的代价约等于零，
+             这个性质是整个设计敢让模型大胆判的前提。
+          2. **每份文档分预算**：总预算按份数平摊。不设的话第一份就能把
+             RAG_MAX_CONTEXT_CHARS 吃光，对比任务里第二份被截成空 —— 那是静默的错误答案。
+        """
+        started = time.monotonic()
+        names = list(state.get("doc_names") or [])
+        # 每份的预算：总预算里**先留出标题行的余量**（下游 build_context 拼块时
+        # 每块会加 "[n] 来源：文档名"），再按份数平摊。
+        # ⚠️ 不留余量的话：两份各吃满 RAG_MAX_CONTEXT_CHARS/2，加标题刚好超限 ——
+        # 下游会把第二份整块丢掉，"对比"就悄悄变成了"只看第一份"。
+        # （这条是 test_docs_budget_split_between_documents 逼出来的）
+        overhead = 200
+        budget = max(200, (settings.RAG_MAX_CONTEXT_CHARS - overhead) // max(1, len(names)))
+
+        docs: list[dict] = []
+        truncated: list[str] = []
+        scope = None
+        for name in names:
+            got = tools.get_document(db, user, name, kb_ids=kb_ids)
+            scope = got.get("searched_kb_ids")
+            results = got.get("results") or []
+            if not results:
+                continue
+            item = results[0]
+            if len(item.get("content") or "") > budget:
+                item = {**item, "content": item["content"][:budget]}
+                truncated.append(item["document_name"])
+            docs.append(item)
+
+        if docs:
+            return {
+                "retrieved": docs,
+                "iterations": 1,
+                "searched_kb_ids": scope,
+                "added_last": len(docs),
+                "retrieval_query": state["query"],
+                "steps": state.get("steps", []) + [
+                    _step("fetch_docs", started, tool="get_document",
+                          asked=" | ".join(names), matched=len(docs),
+                          truncated=len(truncated))
+                ],
+            }
+
+        # 一份都没匹配到 → 回落普通检索（保底路径，轨迹里留痕）
+        logger.info("文档任务未匹配到文档（%s），回落检索", " | ".join(names)[:80])
+        got = tools.search_knowledge(db, user, state["query"], kb_ids=kb_ids, top_k=top_k)
+        results = got.get("results", [])
+        return {
+            "retrieved": results,
+            "iterations": 1,
+            "searched_kb_ids": got.get("searched_kb_ids"),
+            "added_last": len(results),
+            "retrieval_query": state["query"],
+            "steps": state.get("steps", []) + [
+                _step("fetch_docs", started, tool="get_document",
+                      asked=" | ".join(names), matched=0, fallback="search")
             ],
         }
 
@@ -315,7 +424,13 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         }
 
     def route_after_analyze(state: AgentState) -> str:
-        return "retrieve" if state.get("need_retrieval") else "generate"
+        # mode 缺失时从 need_retrieval 推（兼容旧状态形状）
+        mode = state.get("mode") or ("search" if state.get("need_retrieval") else "skip")
+        if mode == "skip":
+            return "generate"
+        if mode == "docs":
+            return "fetch_docs"
+        return "retrieve"
 
     def route_after_evaluate(state: AgentState) -> str:
         if state.get("sufficient"):
@@ -344,14 +459,19 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
     graph = StateGraph(AgentState)
     graph.add_node("analyze", analyze)
     graph.add_node("retrieve", retrieve)
+    graph.add_node("fetch_docs", fetch_docs)
     graph.add_node("evaluate", evaluate)
     graph.add_node("generate", generate)
 
     graph.add_edge(START, "analyze")
     graph.add_conditional_edges(
-        "analyze", route_after_analyze, {"retrieve": "retrieve", "generate": "generate"}
+        "analyze",
+        route_after_analyze,
+        {"retrieve": "retrieve", "fetch_docs": "fetch_docs", "generate": "generate"},
     )
     graph.add_edge("retrieve", "evaluate")
+    # 文档任务直连 generate：全文已取到（或已回落检索），没有"够不够"要判、也没有词可改写
+    graph.add_edge("fetch_docs", "generate")
     graph.add_conditional_edges(
         "evaluate", route_after_evaluate, {"retrieve": "retrieve", "generate": "generate"}
     )
