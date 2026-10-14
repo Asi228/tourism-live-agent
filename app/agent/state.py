@@ -42,12 +42,21 @@ class AgentState(TypedDict, total=False):
     # ---------- retrieve / evaluate 的累积 ----------
     retrieval_query: str      # 本轮实际使用的检索词（evaluate 可能改写它）
     retrieved: list[dict]     # 累计检索结果（按 chunk_id 去重）
-    iterations: int           # 已经检索了几轮
+    iterations: int           # 已经**检索**了几轮（文档任务不检索，是 0）
+    # 本次是否**取过数**（检索 或 取指定文档）。与 iterations 拆开是有原因的：
+    # 文档任务取到了全文但没有"检索轮数"可言（iterations=0），而 searched_kb_ids
+    # 的判定要按"取没取过数"—— 早先两者共用一个字段，导致界面把文档任务显示成
+    # "检索轮数：1"（它一次检索都没做），或者反过来把范围标错。
+    fetched: bool
     added_last: int           # 最近一轮**新增**了几条（去重后）—— 用来判断"换词有没有用"
     sufficient: bool          # 现有资料够不够回答
     # 检索层算出的**真实范围**（已与用户权限求交集），由 retrieve 节点写入。
     # 它是检索结果的一部分，不是入参 kb_ids 的回显 —— 后者没求过交集。
     searched_kb_ids: list[int] | None
+    # 取数过程的"诚实说明"：未匹配到整篇的名字 / 因预算被裁的名字 / 被截断的文档名。
+    # 由 fetch_docs 写入、generate 拼进提示词 —— 让答案主动交代"缺了什么"，
+    # 而不是看起来完整（缺一半的"对比"比答不出来更坏）。
+    doc_notes: list[str]
 
     # ---------- 最终产物 ----------
     answer: str

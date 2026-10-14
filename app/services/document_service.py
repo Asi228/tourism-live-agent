@@ -265,6 +265,9 @@ def _purge_vectors(document_id: int) -> None:
 
         removed = vector_store.delete_by_document(document_id)
         if removed:
-            logger.info("已清理向量 doc_id=%s count=%s", document_id, removed)
+            # 删除同样要落盘：不落盘的删除记录在服务端重启后可能没生效 ——
+            # 已删文档的向量会"复活"，变成命中却取不到正文的孤儿向量
+            logger.info("已清理向量 doc_id=%s count=%s flushed=%s",
+                        document_id, removed, vector_store.flush())
     except Exception as e:  # noqa: BLE001
         logger.warning("清理向量失败（不影响文档删除）doc_id=%s err=%s", document_id, e)

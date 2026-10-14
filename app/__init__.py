@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -45,6 +46,31 @@ def _resolve_cors_origins() -> list[str]:
     return []
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """启动时把向量集合"拉起来"一次 —— 这是"提问查不到、重灌向量才好"那起现象的自愈入口。
+
+    为什么在启动做、而不是塞进检索路径：`load_collection` 幂等但是一次网络往返，
+    放进每次检索会让正常路径白白变慢；而它要修的恰恰就是"服务刚起来那一下读不到数据"
+    这个时刻 —— 启动时补一次，成本一次，覆盖整段时间窗口。
+
+    刻意**不阻断启动**：Milvus 挂的时候应用仍要能起来（登录、用户、知识库/文档的 CRUD
+    都不依赖它），所以这里只留一条 warning。代价说清楚：Milvus 不可达时启动会多等
+    最多 `MILVUS_TIMEOUT` 秒（默认 10s）—— 这是"能自愈"换来的，如果哪天嫌慢，
+    该改的是把探测换成 `vector_store.probe()` 那条短超时路径，而不是删掉这次加载。
+    """
+    log = logging.getLogger(__name__)
+    from app.rag import vector_store
+
+    try:
+        if not vector_store.ensure_loaded():
+            log.warning("启动时向量集合未加载完成：检索可能读不到已存在的向量（见「知识库」页的向量库自检）")
+    except Exception as exc:  # noqa: BLE001
+        # get_client() 连不上时会抛 AppException —— 那不能让服务起不来
+        log.warning("启动时加载向量集合失败（不阻断启动）：%s", str(exc)[:150])
+    yield
+
+
 def create_app() -> FastAPI:
     """应用工厂：组装日志、中间件、异常处理、路由。"""
     setup_logging(settings.DEBUG)
@@ -64,6 +90,7 @@ def create_app() -> FastAPI:
         title=settings.APP_NAME,
         version="0.1.0",
         debug=False,
+        lifespan=_lifespan,
     )
 
     allowed_origins = _resolve_cors_origins()

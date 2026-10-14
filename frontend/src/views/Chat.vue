@@ -885,7 +885,9 @@ onBeforeUnmount(() => abortStream())
                     <span v-if="m.mode === 'rag' && !m.data.redacted">
                       重排：{{ m.data.reranked ? '已重排' : '未重排' }}
                     </span>
-                    <span v-if="m.mode === 'agent' && m.data.iterations != null">检索轮数：{{ m.data.iterations }}</span>
+                    <!-- 只在**真的检索过**时显示轮数（>0）：文档任务与寒暄的 iterations 是 0，
+                         "检索轮数：0" 不是信息而是噪声；文档任务"取没取过数"看 sources 与命中标签。 -->
+                    <span v-if="m.mode === 'agent' && m.data.iterations > 0">检索轮数：{{ m.data.iterations }}</span>
                     <span v-if="m.data.model">模型：{{ m.data.model }}</span>
                     <span v-if="m.data.usage">tokens：{{ m.data.usage.total_tokens }}</span>
                     <span v-if="m.data.elapsed_ms != null">耗时：{{ m.data.elapsed_ms }}ms</span>

@@ -45,12 +45,17 @@ def mute_milvus(monkeypatch):
     """
     calls = {
         "upsert": [], "search": [], "delete_doc": [], "delete_kb": [],
-        "ensured": 0, "order": [],
+        "ensured": 0, "flushed": 0, "order": [],
     }
 
     def fake_ensure():
         calls["ensured"] += 1
         calls["order"].append("ensure")
+
+    def fake_flush():
+        calls["flushed"] += 1
+        calls["order"].append("flush")
+        return True
 
     def fake_upsert(rows):
         calls["upsert"].extend(rows)
@@ -77,6 +82,7 @@ def mute_milvus(monkeypatch):
     monkeypatch.setattr(vector_store, "search", fake_search)
     monkeypatch.setattr(vector_store, "delete_by_document", fake_delete_doc)
     monkeypatch.setattr(vector_store, "delete_by_kb", fake_delete_kb)
+    monkeypatch.setattr(vector_store, "flush", fake_flush)
     return calls
 
 
@@ -611,8 +617,10 @@ def test_deleting_document_purges_vectors(client, make_user, upload_env, mute_mi
 
     assert client.delete(f"/api/documents/{doc_id}", headers=admin["headers"]).json()["code"] == 0
     assert doc_id in mute_milvus["delete_doc"]
-    # 删除动作必须发生在最后（处理阶段那次更早）
-    assert mute_milvus["order"][-1] == "delete_doc:%s" % doc_id
+    # 删除动作必须发生在最后（处理阶段那次更早）。
+    # flush 是删除之后的落盘，不算"又动了一次向量"，所以先把它剔出去再比。
+    moves = [x for x in mute_milvus["order"] if x != "flush"]
+    assert moves[-1] == "delete_doc:%s" % doc_id
 
 
 def test_deleting_kb_purges_vectors(client, make_user, upload_env, mute_milvus):
@@ -638,3 +646,271 @@ def test_vector_purge_failure_does_not_block_delete(
 
     r = client.delete(f"/api/documents/{doc_id}", headers=admin["headers"])
     assert r.json()["code"] == 0
+
+
+# ==================== 「数据在不在」与「读不读得到」必须分开 ====================
+#
+# 2026-10-14 实测：Milvus 2.6.15 上出现过 `get_load_state()=Loaded` 但 search/count
+# 一律返回空的状况 —— 那 10 条向量用主键点查查得到，检索却读不到。
+# 当时的自检因此报"向量总数 0、3 篇文档全缺向量"，把人引去重灌**根本没丢**的数据。
+# 下面这组用例守的就是：这种状态必须被说成 not_visible，而且**不许**报成缺向量。
+
+
+def _stub_reads(monkeypatch, **over):
+    """把 self_check 用到的五个读数钉成固定值（默认"一切正常"）。"""
+    values = {
+        "count": 10,
+        "stats_row_count": 10,
+        "list_kb_ids": [1],
+        "list_document_ids": [1],
+    }
+    values.update(over)
+    for name, value in values.items():
+        if callable(value):
+            monkeypatch.setattr(vector_store, name, value)
+        else:
+            monkeypatch.setattr(vector_store, name, lambda *a, v=value, **kw: v)
+
+
+def test_count_raises_instead_of_disguising_read_failure_as_zero(monkeypatch):
+    """🔴 读失败必须抛，不能 `return 0`。0 到了自检里就是"一条向量都没有"。"""
+
+    class Boom:
+        def query(self, **kwargs):
+            raise RuntimeError("collection not loaded")
+
+    monkeypatch.setattr(vector_store, "get_client", lambda: Boom())
+    with pytest.raises(AppException) as exc:
+        vector_store.count()
+    assert exc.value.code == ErrorCode.MILVUS_ERROR
+
+
+def test_stats_row_count_reads_the_server_side_number(monkeypatch):
+    """服务端元数据视角的行数（含未压缩的删除记录），只用来判"有没有数据"。"""
+
+    class Fake:
+        def get_collection_stats(self, name):
+            return {"row_count": 27}
+
+    monkeypatch.setattr(vector_store, "get_client", lambda: Fake())
+    assert vector_store.stats_row_count() == 27
+
+
+def test_ensure_collection_loads_an_existing_collection(monkeypatch):
+    """集合已存在时也要 load —— 旧实现直接 return，应用因此永远不会自愈。"""
+    loaded = []
+
+    class Fake:
+        def has_collection(self, name):
+            return True
+
+        def load_collection(self, collection_name):
+            loaded.append(collection_name)
+
+    monkeypatch.setattr(vector_store, "get_client", lambda: Fake())
+    vector_store.ensure_collection()
+    assert loaded == [settings.MILVUS_COLLECTION], "已存在就跳过 load，读不到的集合永远好不了"
+
+
+def test_ensure_loaded_swallows_failure_because_it_is_a_self_heal():
+    """load 失败不能把一次本来能成功的向量化打挂 —— 只记日志、返回 False。"""
+
+    class Boom:
+        def has_collection(self, name):
+            return True
+
+        def load_collection(self, collection_name):
+            raise RuntimeError("querynode down")
+
+    assert vector_store._load_into_querynode(Boom(), settings.MILVUS_COLLECTION) is False
+
+
+def test_vectorize_flushes_after_writing(
+    client, make_user, session_factory, upload_env, mute_milvus, mute_embedding
+):
+    """写完必须 flush：不落盘的向量在 Milvus 重启后对检索就是不可见的。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    doc_id = _upload(client, admin["headers"], kb_id, "年假制度说明。" * 20)
+
+    body = client.post(f"/api/documents/{doc_id}/vectorize", headers=admin["headers"]).json()
+    assert body["code"] == 0, body
+    assert body["data"]["flushed"] is True
+    # 只看写入这一段：上传时的"处理"也会清一次向量（因此也 flush 过一次），
+    # 这里钉的是**upsert 之后必须紧跟 flush**，而不是"整个生命周期只 flush 一次"。
+    writes = [x for x in mute_milvus["order"] if x in ("upsert", "flush")]
+    assert writes[-2:] == ["upsert", "flush"], "flush 必须在写入之后，否则重启后读不到"
+
+
+def test_vectorize_reports_flush_failure_without_losing_the_write(
+    client, make_user, upload_env, mute_milvus, mute_embedding, monkeypatch
+):
+    """flush 失败时：写入这件事仍然成立，但必须**当场说出来**，不能报"完成"。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    doc_id = _upload(client, admin["headers"], kb_id, "内容" * 30)
+
+    monkeypatch.setattr(vector_store, "flush", lambda: False)
+    body = client.post(f"/api/documents/{doc_id}/vectorize", headers=admin["headers"]).json()
+    assert body["code"] == 0
+    assert body["data"]["vectorized"] >= 1        # 数据确实写了
+    assert body["data"]["flushed"] is False       # 但没落盘
+    assert "未落盘" in body["message"]
+
+
+def test_self_check_calls_hidden_vectors_not_visible(
+    client, make_user, upload_env, mute_milvus, monkeypatch
+):
+    """核心回归：检索可见 0 条、服务端却有数据 → 报 not_visible，且**不许**报成缺向量。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    doc_id = _upload(client, admin["headers"], kb_id, "内容" * 30)
+
+    monkeypatch.setattr(
+        vector_store, "health",
+        lambda: {"server_version": "2.6.15", "collection": "document_chunks",
+                 "collection_exists": True, "collections": ["document_chunks"]},
+    )
+    _stub_reads(monkeypatch, count=0, stats_row_count=27,
+                list_kb_ids=[kb_id], list_document_ids=[doc_id])
+
+    data = client.get("/api/vector/health", headers=admin["headers"]).json()["data"]
+    assert data["visibility"] == "not_visible", data
+    assert data["vector_count"] == 0
+    assert data["stored_rows"] == 27
+    # 🔴 向量其实一条都不缺 —— 旧实现会把这里算成 1（因为 list_document_ids 读失败返回 []）
+    assert data["documents_without_vectors"] == 0
+
+
+def test_self_check_reports_missing_only_when_there_is_really_nothing(
+    client, make_user, upload_env, mute_milvus, monkeypatch
+):
+    """对照组：两边都是 0 才是真的缺向量，这时才该建议去点批量向量化。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    _upload(client, admin["headers"], kb_id, "内容" * 30)
+
+    monkeypatch.setattr(
+        vector_store, "health",
+        lambda: {"server_version": "2.6.15", "collection": "document_chunks",
+                 "collection_exists": True, "collections": ["document_chunks"]},
+    )
+    _stub_reads(monkeypatch, count=0, stats_row_count=0, list_kb_ids=[], list_document_ids=[])
+
+    data = client.get("/api/vector/health", headers=admin["headers"]).json()["data"]
+    assert data["visibility"] == "missing", data
+    assert data["documents_without_vectors"] == 1
+    assert "向量化" in data["visibility_hint"]
+
+
+def test_self_check_survives_a_failed_read_and_says_so(
+    client, make_user, upload_env, mute_milvus, monkeypatch
+):
+    """读数取不到时：接口不能 500，数字要成 null，并明确"结论不可信"。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    _upload(client, admin["headers"], kb_id, "内容" * 30)
+
+    monkeypatch.setattr(
+        vector_store, "health",
+        lambda: {"server_version": "2.6.15", "collection": "document_chunks",
+                 "collection_exists": True, "collections": ["document_chunks"]},
+    )
+
+    def boom(**kwargs):
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量条数统计失败，请稍后重试")
+
+    _stub_reads(monkeypatch, count=boom, stats_row_count=boom)
+
+    r = client.get("/api/vector/health", headers=admin["headers"])
+    assert r.json()["code"] == 0, "自检接口不该因为一个读数失败就整体报错"
+    data = r.json()["data"]
+    assert data["vector_count"] is None, "读失败必须显示成 null，而不是 0"
+    assert data["visibility"] == "unknown"
+    assert data["read_errors"], "要留下「哪个读数取失败」的痕迹"
+
+
+def test_admin_overview_shows_dash_instead_of_zero_when_count_fails(
+    client, make_user, mute_milvus, monkeypatch
+):
+    """概览页同一口径：向量条数读不到时给 null（前端显示"—/不可用"），不是 0。"""
+    admin = make_user("admin")
+
+    def boom():
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量条数统计失败")
+
+    monkeypatch.setattr(vector_store, "count", boom)
+    body = client.get("/api/stats/overview", headers=admin["headers"]).json()
+    assert body["code"] == 0
+    assert body["data"]["admin"]["vector_count"] is None
+
+
+# ==================== 落盘要覆盖删除，同实例陌生集合要指出来 ====================
+
+
+def test_flush_never_raises_even_when_milvus_is_unreachable():
+    """🔴 flush 的契约是 True/False，不是抛异常。
+
+    否则会出现最难受的一种失败：**向量已经写成功了**，却因为随后那一步落盘连不上
+    而让整个向量化请求报错 —— 用户看到失败，数据其实进去了。
+    测的是执行体 `_flush_best_effort`：`flush` 这个名字在测试里会被 conftest 的
+    写操作哑元替掉，直接调它测到的不是真实现。
+    """
+    def boom():
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量服务暂时不可用，请稍后重试")
+
+    assert vector_store._flush_best_effort(boom, "document_chunks") is False
+
+    class Ok:
+        def flush(self, name):
+            return None
+
+    assert vector_store._flush_best_effort(lambda: Ok(), "document_chunks") is True
+
+
+def test_deleting_a_document_flushes_the_removal(
+    client, make_user, upload_env, mute_milvus
+):
+    """删除同样要落盘：不落盘的删除记录重启后可能没生效，向量会"复活"成孤儿。"""
+    admin = make_user("admin")
+    kb_id = _kb(client, admin["headers"])
+    doc_id = _upload(client, admin["headers"], kb_id, "内容" * 30)
+
+    assert client.delete(f"/api/documents/{doc_id}", headers=admin["headers"]).json()["code"] == 0
+    order = mute_milvus["order"]
+    # 上传时的"处理"也会清一次向量，所以钉的是**最后两步**：删除 → 紧跟落盘
+    assert order[-2:] == ["delete_doc:%s" % doc_id, "flush"], \
+        "删除记录没落盘 → 重启后向量会复活成孤儿"
+
+
+def test_foreign_collections_are_reported_not_dropped(monkeypatch):
+    """同实例里结构不对的集合必须被点名（它有行数，但本应用永远读不到）。"""
+    class Fake:
+        def list_collections(self):
+            return ["document_chunks", "docs", "broken"]
+
+        def describe_collection(self, name):
+            if name == "broken":
+                raise RuntimeError("describe failed")
+            fields = ["chunk_id", "vector"] if name == "document_chunks" else ["id", "vector"]
+            return {"fields": [{"name": f} for f in fields]}
+
+    monkeypatch.setattr(vector_store, "get_client", lambda: Fake())
+    got = vector_store.foreign_collections()
+    assert got == ["docs"], "只有主键不是 chunk_id 的才算陌生集合；describe 失败的要跳过"
+
+
+def test_self_check_surfaces_foreign_collections(
+    client, make_user, mute_milvus, monkeypatch
+):
+    admin = make_user("admin")
+    monkeypatch.setattr(
+        vector_store, "health",
+        lambda: {"server_version": "2.6.15", "collection": "document_chunks",
+                 "collection_exists": True, "collections": ["document_chunks", "docs"]},
+    )
+    _stub_reads(monkeypatch)
+    monkeypatch.setattr(vector_store, "foreign_collections", lambda: ["docs"])
+
+    data = client.get("/api/vector/health", headers=admin["headers"]).json()["data"]
+    assert data["foreign_collections"] == ["docs"]

@@ -66,3 +66,8 @@ class VectorizeResult(BaseModel):
 
     collection: str
     vectorized: int = Field(description="本次写入 Milvus 的向量条数")
+    flushed: bool = Field(
+        default=True,
+        description="是否已落盘。**false = 数据只在内存段里**，Milvus 重启后检索就读不到了；"
+                    "此时应提示管理员去向量库自检看 visibility",
+    )

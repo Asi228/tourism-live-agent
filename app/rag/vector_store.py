@@ -150,12 +150,100 @@ def health() -> dict:
 # ==================== 建表 ====================
 
 
+def _load_into_querynode(client, name: str) -> bool:
+    """把集合加载进检索节点。**幂等**，失败只记日志并返回 False。
+
+    🔴 为什么"集合已存在"还不够（2026-10-14 实测定位到的现象）：
+    Milvus 2.6.15 上出现过 `get_load_state()=Loaded` 但检索/统计一律返回空的状况 ——
+    那 10 条向量用**主键点查**查得到，`search()` 与 `count(*)` 却一条都读不到，
+    用户侧的表现就是"文档明明向量化过，提问却说没找到；重新向量化一次立刻正常"。
+    （重新向量化能"治好"它，是因为那次写入顺带把数据变成了可读状态。）
+    `load_collection` 是幂等的，所以在"集合已存在"这条分支上也补一次，
+    让应用有机会自愈，而不是每次都要人肉去点一遍向量化。
+
+    这里**吞异常**是刻意的：调用方是"尽力把系统弄成可用"的语义，
+    加载失败不该把一次本来能成功的向量化整个打挂。
+    """
+    try:
+        if not client.has_collection(name):
+            return False
+        client.load_collection(collection_name=name)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("加载 Milvus collection=%s 失败（不阻断，检索可能读不到数据）: %s", name, exc)
+        return False
+
+
+def ensure_loaded() -> bool:
+    """公开入口：连上客户端再加载一次。**测试里会被哑元替掉**（见 conftest 的写操作防护）。"""
+    return _load_into_querynode(get_client(), settings.MILVUS_COLLECTION)
+
+
+def _flush_best_effort(client_provider, name: str) -> bool:
+    """落盘的执行体：**任何异常都吞掉**，只返回 True/False。
+
+    连不上时 `client_provider()`（也就是 `get_client`）自己会抛，所以它一并放进 try：
+    调用方拿到的只会是布尔，不会出现"数据已经写成功、却因为落盘这一步回不了头
+    而整个请求失败"那种最难看的失败。
+    （拆成"执行体 + 薄壳"是为了能被用例直接调用：`flush` 这个名字在测试里会被
+    conftest 的写操作哑元替掉，直接测 `flush()` 测的是哑元。）
+    """
+    try:
+        client_provider().flush(name)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Milvus flush 失败 collection=%s err=%s", name, str(exc)[:200])
+        return False
+
+
+def flush() -> bool:
+    """把内存段落盘。**不抛异常**，失败返回 False，由调用方决定怎么向用户表述。
+
+    为什么必须显式 flush：不 flush 的话，写入只活在 growing segment 里，
+    服务端重启后那些数据对检索路径就是**不可见**的 —— 上面那条现象的根源。
+    写完就 flush，"向量化完成"这句话才在重启之后依然成立。
+
+    实测对照（2026-10-14，同一个 collection）：flush 前 `list_persistent_segments`
+    全是 `num_rows=0` 的段（一条数据都没落盘），flush 之后立刻出现
+    `rows=37, state=Flushed` 并且进入已加载段 —— 所以这不是"以防万一"，是补上缺的那一步。
+    """
+    return _flush_best_effort(get_client, settings.MILVUS_COLLECTION)
+
+
+def foreign_collections() -> list[str]:
+    """列出**结构不是本应用的**那些集合（同一个 Milvus 里的其它库）。
+
+    判据用主键字段名：本应用的 collection 主键是 `chunk_id`。
+    为什么要专门报它：实测同一个 Milvus 里躺着一个 10 行的 `docs` 集合（字段只有
+    `id` + `vector`），排查时"看到有向量"就会误判数据在，而本应用根本读不到它 ——
+    这次绕的弯路有一半是它造成的。它不该被本应用删（不属于我们的东西），但必须被指出来。
+
+    单个集合 describe 失败就跳过：这是自检的附加信息，不该因为它把整个自检搞挂。
+    """
+    client = get_client()
+    ours = settings.MILVUS_COLLECTION
+    foreign: list[str] = []
+    for name in client.list_collections():
+        if name == ours:
+            continue
+        try:
+            fields = {f.get("name") for f in client.describe_collection(name).get("fields", [])}
+        except Exception as exc:  # noqa: BLE001
+            logger.info("describe collection=%s 失败，跳过陌生集合判断 err=%s", name, str(exc)[:120])
+            continue
+        if F_ID not in fields:
+            foreign.append(name)
+    return sorted(foreign)
+
+
 def ensure_collection() -> None:
-    """建 collection + 索引并 load。**幂等**：已存在就直接返回。"""
+    """建 collection + 索引并 load。**幂等**：已存在也要确保它处于可检索状态。"""
     client = get_client()
     name = settings.MILVUS_COLLECTION
 
     if client.has_collection(name):
+        # 早返回是旧实现的问题所在：存在 ≠ 可检索（见 _load_into_querynode 的实测记录）
+        _load_into_querynode(client, name)
         return
 
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -184,6 +272,9 @@ def ensure_collection() -> None:
         "已创建 Milvus collection=%s dim=%s metric=%s",
         name, settings.EMBEDDING_DIM, METRIC_TYPE,
     )
+    # 新建之后同样要确保 load（create_collection 在不同版本上是否自动加载并不一致，
+    # 而这里不依赖那个差异：显式调一次，幂等且便宜）
+    _load_into_querynode(client, name)
 
 
 # ==================== 写 ====================
@@ -252,7 +343,15 @@ def delete_by_kb(knowledge_base_id: int) -> int:
 
 
 def count(kb_ids: list[int] | None = None) -> int:
-    """统计条数。kb_ids 为 None 表示全部；空列表返回 0（不是"全部"）。"""
+    """统计条数。kb_ids 为 None 表示全部；空列表返回 0（不是"全部"）。
+
+    🔴 读失败**抛异常**，不再返回 0。旧实现 `except: return 0` 把"读不到"和
+    "真的是空的"压成了同一个值，后果是自检会在数据明明存在时报"向量总数 0 /
+    缺向量文档 N 篇"（2026-10-14 那次排查就被这个假警报带偏过一轮 ——
+    当时向量一条都没少，只是检索路径读不到）。
+    调用方要区分这两种情况：`stats_service` 已经会 catch 并把该项显示成"不可用"，
+    `vector_service.self_check()` 会把它记进 `read_errors`。
+    """
     if kb_ids is not None and not kb_ids:
         return 0
     expr = build_kb_filter(kb_ids)
@@ -266,10 +365,27 @@ def count(kb_ids: list[int] | None = None) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("统计 Milvus 条数失败 err=%s", exc)
-        return 0
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量条数统计失败，请稍后重试") from exc
     if not rows:
         return 0
     return int(list(rows[0].values())[0])
+
+
+def stats_row_count() -> int:
+    """服务端**元数据视角**的行数（含尚未被检索节点读到的段）。
+
+    只给自检用，而且只和 `count()` **配对**看：
+      · `count()`=0 而这里 > 0  →  数据在，但检索读不到（未加载 / 未落盘）
+      · 两边都 0                →  真的没数据，该去点向量化
+    这两个读数来自不同子系统，所以它们不一致本身就是最有价值的信号。
+    """
+    client = get_client()
+    try:
+        stats = client.get_collection_stats(settings.MILVUS_COLLECTION)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 Milvus collection_stats 失败 err=%s", exc)
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量库状态读取失败，请稍后重试") from exc
+    return int((stats or {}).get("row_count", 0))
 
 
 def list_kb_ids() -> list[int]:
@@ -288,8 +404,10 @@ def list_kb_ids() -> list[int]:
             limit=16384,
         )
     except Exception as exc:  # noqa: BLE001
+        # 同 count()：读失败不能伪装成"库里没有"。返回 [] 会让自检算出
+        # "孤儿向量 0 条"，而 purge 流程一旦基于这个假读数做决定就是误删。
         logger.warning("读取 knowledge_base_id 列表失败 err=%s", exc)
-        return []
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量库知识库清单读取失败，请稍后重试") from exc
     return sorted({int(r[F_KB]) for r in rows if r.get(F_KB) is not None})
 
 
@@ -311,8 +429,9 @@ def list_document_ids() -> list[int]:
             limit=16384,
         )
     except Exception as exc:  # noqa: BLE001
+        # 同 count()：读失败伪装成"什么都没索引过"，自检就会把全部文档报成缺向量
         logger.warning("读取 document_id 列表失败 err=%s", exc)
-        return []
+        raise AppException(ErrorCode.MILVUS_ERROR, "向量库文档清单读取失败，请稍后重试") from exc
     return sorted({int(r[F_DOC]) for r in rows if r.get(F_DOC) is not None})
 
 

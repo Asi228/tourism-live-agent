@@ -96,12 +96,13 @@ def vectorize_document(db: Session, user: User, document_id: int) -> dict:
     vector_store.delete_by_document(doc.id)
     rows = _embed_chunks(chunks, doc.knowledge_base_id)
     written = vector_store.upsert(rows)
+    flushed = vector_store.flush() if written else True   # 理由同 vectorize_kb
 
     logger.info(
-        "文档向量化完成 doc_id=%s chunks=%s collection=%s",
-        doc.id, written, settings.MILVUS_COLLECTION,
+        "文档向量化完成 doc_id=%s chunks=%s collection=%s flushed=%s",
+        doc.id, written, settings.MILVUS_COLLECTION, flushed,
     )
-    return {"collection": settings.MILVUS_COLLECTION, "vectorized": written}
+    return {"collection": settings.MILVUS_COLLECTION, "vectorized": written, "flushed": flushed}
 
 
 def vectorize_kb(db: Session, user: User, kb_id: int) -> dict:
@@ -128,11 +129,15 @@ def vectorize_kb(db: Session, user: User, kb_id: int) -> dict:
         vector_store.delete_by_document(doc.id)
         written += vector_store.upsert(_embed_chunks(chunks, kb_id))
 
+    # 写完立刻落盘：不 flush 的话这些数据只活在内存段里，Milvus 一重启就对检索不可见
+    # （2026-10-14 那次"提问查不到、重灌向量才好"的现象就是这么来的）。
+    # 失败不推翻"已写入"这个事实，只是要如实标出来。一条都没写就不去惊动服务端。
+    flushed = vector_store.flush() if written else True
     logger.info(
-        "知识库向量化完成 kb_id=%s documents=%s chunks=%s",
-        kb_id, len(docs), written,
+        "知识库向量化完成 kb_id=%s documents=%s chunks=%s flushed=%s",
+        kb_id, len(docs), written, flushed,
     )
-    return {"collection": settings.MILVUS_COLLECTION, "vectorized": written}
+    return {"collection": settings.MILVUS_COLLECTION, "vectorized": written, "flushed": flushed}
 
 
 # ==================== 检索 ====================
@@ -329,31 +334,119 @@ def self_check(db: Session) -> dict:
 
     给管理员的运维接口用。**刻意不返回 Milvus 的地址** ——
     那是内网拓扑信息，要排查连接问题看服务端日志就够了（get_client 里已经打了）。
+
+    🔴 每个读数**单独取、单独记失败原因**。旧实现把读失败压成 0/[]（`count()`
+    吞异常返回 0），于是"读不到"和"真的是空的"在界面上完全一样 ——
+    一次集合未加载就被报成"向量总数 0、3 篇文档全缺向量"，把人引去重灌数据，
+    而数据其实一条都没少（2026-10-14 实测绕了这一圈才定位到真因）。
+    现在这两件事是分开的：`read_errors` 非空 → 结论不可信；`visibility` 才是要看的那句人话。
     """
     try:
         info = vector_store.health()
     except AppException as exc:
         return {"available": False, "reason": exc.message}
 
-    orphans = _orphan_kb_ids(db)
-    missing = _documents_without_vectors(db)
+    read_errors: dict[str, str] = {}
+
+    def _read(name: str, fn, fallback):
+        """取一个读数；失败就记下来并返回 fallback（None 表示"不知道"）。"""
+        try:
+            return fn()
+        except AppException as exc:
+            read_errors[name] = exc.message
+            logger.warning("向量自检读数失败 %s err=%s", name, exc.message)
+            return None
+
+    visible = _read("vector_count", vector_store.count, None)
+    # stored_rows 来自服务端元数据，**含已删除但尚未压缩的行**，所以它只用来判
+    # "有没有数据"，绝不和 visible 比相等（实测见过 stored=27 / visible=10）。
+    stored = _read("stored_rows", vector_store.stats_row_count, None)
+    kb_ids = _read("kb_ids", vector_store.list_kb_ids, None)
+    indexed_ids = _read("document_ids", vector_store.list_document_ids, None)
+
+    orphans: list[int] | None = None
+    orphan_count: int | None = None
+    if kb_ids is not None:
+        known = {kb.id for kb in knowledge_repository.list_all(db)}
+        orphans = sorted(k for k in kb_ids if k not in known)
+        orphan_count = sum(
+            _read("orphan_count_%s" % k, lambda k=k: vector_store.count([k]), 0) or 0
+            for k in orphans
+        )
+
+    missing = _documents_without_vectors(db, indexed_ids)
+    expected = _expected_chunk_count(db)
+    visibility, hint = _visibility_verdict(visible, stored, expected, read_errors)
+
     return {
         "available": True,
         "server_version": info["server_version"],
         "collection": info["collection"],
         "collection_exists": info["collection_exists"],
         "collections": info["collections"],
-        "vector_count": vector_store.count(),
-        "kb_ids_in_vector_store": vector_store.list_kb_ids(),
+        "vector_count": visible,
+        "kb_ids_in_vector_store": kb_ids,
         "orphan_kb_ids": orphans,
-        "orphan_vector_count": sum(vector_store.count([k]) for k in orphans),
+        "orphan_vector_count": orphan_count,
         # 与孤儿向量配对的反向问题：文档处理好了，但一条向量都没有 → 永远检索不到
-        "documents_without_vectors": len(missing),
-        "documents_without_vectors_sample": missing[:10],
+        # （None = 读不到，不当成"全缺"）
+        "documents_without_vectors": None if missing is None else len(missing),
+        "documents_without_vectors_sample": (missing or [])[:10],
+        # ---- 新增：把"数据在不在"和"读不读得到"分开说清楚 ----
+        "stored_rows": stored,
+        "expected_chunks": expected,
+        "visibility": visibility,
+        "visibility_hint": hint,
+        "read_errors": read_errors or None,
+        # 同一个 Milvus 里结构不属于本应用的集合（永远不会被检索用到，但容易看成"有数据"）
+        "foreign_collections": _read("foreign_collections", vector_store.foreign_collections, None),
     }
 
 
-def _documents_without_vectors(db: Session) -> list[dict]:
+def _expected_chunk_count(db: Session) -> int:
+    """MySQL 侧"应该有的向量条数" = 所有已完成文档的切块数之和。
+
+    用 `documents.chunk_count` 而不是现算 chunk 表：这个字段在文档处理里
+    与切块同事务写入，而自检不该为了一个指标去全表 COUNT。
+    """
+    return sum(
+        d.chunk_count or 0
+        for d in document_repository.list_all(db)
+        if d.status == STATUS_COMPLETED
+    )
+
+
+def _visibility_verdict(
+    visible: int | None, stored: int | None, expected: int, errors: dict[str, str]
+) -> tuple[str, str]:
+    """把三个读数合成一句结论。返回 `(visibility, visibility_hint)`。
+
+    visibility ∈ {ok, partial, missing, not_visible, empty, unknown}
+    """
+    if errors:
+        return "unknown", "有指标读取失败（%s），下面的数字不可信 —— 先确认 Milvus 是否可用" % (
+            "、".join(errors)
+        )
+    if visible == 0 and expected > 0:
+        if stored:
+            # 这一条就是 2026-10-14 那个现象的名字：数据在库里，检索就是读不到
+            return "not_visible", (
+                "向量在（服务端记着 %s 行），但检索一条都读不到 —— 集合未加载或未落盘。"
+                "重新向量化能临时恢复，根治要在 Milvus 侧 flush + load" % stored
+            )
+        return "missing", (
+            "%s 个切块还没有对应向量，这些文档检索不到 —— 去「文档管理」点批量向量化" % expected
+        )
+    if visible == 0 and expected == 0:
+        return "empty", "还没有已处理完成的文档被向量化（这是正常起点）"
+    if visible < expected:
+        return "partial", (
+            "检索可见 %s 条，按切块数应有 %s 条 —— 差额通常是文档重跑后留下的旧块" % (visible, expected)
+        )
+    return "ok", "向量条数与切块数一致，检索可读"
+
+
+def _documents_without_vectors(db: Session, indexed_ids: list[int] | None) -> list[dict] | None:
     """已处理完成、却一条向量都没有的文档。
 
     这是孤儿向量的**镜像问题**：
@@ -362,10 +455,15 @@ def _documents_without_vectors(db: Session) -> list[dict]:
     两种都会静默改变检索结果，而 `documents` 表里没有任何向量相关字段，
     从文档列表和接口上都看不出来 —— 所以放进维护接口，让管理员能查。
 
+    `indexed_ids` 由调用方读一次传进来（**不在这里读**）：读不到时必须报"不知道"
+    而不是把全部文档算成缺 —— 那正是旧实现误导人的地方。返回 None 表示无法判断。
+
     代价说清楚：它要把 Milvus 里出现过的 document_id 都取回来（去重），
     数据量大时开销高，因此**只挂在维护接口上，不进请求链路**。
     """
-    indexed = set(vector_store.list_document_ids())
+    if indexed_ids is None:
+        return None
+    indexed = set(indexed_ids)
     missing: list[dict] = []
     for doc in document_repository.list_all(db):
         if doc.status == STATUS_COMPLETED and doc.id not in indexed:
@@ -388,5 +486,7 @@ def purge_orphans(db: Session) -> dict:
     removed = 0
     for kb_id in orphans:
         removed += vector_store.delete_by_kb(kb_id)
-    logger.info("孤儿向量清理 kb_ids=%s removed=%s", orphans, removed)
-    return {"orphan_kb_ids": orphans, "removed": removed}
+    # 一次删除只 flush 一次（循环里逐条 flush 会把一个运维操作放大成 N 次服务端等待）
+    flushed = vector_store.flush() if removed else True
+    logger.info("孤儿向量清理 kb_ids=%s removed=%s flushed=%s", orphans, removed, flushed)
+    return {"orphan_kb_ids": orphans, "removed": removed, "flushed": flushed}

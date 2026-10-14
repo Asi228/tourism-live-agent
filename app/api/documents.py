@@ -115,7 +115,9 @@ def vectorize_document(
     db: Session = Depends(get_db),
 ):
     data = vector_service.vectorize_document(db, current_user, document_id)
-    return success(data, f"向量化完成，写入 {data['vectorized']} 条")
+    # 写成功但没落盘 ≠ 没事：重启后那批向量对检索就是不可见的，必须当场说出来
+    tail = "" if data["flushed"] else "（未落盘，重启后可能检索不到，请到「知识库」的向量库自检查看）"
+    return success(data, f"向量化完成，写入 {data['vectorized']} 条{tail}")
 
 
 @router.delete("/{document_id}", summary="删除文档（需对该知识库有 write 权限）")

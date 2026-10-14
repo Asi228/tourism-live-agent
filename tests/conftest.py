@@ -103,6 +103,86 @@ def _disable_rate_limit(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _guard_real_milvus(monkeypatch, request):
+    """🔴 测试绝不能碰真 Milvus 的**写/删** —— 一律换成哑元。
+
+    背景（2026-10-14 事故，已实测复现）：
+    `test_documents.py` / `test_knowledge.py` / `test_regressions.py` 里有若干用例
+    调"删文档 / 删知识库"接口，而后端的清向量函数（`_purge_vectors`）**真连 Milvus**；
+    测试库（SQLite）的 id 从 1 开始，**与真库 id 撞车** ——
+    结果：每跑一次全量测试，真库 `doc_id=1` / `kb_id=1` 的向量就被真删一次。
+    "数据又丢了"就是这么来的（当天跑三次全量 → 删三次，而后只能重新向量化）。
+
+    防护语义：`upsert` / `delete_by_document` / `delete_by_kb` / `flush` / `ensure_loaded`
+    走哑元（不执行真操作、返回无害值）。**只读函数（search / count / list_*）不拦** ——
+    它们不产生破坏，拦了反而让"检索路径"的用例失去意义。
+
+    放行条件：`tests/test_vectors_integration.py`（唯一真连 Milvus 的集成测试，
+    用 9 亿高位隔离 id、跑完即删）—— 真连是它存在的意义，mock 了就没意义了。
+    注意放行**按文件**而不是按环境变量：否则"设了 RUN_MILVUS_INTEGRATION=1 跑全量"
+    会让所有测试一起失去防护。
+
+    防退用例：`tests/test_regressions.py::test_milvus_destructive_calls_are_guarded`
+    （断言哑元标记还在 —— 谁删掉这段防护，它会立刻红）。
+    """
+    node_path = getattr(request.node, "path", None) or request.node.fspath
+    if str(node_path).endswith("test_vectors_integration.py"):
+        # 集成测试真连；它自己用高位隔离 id，不会碰真实数据
+        yield
+        return
+
+    from app.config import settings as settings_mod
+    from app.rag import vector_store
+
+    def _guard(name: str, ret):
+        def fake(*args, **kwargs):
+            return ret
+
+        # 标记：防退用例靠它识别"此刻挂着的是哑元而不是真实现"
+        fake._is_milvus_guard = True
+        fake._guard_name = name
+        return fake
+
+    def _fake_upsert(rows):
+        # 真实现返回"成功写入的条数"，哑元保持同构，调用方的日志/断言不会失真
+        return len(rows)
+
+    _fake_upsert._is_milvus_guard = True
+    _fake_upsert._guard_name = "upsert"
+
+    monkeypatch.setattr(vector_store, "upsert", _fake_upsert)
+    # 删返回 0（= "没删任何东西"）是最诚实的中性值：
+    # 调用方只在 removed 非零时打日志，返回 0 不会伪造"已清理"的记录
+    monkeypatch.setattr(vector_store, "delete_by_document", _guard("delete_by_document", 0))
+    monkeypatch.setattr(vector_store, "delete_by_kb", _guard("delete_by_kb", 0))
+    # flush / load 同样是**对共享实例改状态**的操作（2026-10-14 新加的这两条）。
+    # 不拦的话：每跑一次向量化用例，就真去 flush / load 一次真库的 collection。
+    monkeypatch.setattr(vector_store, "flush", _guard("flush", True))
+    monkeypatch.setattr(vector_store, "ensure_loaded", _guard("ensure_loaded", True))
+
+    # ---- Embedding（硅基流动 API）：同一条理由的延伸 —— 测试绝不打花真钱的路径 ----
+    # 防的是"漏挂 mute_embedding 的用例"：以前它会真发 HTTP（计费），
+    # 现在返回固定维度向量 —— 对断言无影响（没有用例依赖真 embedding 的数值）。
+    from app.rag import embedding as embedding_mod
+
+    dim = settings_mod.EMBEDDING_DIM
+
+    def _fake_embed_texts(texts):
+        return [[0.01] * dim for _ in texts]
+
+    def _fake_embed_query(text):
+        return [0.01] * dim
+
+    _fake_embed_texts._is_milvus_guard = True
+    _fake_embed_texts._guard_name = "embed_texts"
+    _fake_embed_query._is_milvus_guard = True
+    _fake_embed_query._guard_name = "embed_query"
+    monkeypatch.setattr(embedding_mod, "embed_texts", _fake_embed_texts)
+    monkeypatch.setattr(embedding_mod, "embed_query", _fake_embed_query)
+    yield
+
+
 @pytest.fixture
 def allow_register(monkeypatch):
     """把自助注册打开 —— **只有真的在测注册链路时才用**。

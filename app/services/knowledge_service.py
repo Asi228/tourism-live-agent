@@ -283,7 +283,9 @@ def _purge_vectors(kb_id: int) -> None:
 
         removed = vector_store.delete_by_kb(kb_id)
         if removed:
-            logger.info("已清理知识库向量 kb_id=%s count=%s", kb_id, removed)
+            # 删除记录也要落盘，否则服务端重启后这次删除可能没生效、向量"复活"成孤儿
+            logger.info("已清理知识库向量 kb_id=%s count=%s flushed=%s",
+                        kb_id, removed, vector_store.flush())
     except Exception as e:  # noqa: BLE001
         logger.warning("清理知识库向量失败（不影响删除）kb_id=%s err=%s", kb_id, e)
 

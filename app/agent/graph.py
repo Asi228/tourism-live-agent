@@ -17,13 +17,17 @@ LangGraph 的 StateGraph 正好把这三样变成显式的东西 ——
         │                         └──────→ 回到 retrieve
         │
         └─ DOCS → fetch_docs → generate → END
-                 （取点名文档的全文：总结 / 对比；
-                   一份都没匹配到则**回落成检索**，误判的代价约等于零）
+                 （取点名文档的全文：总结 / 对比。
+                   没拿到整篇的名字**补一次检索**（部分命中不再静默缺半边）、
+                   全部落空才回落原句检索；未命中 / 被裁 / 被截断的名单
+                   如实写进生成提示 —— 误判的代价约等于零）
 
 **三道成本闸门**（Agent 比纯 RAG 多调几次模型，必须掐住）：
   1. `AGENT_MAX_ITERATIONS`：最多检索几轮（默认 2），到顶强制生成
   2. 判定节点输出极短（`max_tokens` 8~32）：只要一个指令，不给它长篇大论的机会；
-     文档任务另有 `MAX_DOC_FETCH=3`（最多取三份文档）与"每份分预算"
+     文档任务另有 `MAX_DOC_FETCH=3`（最多取三份文档）与一条**预算不变量**：
+     "所有正文 + 每块标题余量 ≤ RAG_MAX_CONTEXT_CHARS"，
+     份数多到撑不住时**少取几份**（而不是抬高单份预算破坏不变量）
   3. 调用方还会传 `recursion_limit`（LangGraph 自带的硬闸门，超限抛 GraphRecursionError）
 """
 
@@ -51,6 +55,24 @@ ANALYZE_MAX_TOKENS = 32
 
 # 文档任务一次最多取几份文档（成本闸门）。"对比两份"是典型场景，给到 3 留一点余量。
 MAX_DOC_FETCH = 3
+
+# ---- 文档任务的预算算法（fetch_docs）----
+# 🔴 不变量：**所有进上下文的正文 + 每块的标题余量 ≤ RAG_MAX_CONTEXT_CHARS**。
+# 违反它的后果不是报错，而是下游 build_context 静默丢掉整块 ——
+# "对比"会悄悄变成"只看第一份"，答案看上去一切正常。所以这里的每个数字
+# 都服从这条不变量，宁少取、不超支。
+#
+# 每个块（整篇文档 / 检索片段）在上下文里除正文还有标题行
+# （"[n] 来源：文件名（第 X 页）" + 块间空行），按 60 字预留。
+PER_BLOCK_OVERHEAD = 60
+# 单份文档取"整篇"至少要给到的字数。给不够就不取整篇了 ——
+# 取 300 字的"全文"做总结没有意义，不如把额度让给别的名字（降级为检索片段）。
+MIN_DOC_BUDGET = 400
+# 未拿到整篇的名字，补检索时每条片段的上限 / 装得下的下限。
+# 上限压住单条占用；下限兜住"只够塞半句话"的碎片 —— 那种片段放进上下文
+# 只会误导模型（半句话被当成完整规定）。
+SEARCH_SNIPPET_CHARS = 300
+SEARCH_SNIPPET_MIN = 120
 
 ANALYZE_SYSTEM = """你是企业知识库问答系统的调度器。判断用户这句话要怎么处理，只输出对应格式之一：
 
@@ -243,6 +265,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         return {
             "retrieved": merged,
             "iterations": iteration,
+            "fetched": True,
             # 真实检索范围由检索那一层算出来（已与用户权限求过交集），必须原样带出去 ——
             # 不能回显请求里的 kb_ids：那个没求过交集，而本字段的 None 语义是「管理员不受限」，
             # 回显会把普通员工标成"扫全库"。
@@ -265,67 +288,170 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         取来的块与检索结果**同构**（document_name / content / score…），
         下游的拼上下文、生成引用全部复用同一条路 —— 它在图里只是"另一种取数"。
 
-        两条刻意的设计：
-          1. **匹配失败 → 回落普通检索**（而不是直接报"没找到"）。用户可能把名字
-             说得不一样（"考勤规定" vs《员工考勤与休假管理制度》），检索是保底；
-             LIKE 匹配是本地查询，零成本 —— 所以"模型多判了 DOCS"的代价约等于零，
-             这个性质是整个设计敢让模型大胆判的前提。
-          2. **每份文档分预算**：总预算按份数平摊。不设的话第一份就能把
-             RAG_MAX_CONTEXT_CHARS 吃光，对比任务里第二份被截成空 —— 那是静默的错误答案。
+        四段式，每段都对应一条踩过的坑：
+
+          1. **整篇取数（服从预算不变量）**：总预算先给每个名字留标题行余量，
+             再按份数平摊；份数多到单份预算撑不住时**少取几份**（被裁的名字走第 2 段）。
+             🔴 不用"抬高单份预算"来救 —— 那会推翻"总量 ≤ 总预算"的不变量，
+             下游 build_context 会静默丢掉整块，"对比"就变成了"只看第一份"。
+             （先例：P=500 配 3 份时，单份 200 的下限让两边都超限，第三份被丢且无人知道。）
+
+          2. **没拿到整篇的名字补一次检索**（每个名字最多装一条片段）。
+             不能静默跳过 —— 用户说"对比考勤和报销"、只命中"考勤"时，
+             答案是"只有考勤"的对比、界面毫无异常：自信的错答案比答不出来更坏。
+             补检索让缺的那半边至少以相关片段的形式在场。
+
+          3. **全部落空才回落**：所有名字（含补检索）都没内容时，
+             才回落按用户原句检索（最后的保底路径，轨迹里留痕）。
+
+          4. **诚实记账**：未匹配 / 被裁 / 被截断 / 有歧义的名单进 `doc_notes`
+             （生成时如实告知用户）；轨迹里记**名字**与候选信息，而不是只记个数。
         """
         started = time.monotonic()
-        names = list(state.get("doc_names") or [])
-        # 每份的预算：总预算里**先留出标题行的余量**（下游 build_context 拼块时
-        # 每块会加 "[n] 来源：文档名"），再按份数平摊。
-        # ⚠️ 不留余量的话：两份各吃满 RAG_MAX_CONTEXT_CHARS/2，加标题刚好超限 ——
-        # 下游会把第二份整块丢掉，"对比"就悄悄变成了"只看第一份"。
-        # （这条是 test_docs_budget_split_between_documents 逼出来的）
-        overhead = 200
-        budget = max(200, (settings.RAG_MAX_CONTEXT_CHARS - overhead) // max(1, len(names)))
+        names_all = list(state.get("doc_names") or [])
+        total = settings.RAG_MAX_CONTEXT_CHARS
+
+        # ---- 阶段 A：整篇取数（不变量：正文总量 + 每块标题余量 ≤ 总预算）----
+        # 每个名字最终最多产生一个块（全文或片段），所以按**全部名字**数留标题余量。
+        n = max(1, len(names_all))
+        capacity = total - PER_BLOCK_OVERHEAD * n
+        budget = capacity // n
+        dropped_names: list[str] = []
+        if budget < MIN_DOC_BUDGET and len(names_all) > 1:
+            keep = min(max(1, capacity // MIN_DOC_BUDGET), len(names_all))
+            dropped_names = names_all[keep:]
+            # 给每个被裁的名字预留一段片段的额度 —— 否则"少取几份"会退化成
+            # "留下的那份吃光一切，其余的连片段都进不来"，对比只剩半边。
+            # （reserve 是**尽力**预留：真正的硬保证是阶段 B 按实时余量装填。）
+            reserve = SEARCH_SNIPPET_MIN * len(dropped_names)
+            budget = max(1, capacity - reserve) // keep
+            names = names_all[:keep]
+            logger.info(
+                "文档任务预算不足（共 %s 字 / %s 份），只取 %s 份整篇、其余降级为检索：%s",
+                total, len(names_all), len(names), " | ".join(dropped_names)[:60],
+            )
+        else:
+            names = names_all
 
         docs: list[dict] = []
         truncated: list[str] = []
+        missed: list[str] = []      # 没匹配到整篇的名字（名字对不上 / 文档不可用）
+        ambiguous: list[str] = []   # 匹配到多份候选的名字（已按"新的优先"取了一份）
         scope = None
         for name in names:
             got = tools.get_document(db, user, name, kb_ids=kb_ids)
             scope = got.get("searched_kb_ids")
             results = got.get("results") or []
             if not results:
+                missed.append(name)
                 continue
+            if int(got.get("candidates") or 0) > 1:
+                # "有歧义"只在**真命中**时记：未命中时候选数没有意义
+                ambiguous.append(name)
             item = results[0]
             if len(item.get("content") or "") > budget:
                 item = {**item, "content": item["content"][:budget]}
                 truncated.append(item["document_name"])
             docs.append(item)
 
-        if docs:
+        # ---- 阶段 B：没拿到整篇的名字 → 补一次检索（每个名字最多装一条片段）----
+        used = sum(len(d.get("content") or "") for d in docs)
+        searched_names = missed + dropped_names
+        uncovered: list[str] = []   # 补检索也一无所获（或额度耗尽）的名字
+        for i, name in enumerate(searched_names):
+            room = capacity - used
+            if room < SEARCH_SNIPPET_MIN:
+                # 额度耗尽：后面的名字一并如实记录，不再检索
+                uncovered.extend(searched_names[i:])
+                break
+            got = tools.search_knowledge(db, user, name, kb_ids=kb_ids, top_k=2)
+            if scope is None:
+                scope = got.get("searched_kb_ids")
+            filled = False
+            for hit in got.get("results") or []:
+                body = (hit.get("content") or "").strip()
+                if not body:
+                    continue
+                limit = min(SEARCH_SNIPPET_CHARS, room)
+                docs.append({**hit, "content": body[:limit]})
+                used += min(len(body), limit)
+                filled = True
+                break  # 每个名字最多装一条：装多了块数失控，标题余量的预留就不成立
+            if not filled:
+                uncovered.append(name)
+
+        if not docs:
+            # 所有名字（含补检索）都没取到内容 → 回落按原句检索（最后的保底）
+            logger.info("文档任务未取到任何内容（%s），回落检索", " | ".join(names_all)[:80])
+            got = tools.search_knowledge(db, user, state["query"], kb_ids=kb_ids, top_k=top_k)
+            results = got.get("results", [])
             return {
-                "retrieved": docs,
-                "iterations": 1,
-                "searched_kb_ids": scope,
-                "added_last": len(docs),
+                "retrieved": results,
+                "iterations": 1,          # 这一步是真检索，轮数记 1
+                "fetched": True,
+                "searched_kb_ids": got.get("searched_kb_ids"),
+                "added_last": len(results),
                 "retrieval_query": state["query"],
                 "steps": state.get("steps", []) + [
                     _step("fetch_docs", started, tool="get_document",
-                          asked=" | ".join(names), matched=len(docs),
-                          truncated=len(truncated))
+                          asked=" | ".join(names_all), matched=0, fallback="search")
                 ],
             }
 
-        # 一份都没匹配到 → 回落普通检索（保底路径，轨迹里留痕）
-        logger.info("文档任务未匹配到文档（%s），回落检索", " | ".join(names)[:80])
-        got = tools.search_knowledge(db, user, state["query"], kb_ids=kb_ids, top_k=top_k)
-        results = got.get("results", [])
+        # ---- 诚实记账：给生成节点的"缺口说明"（它决定答案敢不敢说"完整"）----
+        notes: list[str] = []
+        if missed:
+            notes.append(
+                "以下名称没有匹配到对应的完整文档（已尽量用检索片段补充）：%s"
+                % "、".join(missed)
+            )
+        if dropped_names:
+            notes.append(
+                "受篇幅限制，以下名称未取完整文档（已改用检索片段）：%s"
+                % "、".join(dropped_names)
+            )
+        if uncovered:
+            notes.append(
+                "其中 %s 检索后仍未获得可用内容，回答时不要臆断其内容"
+                % "、".join(uncovered)
+            )
+        if truncated:
+            notes.append(
+                "以下文档较长，仅纳入前约 %s 字：%s" % (budget, "、".join(truncated))
+            )
+        if ambiguous:
+            notes.append(
+                "以下名称匹配到多份文档，已取最新上传的一份：%s" % "、".join(ambiguous)
+            )
+
+        # 轨迹：名字与候选信息都要可见（只记一个数字的话，
+        # "为什么这次对比少了一半"在现场是查不出来的）
+        detail = {
+            "tool": "get_document",
+            "asked": " | ".join(names_all),
+            "matched": len(names) - len(missed),  # 只数"取到整篇"的
+        }
+        if dropped_names:
+            detail["dropped"] = " | ".join(dropped_names)
+        if missed:
+            detail["missed"] = " | ".join(missed)
+        if truncated:
+            detail["truncated"] = " | ".join(truncated)
+        if ambiguous:
+            detail["ambiguous"] = " | ".join(ambiguous)
+
         return {
-            "retrieved": results,
-            "iterations": 1,
-            "searched_kb_ids": got.get("searched_kb_ids"),
-            "added_last": len(results),
+            "retrieved": docs,
+            # 文档任务**不产生检索轮数**：补检索是"取数"，不是"检索重试"意义上的轮数。
+            # 界面靠 fetched 分辨"取没取过数"—— 这是一对刻意拆开的字段，别合并
+            # （合并过一次：界面把文档任务显示成"检索轮数：1"，而它一次检索都没做）。
+            "iterations": 0,
+            "fetched": True,
+            "searched_kb_ids": scope,
+            "added_last": len(docs),
             "retrieval_query": state["query"],
-            "steps": state.get("steps", []) + [
-                _step("fetch_docs", started, tool="get_document",
-                      asked=" | ".join(names), matched=0, fallback="search")
-            ],
+            "doc_notes": notes,
+            "steps": state.get("steps", []) + [_step("fetch_docs", started, **detail)],
         }
 
     def evaluate(state: AgentState) -> dict:
@@ -404,11 +530,21 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         # 长期记忆（Phase 11）与对话摘要（Phase 12）同源复用 service —— 与纯 RAG 走同一份
         # 拼装逻辑，都在"真要调模型之前"才取，判定/空检索的路径不白查库。
         memory = memory_service.section_for_prompt(db, user)
+        user_message = prompt.build_user_message(state["query"], context)
+        # 取数过程的"缺口说明"（未命中 / 被裁 / 被截断）必须进提示词 ——
+        # 否则答案看起来是完整的，用户不知道"对比"只比了半边，
+        # 而"自信的缺一半"比"答不出来"更坏。挂在提问消息末尾：与参考资料同一轮，模型最容易照做。
+        notes = state.get("doc_notes") or []
+        if notes:
+            user_message += (
+                "\n\n系统补充（务必在回答里如实向用户说明以下情况，不要忽略、不要隐瞒）："
+                + "；".join(notes)
+            )
         out = llm.chat(
             prompt.build_system_prompt(
                 memory_section=memory, summary_section=state.get("summary") or ""
             ),
-            prompt.build_user_message(state["query"], context),
+            user_message,
             history=state.get("history") or [],
         )
         return {

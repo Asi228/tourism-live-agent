@@ -60,6 +60,7 @@ def agent_env(monkeypatch, session_factory):
         "_eval_calls": 0,
         "results": [_hit()],
         "chat_error_on": None,
+        "docs": {},  # 文档关键词 → get_document 的 results（DOCS 用例用）
     }
 
     def fake_chat(system, user, max_tokens=None, temperature=None, history=None):
@@ -88,8 +89,18 @@ def agent_env(monkeypatch, session_factory):
             "skipped_orphans": 0,
         }
 
+    def fake_get_document(db, user, name, kb_ids=None):
+        results = box["docs"].get(name, [])
+        return {
+            "results": results,
+            "searched_kb_ids": kb_ids or [1],
+            "matched": len(results),
+            "candidates": len(results),
+        }
+
     monkeypatch.setattr(graph_mod.llm, "chat", fake_chat)
     monkeypatch.setattr(graph_mod.tools, "search_knowledge", fake_search)
+    monkeypatch.setattr(graph_mod.tools, "get_document", fake_get_document)
     box["search_error"] = None
     return box
 
@@ -177,6 +188,46 @@ def test_stream_persists_a_turn(client, make_user, agent_env, session_factory):
     assert [m.role for m in rows] == ["user", "assistant"]
     assert rows[-1].meta["source"] == "agent", "回放历史时据此决定要不要画执行轨迹"
     assert rows[-1].meta["steps"], "轨迹要跟着存，否则回放时看不到"
+
+
+def test_stream_docs_mode_emits_fetch_docs_step(client, make_user, agent_env):
+    """SSE 路径的文档任务：事件里能看到 fetch_docs 节点 + 文档级引用（score=None）。
+
+    补这条的理由：DOCS 分支当初只测了非流式 `/api/agent/chat`，
+    而**流式是问答页的唯一入口** —— 只盖非流式的话，这条路上
+    "文档任务会不会吐事件 / 引用长什么样"没有任何自动化保护。
+    """
+    agent_env["analyze"] = "DOCS: 考勤"
+    agent_env["docs"] = {
+        "考勤": [{
+            "chunk_id": 55, "document_id": 11, "document_name": "考勤制度.md",
+            "knowledge_base_id": 1, "page_number": None, "score": None,
+            "content": "年假 5 天。",
+        }],
+    }
+    user = make_user("admin")
+
+    code, ctype, frames = _stream(client, user, {"query": "总结一下考勤制度"})
+    assert code == 200
+    assert "text/event-stream" in ctype
+
+    # 节点级进度走的是 fetch_docs（不是 retrieve/evaluate）
+    steps = [d for ev, d in frames if ev == "step"]
+    assert [s["node"] for s in steps] == ["analyze", "fetch_docs", "generate"]
+
+    metas = [d for ev, d in frames if ev == "meta"]
+    assert len(metas) == 1
+    assert metas[0]["sources"][0]["document_name"] == "考勤制度.md"
+    assert metas[0]["sources"][0]["score"] is None, "文档级命中不许编相似度"
+    # iterations / fetched 拆分后的口径：没检索（0 轮）但取过数（范围保留）
+    assert metas[0]["iterations"] == 0
+    assert metas[0]["searched_kb_ids"] == [1]
+
+    # 落库也照常（流式这条路的落库与检索路径共用同一段代码，这里只确认没被分支打坏）
+    done = frames[-1][1]
+    assert done["answer_mode"] == "grounded"
+    assert done["saved"] is True
+    assert done["conversation_id"]
 
 
 # ==================== 准备阶段失败仍走统一信封 ====================

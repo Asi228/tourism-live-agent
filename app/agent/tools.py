@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.document import Document
+from app.models.document import STATUS_COMPLETED, Document
 from app.models.user import User
 from app.repositories import document_chunk_repository
 from app.services import knowledge_service, vector_service
@@ -96,18 +96,36 @@ def _document_scope(db: Session, user: User, kb_ids: list[int] | None):
     return [k for k in kb_ids if k in allowed]
 
 
-def _match_document(db: Session, keyword: str, scope) -> Document | None:
-    """在可见范围内按文件名找一份文档。同名多份时取**名字最短**的
-    （最短 = 最接近查询词，通常就是用户指的那一份）。"""
+def _match_document(db: Session, keyword: str, scope) -> tuple[Document | None, int]:
+    """在可见范围内按文件名找一份文档。
+
+    **只认已完成的文档**（`status == completed`）：处理中 / 处理失败的文档
+    命中的是**上一轮的旧切块**（重跑处理期间新旧并存），拿去"总结"会总结出旧内容；
+    而且检索侧（`vector_service`）本来就要求 completed，两边口径必须一致 ——
+    否则会出现"检索搜不到、文档任务却取到了"的偏差。
+
+    同名多份时的取舍：**先取名字最短的**（最短 = 最接近查询词），
+    **同长再取最新上传的**（用户说《管理制度汇编》多半指 2025 版而不是 2024 版；
+    原先的次键是 id 升序 = 永远选旧的，是静默的错版本）。
+
+    返回 `(命中的文档, 可见候选数)` —— 候选数 > 1 说明这个名字有歧义，
+    由调用方写进轨迹（用户至少有机会知道"有两份，取了新的那份"）。
+    """
     stmt = (
         select(Document)
         .where(Document.filename.contains(keyword, autoescape=True))
-        .order_by(func.length(Document.filename), Document.id)
-        .limit(1)
+        .where(Document.status == STATUS_COMPLETED)
+        .order_by(
+            func.length(Document.filename),
+            Document.created_at.desc(),
+            Document.id.desc(),
+        )
+        .limit(5)  # 只看前 5 个候选用于计数；再多也说明不了更多问题
     )
     if scope is not None:
         stmt = stmt.where(Document.knowledge_base_id.in_(scope))
-    return db.scalars(stmt).first()
+    rows = list(db.scalars(stmt))
+    return (rows[0] if rows else None), len(rows)
 
 
 def get_document(
@@ -118,43 +136,53 @@ def get_document(
 ) -> dict:
     """按文档名取**全文**（文档任务：总结 / 对比 / 提取）。
 
-    匹配策略两步（都对权限范围内、文件名做匹配）：
+    匹配策略：**逐级剥尾缀 + 逐级试匹配**（都对权限范围内、文件名做匹配）：
       1. 原样子串匹配 —— 用户把文件名说全了；
-      2. 剥掉通用尾缀再匹配 —— "考勤制度" → "考勤" → 命中《员工考勤与休假管理制度》。
+      2. 没中就把通用尾缀剥掉一层再试 —— "考勤管理制度" → "考勤管理"（还不中）
+         → "考勤" → 命中《员工考勤与休假管理制度》。
+    逐级试（而不是"剥到底只试一次"）是为了**更早命中**：每剥一层都先试一次，
+    剥到哪一级中就以哪一级为准，少让"剥过头"的短词抢到别的文档。
 
-    返回 `{"results": [...], "searched_kb_ids": ..., "matched": int}`：
+    返回 `{"results": [...], "searched_kb_ids": ..., "matched": int, "candidates": int}`：
     `results` 最多一条（按文档合并成一条，`content` 是全文，不含截断），
     字段与检索结果**同构**，下游拼上下文/生成引用全部复用同一条路。
-    取不到时 `results=[]` —— 由调用方决定怎么办（fetch_docs 节点会回落检索）。
+    取不到时 `results=[]` —— 由调用方决定怎么办（fetch_docs 节点会补检索/回落）。
     """
     keyword = (name or "").strip()
     if not keyword:
         logger.warning("Agent 文档工具收到空名，已跳过")
-        return {"results": [], "searched_kb_ids": [], "matched": 0}
+        return {"results": [], "searched_kb_ids": [], "matched": 0, "candidates": 0}
 
     scope = _document_scope(db, user, kb_ids)
     if scope == []:
-        return {"results": [], "searched_kb_ids": [], "matched": 0}
+        return {"results": [], "searched_kb_ids": [], "matched": 0, "candidates": 0}
 
-    doc = _match_document(db, keyword, scope)
-    if doc is None:
-        core = _strip_suffix(keyword)
-        if core != keyword:
-            doc = _match_document(db, core, scope)
+    doc = None
+    candidates = 0
+    core = keyword
+    while doc is None:
+        doc, candidates = _match_document(db, core, scope)
+        if doc is not None:
+            break
+        stripped = _strip_suffix(core)
+        if stripped == core:
+            break  # 剥不动了（没有尾缀可剥 / 已剥到最后一个字符）
+        core = stripped
+
     if doc is None:
         logger.info("文档工具未匹配到文档 name=%r（范围=%s）", keyword[:40], scope)
-        return {"results": [], "searched_kb_ids": scope, "matched": 0}
+        return {"results": [], "searched_kb_ids": scope, "matched": 0, "candidates": 0}
 
     chunks = document_chunk_repository.list_by_document(db, doc.id)
     content = "\n\n".join((c.content or "").strip() for c in chunks if (c.content or "").strip())
     if not content:
         # 文档存在但一个可用的块都没有（还没切块 / 切块全空）——当作没取到
         logger.info("文档工具命中文档但无可用正文 doc_id=%s", doc.id)
-        return {"results": [], "searched_kb_ids": scope, "matched": 0}
+        return {"results": [], "searched_kb_ids": scope, "matched": 0, "candidates": candidates}
 
     logger.info(
-        "文档工具命中 name=%r -> doc_id=%s chunks=%s 字数=%s",
-        keyword[:40], doc.id, len(chunks), len(content),
+        "文档工具命中 name=%r -> doc_id=%s chunks=%s 字数=%s 候选=%s",
+        keyword[:40], doc.id, len(chunks), len(content), candidates,
     )
     return {
         "results": [
@@ -173,4 +201,5 @@ def get_document(
         ],
         "searched_kb_ids": scope,
         "matched": 1,
+        "candidates": candidates,
     }

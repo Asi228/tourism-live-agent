@@ -146,6 +146,7 @@ def answer(
         "summary": conversation_service.summary_section(conv),
         "retrieved": [],
         "iterations": 0,
+        "fetched": False,
         "steps": [],
         "usage": {},
     }
@@ -186,17 +187,22 @@ def answer(
     usage = final.get("usage") or None
     sources = final.get("sources", [])
     iterations = final.get("iterations", 0)
+    # "取过数"与"检索轮数"是两件事：文档任务（fetch_docs）取到了全文，
+    # 但 iterations=0（一次检索都没做）—— searched_kb_ids 的判定必须按"取没取过数"。
+    # 旧状态形状没有 fetched 字段时退回旧判据（bool(iterations)），不至于报错。
+    fetched = final.get("fetched")
+    if fetched is None:
+        fetched = bool(iterations)
     result = {
         "query": query,
         "answer": final.get("answer") or "",
         "hit": bool(final.get("hit")),
         "sources": sources,
-        # **真实检索范围**，由 retrieve 节点从检索层带出来（已与用户权限求过交集）。
+        # **真实检索范围**，由 retrieve / fetch_docs 节点从取数层带出来（已与用户权限求过交集）。
         # 不能回显入参 kb_ids：那个没求过交集，而本字段 None 的语义是「管理员不受限」，
         # 回显会把普通员工标成"扫全库"。
-        # 判定为"不需要检索"时 iterations=0：本次**没查任何库**，给 [] 表示这一点；
-        # 用 None 会和"不限范围"撞语义。
-        "searched_kb_ids": final.get("searched_kb_ids") if iterations else [],
+        # 本次**没取过任何数**（寒暄 / 空检索）：给 [] 表示这一点；用 None 会和"不限范围"撞语义。
+        "searched_kb_ids": final.get("searched_kb_ids") if fetched else [],
         "answer_mode": final.get("answer_mode") or ANSWER_NO_EVIDENCE,
         "iterations": iterations,
         "steps": steps,
@@ -398,9 +404,14 @@ def _agent_stream_events(
         answer = final.get("answer") or ""
         hit = bool(final.get("hit"))
         answer_mode = final.get("answer_mode") or ANSWER_NO_EVIDENCE
-        # 真实检索范围由 retrieve 节点带出来（已与权限求过交集）。iterations=0 表示
-        # 本次没查任何库，给 [] —— None 的语义是"管理员不受限"，不能混用。
-        searched_kb_ids = final.get("searched_kb_ids") if iterations else []
+        # "取过数"与"检索轮数"分开判（见非流式同处的说明）：文档任务取到了全文、
+        # 但 iterations=0 —— 用 iterations 判会把它的检索范围标成"没查任何库"。
+        fetched = final.get("fetched")
+        if fetched is None:
+            fetched = bool(iterations)
+        # 真实取数范围由 retrieve / fetch_docs 节点带出来（已与权限求过交集）。
+        # 没取过数给 [] —— None 的语义是"管理员不受限"，不能混用。
+        searched_kb_ids = final.get("searched_kb_ids") if fetched else []
 
         # 引用先给出去，让用户先看到"依据来自哪几份文档"
         yield {"event": "meta", "data": {

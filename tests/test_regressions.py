@@ -210,3 +210,54 @@ def test_loader_error_does_not_leak_path(tmp_path):
 # 要构造出真实 OSError 得把 UploadFile 和 aiofiles 都替身一遍，成本高于收益。
 # 那条改动的正确性靠代码评审 + 与上面 `_load_text` 完全相同的写法来保证。
 # 别以为"这里全绿 = 上传路径也不泄露"。
+
+
+# ==================== ⑥ 测试绝不许碰真 Milvus 的写/删 ====================
+
+
+def test_milvus_destructive_calls_are_guarded():
+    """🔴 防护必须生效：测试里**写/删向量、调 embedding** 都走哑元，绝不打真外部依赖。
+
+    背景（2026-10-14 事故，已实测复现）：`test_documents.py` 等用例调"删文档"接口，
+    后端 `_purge_vectors` 真连 Milvus，而测试库 id 从 1 开始、**与真库撞车** ——
+    每跑一次全量测试，真库 `doc_id=1`/`kb_id=1` 的向量就被真删一次。
+    当天"数据又丢了"（跑三次全量删三次）就是这么来的。
+
+    embedding 一并防的理由：漏挂 `mute_embedding` 的用例会**真发 HTTP（计费）** ——
+    "测试不许花真钱"与"测试不许删真数据"是同一条规矩。
+
+    防护本体在 `tests/conftest.py::_guard_real_milvus`。这条用例守的是
+    **"没人把它删掉/改坏"** —— 删了它，以后谁跑测试都会静默清掉真实数据，
+    而且所有用例照样全绿。
+    """
+    from app.rag import embedding, vector_store
+
+    for name in ("upsert", "delete_by_document", "delete_by_kb", "flush", "ensure_loaded"):
+        fn = getattr(vector_store, name)
+        assert getattr(fn, "_is_milvus_guard", False) is True, (
+            f"vector_store.{name} 没有走防护哑元 —— "
+            "跑测试会真连 Milvus 写/删真实数据！检查 conftest 的 _guard_real_milvus。"
+        )
+    for name in ("embed_texts", "embed_query"):
+        fn = getattr(embedding, name)
+        assert getattr(fn, "_is_milvus_guard", False) is True, (
+            f"embedding.{name} 没有走防护哑元 —— 跑测试会真调硅基流动 API（计费）！"
+        )
+
+
+def test_milvus_guard_keeps_call_shape():
+    """哑元的行为契约：`upsert` 返回与真实现同构的条数，删返回 0（未删任何东西）。
+
+    这几个返回值不是随手定的：`upsert` 的调用方会按返回值记日志/断言，
+    返回 `None` 或错值会让**无关用例**产生失真行为；删返回 0 而不是 1，
+    是为了不伪造"已清理向量"的日志（调用方只在非零时打日志）。
+    """
+    from app.rag import vector_store
+
+    assert vector_store.upsert([1, 2, 3]) == 3
+    assert vector_store.delete_by_document(1) == 0
+    assert vector_store.delete_by_kb(1) == 0
+    # flush / ensure_loaded 返回 True（"成功"）而不是 False：
+    # 向量化回执里有 `flushed` 字段，返回 False 会让每条向量化用例都带上"未落盘"的假告警
+    assert vector_store.flush() is True
+    assert vector_store.ensure_loaded() is True

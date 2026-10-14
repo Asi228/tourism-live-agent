@@ -12,6 +12,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { auditApi, systemApi, vectorApi } from '../api'
+import { metricOrDash, visibilityView } from '../utils/vectorHealth'
 
 const healthLoading = ref(false)
 const health = ref(null)
@@ -237,17 +238,31 @@ onMounted(loadAll)
           <span>{{ vectorHealth.reason }}</span>
         </div>
         <template v-else>
+          <!-- 结论先行 + "读不到 ≠ 0"：与「知识库」页那张卡片共用 vectorHealth.js 的判断，
+               两处口径必须一致，否则同一个库在两个页面上会给出相反的建议。 -->
+          <div class="vector-verdict">
+            <el-tag :type="visibilityView(vectorHealth.visibility).type" size="small">
+              {{ visibilityView(vectorHealth.visibility).label }}
+            </el-tag>
+            <span v-if="vectorHealth.visibility_hint">{{ vectorHealth.visibility_hint }}</span>
+          </div>
           <div class="vector-grid">
             <div class="vector-item">
-              <span class="vnum">{{ vectorHealth.vector_count }}</span>
-              <span class="vlabel">向量总数</span>
+              <span class="vnum">{{ metricOrDash(vectorHealth.vector_count) }}</span>
+              <span class="vlabel">向量总数（检索可见）</span>
+            </div>
+            <div class="vector-item">
+              <span class="vnum">{{ metricOrDash(vectorHealth.stored_rows) }}</span>
+              <span class="vlabel">服务端行数</span>
             </div>
             <div class="vector-item" :class="{ warn: vectorHealth.orphan_vector_count }">
-              <span class="vnum">{{ vectorHealth.orphan_vector_count ?? 0 }}</span>
+              <span class="vnum">{{ metricOrDash(vectorHealth.orphan_vector_count) }}</span>
               <span class="vlabel">孤儿向量</span>
             </div>
             <div class="vector-item" :class="{ warn: vectorHealth.documents_without_vectors }">
-              <span class="vnum">{{ vectorHealth.documents_without_vectors ?? 0 }}</span>
+              <span class="vnum">
+                {{ metricOrDash(vectorHealth.documents_without_vectors) }}
+              </span>
               <span class="vlabel">缺向量文档</span>
             </div>
           </div>
@@ -258,6 +273,10 @@ onMounted(loadAll)
             <br>
             孤儿向量 = 所属知识库已删、却还留在 Milvus 里的向量：会被检索命中、白占
             top_k 名额却取不到正文。有条目时上方会出现「清理孤儿向量」（真删数据、不可逆）。
+            <template v-if="vectorHealth.foreign_collections?.length">
+              <br>
+              同实例其它集合（结构非本应用，不参与检索）：<code>{{ vectorHealth.foreign_collections.join('、') }}</code>
+            </template>
           </div>
         </template>
       </template>
@@ -360,9 +379,17 @@ onMounted(loadAll)
   font-size: var(--el-font-size-extra-small);
   color: var(--el-text-color-secondary);
 }
+.vector-verdict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: var(--el-font-size-extra-small);
+  color: var(--el-text-color-secondary);
+}
 .vector-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 .vector-item {

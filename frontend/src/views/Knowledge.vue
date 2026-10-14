@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { knowledgeApi, faqApi, userApi, vectorApi } from '../api'
+import { metricOrDash, visibilityView } from '../utils/vectorHealth'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -282,21 +283,33 @@ onMounted(load)
           <span class="vector-reason">{{ vectorHealth.reason }}</span>
         </div>
         <template v-else>
+          <!-- 结论先行：四个数字本身看不出"数据在但读不到"这种最坑的状态，
+               所以把后端的 visibility 放在数字上面，而不是藏在说明文字里。 -->
+          <div class="vector-verdict">
+            <el-tag :type="visibilityView(vectorHealth.visibility).type" size="small">
+              {{ visibilityView(vectorHealth.visibility).label }}
+            </el-tag>
+            <span v-if="vectorHealth.visibility_hint" class="vector-hint">
+              {{ vectorHealth.visibility_hint }}
+            </span>
+          </div>
           <div class="vector-grid">
             <div class="vector-item">
-              <span class="vector-num">{{ vectorHealth.vector_count }}</span>
-              <span class="vector-label">向量总数</span>
+              <span class="vector-num">{{ metricOrDash(vectorHealth.vector_count) }}</span>
+              <span class="vector-label">向量总数（检索可见）</span>
             </div>
             <div class="vector-item">
-              <span class="vector-num">{{ vectorHealth.kb_ids_in_vector_store?.length ?? 0 }}</span>
-              <span class="vector-label">库数量</span>
+              <span class="vector-num">{{ metricOrDash(vectorHealth.stored_rows) }}</span>
+              <span class="vector-label">服务端行数</span>
             </div>
             <div class="vector-item" :class="{ warn: vectorHealth.orphan_vector_count }">
-              <span class="vector-num">{{ vectorHealth.orphan_vector_count ?? 0 }}</span>
+              <span class="vector-num">{{ metricOrDash(vectorHealth.orphan_vector_count) }}</span>
               <span class="vector-label">孤儿向量</span>
             </div>
             <div class="vector-item" :class="{ warn: vectorHealth.documents_without_vectors }">
-              <span class="vector-num">{{ vectorHealth.documents_without_vectors ?? 0 }}</span>
+              <span class="vector-num">
+                {{ metricOrDash(vectorHealth.documents_without_vectors) }}
+              </span>
               <span class="vector-label">缺向量文档</span>
             </div>
           </div>
@@ -304,6 +317,11 @@ onMounted(load)
             Milvus {{ vectorHealth.server_version }}　·　collection
             <code>{{ vectorHealth.collection }}</code>
             <template v-if="!vectorHealth.collection_exists">（尚未创建）</template>
+          </div>
+          <!-- 同实例里的陌生集合：它们有行数，但本应用永远读不到。
+               不指出来的话，"看到有向量"就会把人引向错误的结论。 -->
+          <div v-if="vectorHealth.foreign_collections?.length" class="vector-meta">
+            同实例其它集合（非本应用结构，不参与检索）：<code>{{ vectorHealth.foreign_collections.join('、') }}</code>
           </div>
           <div v-if="vectorHealth.orphan_vector_count || vectorHealth.documents_without_vectors" class="vector-warn">
             <template v-if="vectorHealth.orphan_vector_count">
@@ -314,6 +332,13 @@ onMounted(load)
               缺向量文档：已处理完成却一条向量都没有 —— 它们<b>永远检索不到</b>，答案里也引用不到。
               去「文档管理」对它们点"向量化"即可。
             </template>
+          </div>
+          <!-- 与"缺向量"处置方式**相反**的一种状态，必须单独说：
+               重灌向量只会临时治好它，而且会让人以为数据丢过。 -->
+          <div v-if="vectorHealth.visibility === 'not_visible'" class="vector-warn danger">
+            <b>不要重新向量化</b>：数据其实在库里，只是检索路径读不到。
+            服务端已写入会自动落盘；若仍反复出现，要在 Milvus 侧确认 collection 已 load、
+            以及 flush（落盘）是否成功 —— 重启后读不到就是这个原因。
           </div>
         </template>
       </template>
@@ -521,6 +546,18 @@ onMounted(load)
 .vector-card {
   margin-bottom: 14px;
 }
+/* 结论行：标签 + 后端给的人话。放在四个数字**上面** ——
+   "数据在但读不到"这种状态，光看数字是看不出来的。 */
+.vector-verdict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.vector-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .vector-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -562,6 +599,10 @@ onMounted(load)
   color: var(--el-text-color-regular);
   font-size: var(--el-font-size-extra-small);
   line-height: 1.7;
+}
+/* 同一块版式、不同严重度：not_visible 是"数据在但读不到"，比"缺向量"更需要拦住人别去重灌 */
+.vector-warn.danger {
+  background: var(--el-color-danger-light-9);
 }
 .vector-down {
   display: flex;

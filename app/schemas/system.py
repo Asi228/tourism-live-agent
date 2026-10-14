@@ -14,7 +14,9 @@
 所以往这两个接口的返回值里加字段时，**必须同步加到这里**，否则前端永远拿不到。
 """
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class HealthOut(BaseModel):
@@ -51,6 +53,8 @@ class VectorHealthOut(BaseModel):
     collection: str | None = None
     collection_exists: bool | None = None
     collections: list[str] | None = None
+    # ⚠️ 这些计数**可空**，而且 null 有含义：**读不到**（不是 0）。
+    # 旧实现把读失败压成 0，于是"集合没加载"会被显示成"向量总数 0 / 全部文档缺向量"。
     vector_count: int | None = None
     kb_ids_in_vector_store: list[int] | None = None
     orphan_kb_ids: list[int] | None = None
@@ -58,3 +62,27 @@ class VectorHealthOut(BaseModel):
     # 与孤儿向量**配对的反向问题**：文档处理好了，却一条向量都没有 → 永远检索不到
     documents_without_vectors: int | None = None
     documents_without_vectors_sample: list[dict] | None = None
+
+    # ---- 「数据在不在」与「读不读得到」分开说 ----
+    stored_rows: int | None = Field(
+        default=None,
+        description="服务端元数据记着的行数（含已删除未压缩的行），**只用来判断有没有数据**，"
+                    "不和 vector_count 比相等",
+    )
+    expected_chunks: int | None = Field(
+        default=None, description="按 MySQL 已完成文档的切块数算出的「应有向量条数」"
+    )
+    visibility: Literal["ok", "partial", "missing", "not_visible", "empty", "unknown"] | None = Field(
+        default=None,
+        description="自检结论。**not_visible** = 向量在库里但检索读不到（集合未加载/未落盘），"
+                    "这种情况**不要重灌数据**，要在 Milvus 侧 load + flush",
+    )
+    visibility_hint: str | None = Field(default=None, description="给管理员看的一句话结论")
+    read_errors: dict[str, str] | None = Field(
+        default=None, description="哪些读数取失败及原因；非空则本卡片其余数字不可信"
+    )
+    foreign_collections: list[str] | None = Field(
+        default=None,
+        description="同一个 Milvus 里**结构不属于本应用**的集合名（主键不是 chunk_id）。"
+                    "它们不会被检索用到，只是同实例里的其它数据 —— 别把它们的行数当成本系统的向量",
+    )
