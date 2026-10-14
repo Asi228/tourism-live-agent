@@ -8,12 +8,16 @@
  *  3. 管理员多一块系统级指标（用户数 / 向量条数），非管理员拿到的 `admin` 是
  *     **null**，此时整块不渲染 —— 而不是显示"用户 0 人"这种假数字。
  *
- * 视觉上的两个决定：
+ * 视觉上的三个决定：
  *  · **数字卡片改成"图标在左、数字在右"**：原来纯居中，一眼扫过去不构成阅读动线；
  *  · **文档状态用环形图而不是一排 tag**：tag 只能并排摆着，占比要心算；环形图
- *    一眼看出"失败占多少"。数据少时它退化成整圈一个色，也不难看（有 v-if 兜底）。
+ *    一眼看出"失败占多少"。数据少时它退化成整圈一个色，也不难看（有 v-if 兜底）；
+ *  · **提问趋势是手写 SVG 折线**（与环形图同一条零依赖路线）。它不是首屏必需，
+ *    独立加载、失败静默 —— 概览主体不该被一张辅助图表拖垮。
+ *    ⚠️ 空数据（7 天全 0）**不画线、换文案**：一条贴底的直线看起来像"使用量在
+ *    衰减"，而事实是"还没积累出趋势"，两者对读者的含义相反（判定在 utils/trendChart.js）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Calendar,
@@ -26,12 +30,34 @@ import {
 
 import { statsApi } from '../api'
 import { useUserStore } from '../stores/user'
+import { buildTrendChart, isTrendEmpty } from '../utils/trendChart'
 
 const router = useRouter()
 const user = useUserStore()
 
 const loading = ref(false)
 const data = ref(null)
+
+// ---- 提问趋势（独立于 overview 加载）----
+const trend = ref(null)
+const trendBox = ref(null)   // 折线容器：实测宽度喂给 viewBox，保证 1:1 像素渲染
+const chartW = ref(0)
+let ro = null
+
+const trendTotal = computed(() =>
+  (trend.value?.question_trend || []).reduce((acc, p) => acc + (p.count || 0), 0)
+)
+
+// 数据已加载且非全零才算得出图；否则 null → 模板走空文案分支
+const trendChart = computed(() => {
+  const t = trend.value?.question_trend
+  if (!t || isTrendEmpty(t) || !chartW.value) return null
+  return buildTrendChart(t, { width: chartW.value })
+})
+
+// "真的没有数据"与"还没量到容器宽度"是两回事：前者出文案，后者只等一帧
+// （混在一起会让图出现前先闪一下空文案）
+const emptyTrend = computed(() => isTrendEmpty(trend.value?.question_trend))
 
 // 状态 → 文案 + 颜色。**颜色只在这里定义一次**，环形图和图例共用（原来 tag 靠
 // Element Plus 的 type 推断颜色，现在换成显式色值，两处才对得上）。
@@ -80,7 +106,39 @@ async function load() {
   }
 }
 
-onMounted(load)
+/**
+ * 趋势单独加载：接口挂掉只丢这一块，概览主体照常 —— 与"首屏不该为一张
+ * 辅助图表付代价"是同一个决定。失败**静默**（刷新重试即可），不弹提示。
+ */
+async function loadTrends() {
+  try {
+    const body = await statsApi.trends(7)
+    trend.value = body.data
+    // 数据回来元素才存在 —— 下一帧量宽、并挂上观察器（只挂一次）
+    await nextTick()
+    measure()
+    if (!ro && trendBox.value && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(measure)
+      ro.observe(trendBox.value)
+    }
+  } catch {
+    /* 辅助图表，失败静默 */
+  }
+}
+
+/** 用容器实测宽度喂 viewBox：1:1 像素渲染，文字和线宽都不缩放。 */
+function measure() {
+  const el = trendBox.value
+  if (el) chartW.value = Math.max(240, Math.floor(el.clientWidth))
+}
+
+function reload() {
+  load()
+  loadTrends()
+}
+
+onMounted(reload)
+onBeforeUnmount(() => ro?.disconnect())
 </script>
 
 <template>
@@ -89,7 +147,7 @@ onMounted(load)
       <template #header>
         <div class="card-head">
           <span>{{ user.displayName }}，欢迎回来</span>
-          <el-button size="small" @click="load">刷新</el-button>
+          <el-button size="small" @click="reload">刷新</el-button>
         </div>
       </template>
 
@@ -175,6 +233,40 @@ onMounted(load)
               <span class="legend-num">{{ s.count }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- 提问趋势（近 7 天折线）。🔴 空数据不画线、换文案 —— 见文件头说明。
+             数据由 statsApi.trends 独立加载，失败则整块不出现（静默）。 -->
+        <div v-if="trend" ref="trendBox" class="trend-row">
+          <div class="trend-head">
+            <span class="trend-title">提问趋势</span>
+            <span class="trend-sub">近 {{ trend.days }} 天 · 共 {{ trendTotal }} 次</span>
+          </div>
+          <div v-if="emptyTrend" class="trend-empty">
+            最近 {{ trend.days }} 天还没有提问 —— 数据还太少，暂时看不出趋势
+          </div>
+          <svg v-else-if="trendChart" :viewBox="`0 0 ${chartW} 132`" class="trend-svg" aria-hidden="true">
+            <!-- 0 值基线：让"贴着底"这件事本身可见 -->
+            <line
+              :x1="trendChart.left" :y1="trendChart.baseY"
+              :x2="trendChart.right" :y2="trendChart.baseY"
+              stroke="var(--el-border-color-lighter)" stroke-width="1"
+            />
+            <polyline
+              :points="trendChart.points"
+              fill="none"
+              stroke="var(--el-color-primary)"
+              stroke-width="2"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            />
+            <template v-for="d in trendChart.dots" :key="d.date">
+              <circle :cx="d.x" :cy="d.y" r="3" fill="var(--el-color-primary)">
+                <title>{{ d.date }}：{{ d.count }} 次</title>
+              </circle>
+              <text :x="d.x" :y="trendChart.labelY" text-anchor="middle" class="trend-label">{{ d.label }}</text>
+            </template>
+          </svg>
         </div>
       </template>
     </el-card>
@@ -340,6 +432,42 @@ onMounted(load)
 .legend-num {
   margin-left: auto;
   font-weight: 600;
+}
+/* ---- 提问趋势（手写 SVG 折线） ---- */
+.trend-row {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+.trend-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.trend-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.trend-sub {
+  font-size: var(--el-font-size-extra-small);
+  color: var(--el-text-color-secondary);
+}
+.trend-empty {
+  padding: 20px 0 10px;
+  text-align: center;
+  font-size: var(--el-font-size-extra-small);
+  color: var(--el-text-color-secondary);
+}
+/* viewBox 用容器实测宽度，所以这里是 1:1 像素渲染 —— 文字不缩放 */
+.trend-svg {
+  display: block;
+  width: 100%;
+  height: 132px;
+}
+.trend-label {
+  font-size: 10px;
+  fill: var(--el-text-color-secondary);
 }
 /* 最近文档的状态列：色点 + 文字，比 tag 轻 */
 .status-cell {

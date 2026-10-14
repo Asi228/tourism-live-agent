@@ -139,6 +139,18 @@ RUN_MYSQL_INTEGRATION=1  pytest tests/test_migrations.py -v             # 迁移
 RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest -v
 ```
 
+**前端也有一条零依赖的测试链**（`node:test`，不用装任何东西，与后端测试相互独立）：
+
+```bash
+cd frontend
+npm test                       # = node --test "src/**/*.test.js"
+```
+
+它只覆盖从 `.vue` 里抽出来的**纯逻辑**（`src/utils/` 四个模块：答案性质映射 /
+导出 Markdown / 记忆开关 / 趋势图坐标），**不测组件渲染与交互** —— 那是另一条
+防线（dev-only 的 SSE mock，见「已知限制」）。**改了 `src/utils/` 下任何文件，
+提交前跑一次它。**
+
 ### 🔴 改了模型或迁移之后，必须多做一步
 
 ```bash
@@ -442,6 +454,7 @@ bcrypt 每次换盐，所以**任何**改动 `password_hash` 的路径都会让�
 │   ├── src/stores/         #   Pinia（登录态）
 │   ├── src/router/         #   路由 + 登录守卫
 │   ├── src/views/          #   登录 / 知识库 / 文档 / 智能问答
+│   ├── src/utils/          #   纯逻辑 + node:test 用例（`npm test`，见「快速开始」）
 │   └── src/layouts/        #   侧边栏 + 顶栏
 ├── devtools/index.html     # 单文件后端调试台（开发自测）
 ├── docs/                   # 设计与实验记录（benchmarks/ 存对照实验的语料、数据与结论）
@@ -728,7 +741,7 @@ FAQ 是**问答入口之前的一道闸门**，不属于 RAG、也不属于 Agen
 | 相似度阈值 | 未启用 —— 样本不足时设高了会漏掉本该命中的资料（比噪声更糟），先在日志里累积「问题 → 命中分数」分布。⚠️ 注意：光累积**正样本**（库里有答案的问题）定不出这个阈值，需要的是"**明明库里没有**"时分数能到多高的上界 |
 | 扫描件 PDF | 不支持（不做 OCR），无文本层时会明确报"可能是扫描件" |
 | 流式输出 | **两条问答路都支持 SSE 流式**：纯 RAG 逐字吐（`POST /api/chat/stream`），Agent 吐**节点级进度**（`POST /api/agent/chat/stream`，Phase 14）—— 后者刻意不逐字输出答案，因为它的价值在"多步决策的进度"；真要逐字得给 `generate` 节点注入输出通道，留给后续 |
-| 前端测试 | **没有自动化测试栈**（未装 vitest），前端逻辑只有 `vite build` 保编译。**已实现**一个 dev-only 的 SSE 故障模拟来补：`frontend/mock-sse.js`（vite `configureServer` 中间件），问答页顶部有一条虚线工具条（`import.meta.env.DEV` 门控，build 时整条不进产物），或直接开 `/?mock=<模式>`。八种模式：`normal` / `break`（吐 2 帧后断开）/ `http502`（502+HTML，验 transport 判据）/ `error`（流内 error）/ `hang`（首帧前挂 3s）/ `unsaved`（`done.saved=false`）/ `truncated`（`finish_reason='length'`）/ `withconv`（`done.conversation_id` 非 null）。**流式和非流式都走 mock** —— 否则降级重试会打到真后端、真花一次钱。⚠️ 它覆盖不到：真实反代的超时行为、浏览器端的渲染细节（逐字/节流/光标）、以及真 LLM 的 usage 是否回传 |
+| 前端测试 | **两条互补的防线，都跟 vitest 无关**：① **纯逻辑**走 `node:test` 零依赖直跑（`npm test` —— 答案性质映射 / 导出 Markdown / 记忆开关 / 趋势图坐标四个模块），**不测组件渲染**；② 渲染与交互的边界靠一个 dev-only 的 SSE 故障模拟来补：`frontend/mock-sse.js`（vite `configureServer` 中间件），问答页顶部有一条虚线工具条（`import.meta.env.DEV` 门控，build 时整条不进产物），或直接开 `/?mock=<模式>`。八种模式：`normal` / `break`（吐 2 帧后断开）/ `http502`（502+HTML，验 transport 判据）/ `error`（流内 error）/ `hang`（首帧前挂 3s）/ `unsaved`（`done.saved=false`）/ `truncated`（`finish_reason='length'`）/ `withconv`（`done.conversation_id` 非 null）。**流式和非流式都走 mock** —— 否则降级重试会打到真后端、真花一次钱。⚠️ 它覆盖不到：真实反代的超时行为、浏览器端的渲染细节（逐字/节流/光标）、以及真 LLM 的 usage 是否回传 |
 | 测试基建 | ✅ **已收敛**：所有"自己开 session"的路径（流式落库 / `done` 之后的收尾维护 / 后台文档解析）统一走 `app.db.session.new_session()` —— 测试只需 patch **这一处**。以前是**四处**各存一份工厂（`agent_service` / `rag_service` / `conversation_service` / `document_service`），靠 fixture 的 docstring 提醒"都要换"，而**漏 patch 的后果不是测试变红，而是静默写进真 MySQL**。⚠️ 今后新增"自己开 session"的路径请一律走它，别再引入第二个来源 |
 | 登出语义 | 前端「退出」只清除本地 token；JWT 在服务端**不吊销**（后端无状态），仍然有效到过期。⚠️ 但**停用账号、改角色、改密码都能立刻生效** —— 分别靠实时查 `is_active`、实时读角色、以及 token 里的密码指纹（见第 5c 节） |
 | 库级成员管理 | 后端支持库级 admin 管成员，但前端「成员」入口目前只给系统管理员（授权需要列全站用户，而 `/api/users` 限系统管理员） |
