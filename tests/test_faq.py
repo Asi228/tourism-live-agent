@@ -371,3 +371,84 @@ def test_agent_endpoints_also_short_circuit(client, make_user, rag_env, monkeypa
     assert res.json()["data"]["answer"] == "满一年 5 天"
 
     assert rag_env["chat"] == 0, "Agent 那两条路也不该调模型"
+
+
+def test_faq_answer_is_redacted_after_access_revoked(client, make_user, rag_env, monkeypatch):
+    """撤权后回放：FAQ 标准答案必须与引用答案同口径整条隐藏。
+
+    FAQ 命中的 `sources` 是空的（答案不是文档片段），旧判据只看 sources ——
+    撤回授权后历史里的标准答案原样可见，是绕开撤权的后门
+    （2026-10-15 发现的第二个缺口，与 catalog 同型）。
+    判据：落库 meta 的 `faq_kb_id`。
+    """
+    from app.services import knowledge_service
+
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+    conv_id = client.post(
+        "/api/chat", json={"query": "年假几天"}, headers=admin["headers"]
+    ).json()["data"]["conversation_id"]
+
+    before = client.get(
+        f"/api/conversations/{conv_id}", headers=admin["headers"]
+    ).json()["data"]
+    assert before["messages"][1]["content"] == "满一年 5 天"
+    assert before["messages"][1]["meta"]["faq_kb_id"] == kb_id
+
+    # 模拟"撤销了他对这个库的权限"：可访问集合变空（管理员本不受限）
+    monkeypatch.setattr(knowledge_service, "get_accessible_kb_ids", lambda db, user: [])
+
+    after = client.get(
+        f"/api/conversations/{conv_id}", headers=admin["headers"]
+    ).json()["data"]
+    assert after["messages"][0]["content"] == "年假几天", "用户自己的提问还在"
+    assert after["messages"][1]["content"] != "满一年 5 天", (
+        "FAQ 标准答案没有被隐藏 —— 撤回权限后仍能看到答案正文"
+    )
+    assert after["messages"][1]["meta"]["redacted"] is True
+    # 隐藏时 meta 一并清空：连"答案出自哪个库"也不该再给
+    assert "faq_kb_id" not in after["messages"][1]["meta"]
+
+
+def test_legacy_faq_message_is_redacted_after_access_revoked(
+    client, make_user, rag_env, session_factory, monkeypatch
+):
+    """🔴 历史 FAQ 消息（2026-10-15 修复前落的库）也要被脱敏。
+
+    修复前落库的 FAQ 消息 meta 里**没有** faq_kb_id，只按新键判的话
+    这批消息永久绕过撤权（评审实锤：真库有同类样本）。判定处对旧形状
+    回退读 searched_kb_ids —— FAQ 的它恒为单元素 [faq.kb_id]。
+    """
+    from sqlalchemy import select
+
+    from app.models import Message
+    from app.services import knowledge_service
+
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    _add_faq(client, admin["headers"], kb_id, question="年假几天", answer="满一年 5 天")
+    conv_id = client.post(
+        "/api/chat", json={"query": "年假几天"}, headers=admin["headers"]
+    ).json()["data"]["conversation_id"]
+
+    # 把那条 assistant 消息的 meta 改回"修复前的旧形状"：删掉 faq_kb_id
+    with session_factory() as db:
+        msg = db.scalar(
+            select(Message)
+            .where(Message.conversation_id == conv_id, Message.role == "assistant")
+        )
+        assert msg.meta["faq_kb_id"] == kb_id
+        legacy = {k: v for k, v in msg.meta.items() if k != "faq_kb_id"}
+        msg.meta = legacy
+        db.commit()
+
+    monkeypatch.setattr(knowledge_service, "get_accessible_kb_ids", lambda db, user: [])
+
+    after = client.get(
+        f"/api/conversations/{conv_id}", headers=admin["headers"]
+    ).json()["data"]
+    assert "满一年 5 天" not in after["messages"][1]["content"], (
+        "旧形状 FAQ 消息绕过了脱敏 —— 回退读取没生效"
+    )
+    assert after["messages"][1]["meta"]["redacted"] is True

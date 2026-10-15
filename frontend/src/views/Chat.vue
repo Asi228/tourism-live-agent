@@ -9,6 +9,7 @@ import MemoryPanel from '../components/MemoryPanel.vue'
 // 今天栽过的跟头（answer_mode 漏接线、导出缺分页提示、开关翻错值）全长在这三块里。
 import { answerModeTag } from '../utils/answerMode'
 import { buildConversationMarkdown, formatStamp, sourceScoreText } from '../utils/exportMarkdown'
+import { buildChatPayload, conversationTitle as conversationTitleOf, toChatMessage } from '../utils/chatView'
 
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
@@ -236,14 +237,7 @@ async function loadOlderMessages() {
  * 也是往前翻页的 keyset 游标（`before_id`）。
  */
 function toMessage(m) {
-  if (m.role === 'user') return { id: m.id, role: 'user', content: m.content }
-  const meta = m.meta || {}
-  return {
-    id: m.id,
-    role: 'assistant',
-    mode: meta.source === 'agent' ? 'agent' : 'rag',
-    data: { answer: m.content, sources: m.sources || [], ...meta },
-  }
+  return toChatMessage(m)
 }
 
 async function removeConversation(conv) {
@@ -266,16 +260,12 @@ async function removeConversation(conv) {
 // ==================== 提问 ====================
 
 function buildPayload(text) {
-  // 刻意**不传 top_k**：让后端的 RAG_TOP_K 配置生效。
-  // 前端写死一个默认值等于把配置项架空 —— 之后在 .env 里改了它却不生效，还很难查出原因。
-  const payload = { query: text }
-  // ⚠️ 关键：没选库时**不要**传 kb_ids=[]。
-  // 后端把"空数组"理解为"允许范围为空"→ 直接返回空结果（这是防越权的设计）；
-  // 不传该字段才是"用我全部可访问的库"。这两个含义完全不同。
-  if (selectedKbs.value.length) payload.kb_ids = selectedKbs.value
-  // 带上会话 id 才能"接着上文问"；不带就是新开一段（后端会自动建）
-  if (currentConvId.value) payload.conversation_id = currentConvId.value
-  return payload
+  // 搬去了 utils/chatView.js（`npm test` 守着那两个"不传"的坑：
+  // 不写死 top_k、没选库不传空数组）—— 这里只做接线。
+  return buildChatPayload(text, {
+    selectedKbs: selectedKbs.value,
+    conversationId: currentConvId.value,
+  })
 }
 
 // 流式渲染的节流间隔：token 来得很密，每块都写进响应式对象会让 Vue 不停重渲染；
@@ -568,9 +558,7 @@ async function scrollToBottom() {
  * 还没落库的新对话就叫"新对话"。
  */
 function conversationTitle() {
-  if (!currentConvId.value) return '新对话'
-  const hit = conversations.value.find((c) => c.id === currentConvId.value)
-  return hit ? hit.title : `对话 ${currentConvId.value}`
+  return conversationTitleOf(currentConvId.value, conversations.value)
 }
 
 // 「拼 Markdown（含分页不完整警告）/ 时间戳 / 相似度百分数」搬去了
@@ -876,6 +864,9 @@ onBeforeUnmount(() => abortStream())
                     <!-- 脱敏消息：当时的口径全都取不回来了（meta 只剩 source），
                          不能说成"未使用知识库资料" —— 它其实用过资料，只是现在无权看了 -->
                     <el-tag v-if="m.data.redacted" size="small" type="warning">资料已无权访问</el-tag>
+                    <!-- 文档清单（catalog）：答案来自系统元数据、没有可引用的正文 —— 
+                         不能落进下面那个三元说成"有资料依据"（那是指文档正文） -->
+                    <el-tag v-else-if="m.data.answer_mode === 'catalog'" size="small" type="info">系统文档清单</el-tag>
                     <!-- 流式中 meta 事件还没到，hit 还是 null。
                          这时不能落进下面那个三元 —— 会把"还没检索完"说成"未使用知识库资料"。 -->
                     <el-tag v-else-if="m.data.hit === null" size="small" type="info">检索中…</el-tag>
@@ -961,7 +952,7 @@ onBeforeUnmount(() => abortStream())
                             >[{{ s.index }}]</el-tag>
                             <span class="doc-name">{{ s.document_name }}</span>
                             <span v-if="s.page_number != null" class="page">第 {{ s.page_number }} 页</span>
-                            <span class="score">{{ sourceScoreText(s.score) }}</span>
+                            <span class="score">{{ sourceScoreText(s.score, s.retrieval_path) }}</span>
                           </div>
                           <div class="snippet">{{ s.snippet }}</div>
                         </div>
@@ -1027,7 +1018,7 @@ onBeforeUnmount(() => abortStream())
             <span v-if="sourceDetail.data.page_number != null">第 {{ sourceDetail.data.page_number }} 页</span>
             <span>第 {{ sourceDetail.data.chunk_index + 1 }} 块</span>
             <span>{{ sourceDetail.data.char_count }} 字</span>
-            <span class="src-score">{{ sourceScoreText(sourceDetail.source.score) }}</span>
+            <span class="src-score">{{ sourceScoreText(sourceDetail.source.score, sourceDetail.source.retrieval_path) }}</span>
           </div>
           <pre class="src-body">{{ sourceDetail.data.content }}</pre>
         </template>

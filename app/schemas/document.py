@@ -66,3 +66,16 @@ class ChunkOut(BaseModel):
     page_number: int | None = None
     char_count: int
     content: str
+
+
+class UploadConfigOut(BaseModel):
+    """上传约束（给前端取 `accept` 白名单用）。
+
+    为什么要这个接口：白名单的权威是 `.env` 的 `ALLOWED_EXTENSIONS`，而前端曾经
+    在 Documents.vue 里**又硬编码了一份** —— 改了 .env 之后，前端会继续放出一个
+    服务端必拒的格式（2026-10-15 评审指出）。接口化之后，这份清单只剩一处权威。
+    """
+
+    allowed_extensions: list[str] = Field(
+        description="允许上传的扩展名（小写、不带点），如 pdf / docx —— 前端用它拼 accept"
+    )

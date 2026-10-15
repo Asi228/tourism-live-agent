@@ -1,5 +1,7 @@
 """向量检索的请求 / 响应模型。"""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +27,11 @@ class SearchResultItem(BaseModel):
     knowledge_base_id: int
     page_number: int | None = None
     score: float = Field(description="排序分数：默认是余弦相似度；重排后是 reranker 的相关性分数")
+    retrieval_path: Literal["vector", "keyword", "both"] = Field(
+        description="召回来源：vector=仅向量路命中；keyword=仅关键词路命中"
+                    "（未重排时 score 是**词项覆盖率**而不是余弦相似度）；both=两路都命中。"
+                    "前端对 keyword 显示「关键词匹配」",
+    )
     vector_score: float | None = Field(
         default=None,
         description="重排前的向量余弦相似度。仅当本次启用了重排才有值 —— "

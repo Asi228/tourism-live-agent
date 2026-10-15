@@ -228,11 +228,13 @@ def answer_from_faq(
     `hit=True` 是**诚实的**：这次确实有依据（管理员写的标准答案），只是依据不是文档。
     真正的"没依据"是 no_evidence 那种。
 
-    ⚠️ **已知边界（写清楚，别当成没这回事）**：回放脱敏只看 `sources` 里引用了哪些库，
-    而 FAQ 命中的 `sources` 是空的 —— 所以**用户日后失去该库权限时，这条 FAQ 答案
-    不会像文档引用那样被隐藏**。真要收紧，得让 `_cites_revoked_kb` 也看
-    `meta.searched_kb_ids`（那里诚实地记了答案出自哪个库）。当前 FAQ 是管理员写的
-    通用问答、不含敏感原文，所以按现状处理；改口径时记得这里。
+    ⚠️ **曾经是已知边界、现已修复（2026-10-15）**：回放脱敏过去只看 `sources`，
+    而 FAQ 命中的 `sources` 是空的 —— 用户日后失去该库权限时，这条 FAQ 答案不会
+    像文档引用那样被隐藏。修法：落库 meta 带 `faq_kb_id`（答案真正出自哪个库），
+    `_cites_revoked_kb` 的判据并入它。
+    ⚠️ 别为了省事去判 `meta.searched_kb_ids`：普通 RAG 路径里它是"检索范围"而不是
+    "答案引用了哪些库"（在三个库里搜、只命中一个，另两个 later 撤权不该连坐），
+    FAQ 这条路才敢把"来源库"单独记。
     """
     faq = match_faq(db, user, query, kb_ids)
     if faq is None:
@@ -248,6 +250,9 @@ def answer_from_faq(
         "answer_mode": ANSWER_MODE_FAQ,
         "sources": [],
         "searched_kb_ids": [faq.knowledge_base_id],
+        # 答案真正出自哪个库 —— 回放脱敏的判据（见函数 docstring 的修复说明）。
+        # 与 searched_kb_ids 在这里值恰好相同，但语义不同：它永远指向"这一个库"。
+        "faq_kb_id": faq.knowledge_base_id,
         "faq_id": faq.id,
         # 没调模型 —— 这几个字段是 null 而不是伪造一个模型名/用量
         "model": None,
@@ -281,6 +286,8 @@ def answer_from_faq(
             "usage": None,
             "finish_reason": None,
             "searched_kb_ids": [faq.knowledge_base_id],
+            # 撤权脱敏判据：FAQ 没有 sources，答案出自哪个库全靠它
+            "faq_kb_id": faq.knowledge_base_id,
         },
     )
     db.commit()

@@ -16,11 +16,15 @@ LangGraph 的 StateGraph 正好把这三样变成显式的东西 ——
         │                      不够且没到轮数上限
         │                         └──────→ 回到 retrieve
         │
-        └─ DOCS → fetch_docs → generate → END
-                 （取点名文档的全文：总结 / 对比。
-                   没拿到整篇的名字**补一次检索**（部分命中不再静默缺半边）、
-                   全部落空才回落原句检索；未命中 / 被裁 / 被截断的名单
-                   如实写进生成提示 —— 误判的代价约等于零）
+        ├─ DOCS → fetch_docs → generate → END
+        │        （取点名文档的全文：总结 / 对比。
+        │          没拿到整篇的名字**补一次检索**（部分命中不再静默缺半边）、
+        │          全部落空才回落原句检索；未命中 / 被裁 / 被截断的名单
+        │          如实写进生成提示 —— 误判的代价约等于零）
+        │
+        └─ LIST → list_docs → END
+                 （文档清单："我们都有哪些制度文档" —— 目录是确定性数据，
+                   节点里直接拼好答案就结束，**不经模型**，与 FAQ 命中即返回同一条思路）
 
 **三道成本闸门**（Agent 比纯 RAG 多调几次模型，必须掐住）：
   1. `AGENT_MAX_ITERATIONS`：最多检索几轮（默认 2），到顶强制生成
@@ -80,6 +84,8 @@ ANALYZE_SYSTEM = """你是企业知识库问答系统的调度器。判断用户
 · 要针对**某几份具名文档**做操作（总结 / 对比 / 提取要点），句子里提到了文档关键词
   → 输出：DOCS: 关键词1 | 关键词2
   （关键词给**最有区分度的短词**，如"考勤"、"报销"；别带"制度""文档"这类通用后缀）
+· 问"有哪些文档 / 库里有什么文件 / 文档清单"这类**目录型**问题
+  → 输出：LIST
 · 问候、自我介绍、"你能做什么"这类系统性问题 → 输出：SKIP
 
 只输出上述格式之一，不要解释。"""
@@ -141,12 +147,36 @@ def _doc_task_hint(query: str) -> str | None:
     return None
 
 
-# generate 节点的三种产出模式。它回答的是"这次答案**性质**是什么"：
+# 清单类问法的特征：**两个条件同时满足**才命中 ——
+# 疑问词（哪些/有什么/清单/列表/列出…）× 目标词（文档/文件/资料/手册）。
+# 只凭"哪些"会误伤"年假有哪些规定"（那是 SEARCH）；只凭"文档"会误伤
+# "文档怎么上传"（普通问题）。两者同时出现才是"要目录"。
+#
+# 命中它的作用与 _DOC_TASK_WORDS 相同：**不走业务词的规则短路** ——
+# "我们都有哪些制度文档"会命中业务词"制度"，若被短路成 SEARCH 就永远到不了 LIST
+# （实测踩过：这条查询被短路，LIST 分支根本走不到）。
+# 代价是多问模型一次；漏判则清单功能静默失效 —— 与文档任务词同一个取舍方向。
+_LIST_ASK_WORDS = ("哪些", "有什么", "清单", "列表", "列出")
+_LIST_TARGET_WORDS = ("文档", "文件", "资料", "手册")
+
+
+def _list_task_hint(query: str) -> str | None:
+    q = query or ""
+    ask = next((w for w in _LIST_ASK_WORDS if w in q), None)
+    target = next((w for w in _LIST_TARGET_WORDS if w in q), None)
+    return "%s×%s" % (ask, target) if (ask and target) else None
+
+
+# generate 节点的产出模式。它回答的是"这次答案**性质**是什么"：
 # 只看 hit 分不清「检索了但没资料」与「压根没检索（寒暄直答）」，
 # 而这两者的可信度完全不同 —— 前者是"没有依据"，后者是"本就不该有依据"。
 ANSWER_GROUNDED = "grounded"        # 依据知识库资料作答
 ANSWER_NO_EVIDENCE = "no_evidence"  # 检索过但没资料（含"有命中但一条都拼不进上下文"）
 ANSWER_SMALLTALK = "smalltalk"      # 判定不需要查库，寒暄式回应（唯一允许无资料发挥的口子）
+# 文档清单：答案来自**系统元数据**（可见文档目录），未经模型生成 ——
+# 与 grounded 的区别是"没有可引用的文档正文"，与 smalltalk 的区别是"内容有据可查"。
+# ⚠️ 新增取值要同步 schemas/agent.py 的 Literal 与前端 utils/answerMode.js。
+ANSWER_CATALOG = "catalog"
 
 
 def _step(node: str, started: float, **detail) -> dict:
@@ -155,7 +185,7 @@ def _step(node: str, started: float, **detail) -> dict:
 
 
 def _parse_analyze(text: str) -> tuple[str, list[str]]:
-    """解析调度器的输出 → `(mode, doc_names)`，mode ∈ {"search", "docs", "skip"}。
+    """解析调度器的输出 → `(mode, doc_names)`，mode ∈ {"search", "docs", "list", "skip"}。
 
     拿不准时一律默认 "search" —— 与旧版 NEED/SKIP 同一个降级方向：
     宁可多花一次检索的钱，也不能让知识库问答凭空作答（或反过来漏掉取数）。
@@ -173,6 +203,9 @@ def _parse_analyze(text: str) -> tuple[str, list[str]]:
     u = t.upper()
     if "SKIP" in u or u.startswith("NO"):
         return "skip", []
+    if "LIST" in u:
+        # 文档清单：目录型问题，由 list_docs 节点直接作答（不经模型）
+        return "list", []
     return "search", []
 
 
@@ -225,10 +258,12 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         started = time.monotonic()
 
         # 规则先手：命中业务词就不问模型了 —— 省一次调用，也堵住 SKIP 误判。
-        # ⚠️ 例外：句子里出现"对比 / 总结"这类文档任务词时不短路 —— 用户可能是在
-        # 点名某几份文档，要交给模型区分 SEARCH 与 DOCS（见 _DOC_TASK_WORDS 的代价分析）。
+        # ⚠️ 两组例外（都不短路，交给模型区分 SEARCH 与 DOCS/LIST）：
+        #   ①"对比 / 总结"这类文档任务词（_DOC_TASK_WORDS）；
+        #   ②"哪些文档 / 有什么文件"这类清单问法（_list_task_hint）——
+        #     它们常同时带业务词（如"制度"），短路会把 DOCS/LIST 两个分支全堵死。
         hint = _business_hint(state["query"])
-        if hint and not _doc_task_hint(state["query"]):
+        if hint and not _doc_task_hint(state["query"]) and not _list_task_hint(state["query"]):
             return {
                 "need_retrieval": True,
                 "mode": "search",
@@ -454,6 +489,64 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             "steps": state.get("steps", []) + [_step("fetch_docs", started, **detail)],
         }
 
+    def list_docs(state: AgentState) -> dict:
+        """文档清单：直接产出**目录型答案**（不经模型）。
+
+        为什么不让模型"加工"一下清单：这是**系统元数据**（有哪些文档），
+        没有需要理解或改写的内容 —— 让模型过一道只会引入改写错误 + 一次调用成本。
+        与"FAQ 命中即返回"同一条思路：能从确定性数据直接给出的，就别经过生成。
+
+        目录里的每份文档**不带 chunk_id**（没有可引用的正文），所以 sources=[] ——
+        前端据此不作溯源展示；answer_mode=catalog 告诉界面这是"清单"而非"资料答案"。
+        `hit=True` 保持：它确实带来了库内内容（要进会话历史，用户可能接着追问某一份）。
+
+        但正文里带着【库名】+《文件名》—— 撤回某库的权限之后，这条历史同样不能原样回放。
+        所以额外产出 `catalog_kb_ids`（本条清单涉及的库 id），由 agent_service 写进
+        `messages.meta`，回放脱敏据此整条隐藏（与引用答案同口径，见 conversation_service）。
+        """
+        started = time.monotonic()
+        got = tools.list_documents(db, user, kb_ids)
+        items = got.get("items") or []
+
+        if not items:
+            return {
+                "answer": "当前可见范围内还没有已完成的文档。请先上传文档并完成向量化。",
+                "hit": False,
+                "sources": [],
+                "answer_mode": ANSWER_NO_EVIDENCE,
+                "fetched": True,   # 查过元数据了（searched_kb_ids 要保留）
+                "searched_kb_ids": got.get("searched_kb_ids"),
+                "steps": state.get("steps", []) + [_step("list_docs", started, count=0)],
+            }
+
+        lines: list[str] = []
+        current_kb = None
+        for item in items:
+            if item["knowledge_base_name"] != current_kb:
+                current_kb = item["knowledge_base_name"]
+                lines.append("【%s】" % current_kb)
+            lines.append("- 《%s》" % item["filename"])
+        body = "当前可见范围内共有 %s 份文档：\n\n%s" % (len(items), "\n".join(lines))
+        if got.get("truncated"):
+            body += "\n\n（数量较多，以上只列出前 %s 份）" % len(items)
+
+        detail = {"count": len(items)}
+        if got.get("truncated"):
+            detail["truncated"] = True
+        return {
+            "answer": body,
+            "hit": True,
+            "sources": [],
+            "answer_mode": ANSWER_CATALOG,
+            "fetched": True,
+            "searched_kb_ids": got.get("searched_kb_ids"),
+            # 清单正文带着【库名】+《文件名》，但 sources 是空的（目录不是引用）——
+            # 把"涉及哪些库"显式记下来，撤权后的回放脱敏才有判据可用
+            # （见 conversation_service._cites_revoked_kb；没有它 = 撤权后清单原样可见）。
+            "catalog_kb_ids": sorted({item["knowledge_base_id"] for item in items}),
+            "steps": state.get("steps", []) + [_step("list_docs", started, **detail)],
+        }
+
     def evaluate(state: AgentState) -> dict:
         started = time.monotonic()
         docs = state.get("retrieved", [])
@@ -566,6 +659,8 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             return "generate"
         if mode == "docs":
             return "fetch_docs"
+        if mode == "list":
+            return "list_docs"
         return "retrieve"
 
     def route_after_evaluate(state: AgentState) -> str:
@@ -596,6 +691,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
     graph.add_node("analyze", analyze)
     graph.add_node("retrieve", retrieve)
     graph.add_node("fetch_docs", fetch_docs)
+    graph.add_node("list_docs", list_docs)
     graph.add_node("evaluate", evaluate)
     graph.add_node("generate", generate)
 
@@ -603,11 +699,18 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
     graph.add_conditional_edges(
         "analyze",
         route_after_analyze,
-        {"retrieve": "retrieve", "fetch_docs": "fetch_docs", "generate": "generate"},
+        {
+            "retrieve": "retrieve",
+            "fetch_docs": "fetch_docs",
+            "list_docs": "list_docs",
+            "generate": "generate",
+        },
     )
     graph.add_edge("retrieve", "evaluate")
     # 文档任务直连 generate：全文已取到（或已回落检索），没有"够不够"要判、也没有词可改写
     graph.add_edge("fetch_docs", "generate")
+    # 文档清单**直接 END**：答案在节点里就拼好了（目录是确定性数据，不经模型）
+    graph.add_edge("list_docs", END)
     graph.add_conditional_edges(
         "evaluate", route_after_evaluate, {"retrieve": "retrieve", "generate": "generate"}
     )

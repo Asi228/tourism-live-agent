@@ -72,7 +72,7 @@ export function buildConversationMarkdown({ title, mode, messages, hasOlder, sta
       for (const s of sources) {
         const page = s.page_number != null ? `第 ${s.page_number} 页` : '无页码'
         out.push(
-          `- [${s.index}] 《${s.document_name}》${page}，${sourceScoreText(s.score)}`
+          `- [${s.index}] 《${s.document_name}》${page}，${sourceScoreText(s.score, s.retrieval_path)}`
         )
         if (s.snippet) out.push(`  > ${s.snippet}`)
       }
@@ -96,7 +96,13 @@ export function scorePercent(score) {
  * 检索命中 → `相似度 87%`；**文档级命中（score 为 null）→ `整篇文档`** ——
  * Agent 的文档任务（总结/对比）取的是整篇文档，没有"相似度"这个概念。
  * 直接走 scorePercent 会显示"相似度 0%"（Number(null)=0），那是误导：看起来像不相关。
+ *
+ * **仅关键词路命中（retrieval_path === 'keyword'）→ `关键词匹配`** ——
+ * 那个分数是词项覆盖率（命中词数 / 提词数），和余弦相似度同落 0~1 但语义不同，
+ * 混着叫"相似度"是假精度（评审 2026-10-15 指出；来源由后端 retrieval_path 标注）。
  */
-export function sourceScoreText(score) {
-  return score == null ? '整篇文档' : `相似度 ${scorePercent(score)}%`
+export function sourceScoreText(score, retrievalPath) {
+  if (score == null) return '整篇文档'
+  if (retrievalPath === 'keyword') return '关键词匹配'
+  return `相似度 ${scorePercent(score)}%`
 }

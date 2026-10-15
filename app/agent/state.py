@@ -30,9 +30,10 @@ class AgentState(TypedDict, total=False):
     # ---------- analyze 节点（LLM 决策）----------
     # 这个问题要不要查知识库？"你好"、"你能做什么"这类不该白跑一次检索
     need_retrieval: bool
-    # 怎么取得答案 —— analyze 输出的**路由指令**（三者之一）：
+    # 怎么取得答案 —— analyze 输出的**路由指令**（四者之一）：
     #   "search"：语义检索（默认，拿不准都归它）
     #   "docs"  ：用户点名了某几份文档，走 fetch_docs 取全文再生成（总结 / 对比）
+    #   "list"  ：问"有哪些文档"，走 list_docs 直接产出清单（不经模型）
     #   "skip"  ：寒暄 / 系统性问题，不取数
     # need_retrieval 保留为它的粗粒度投影（mode != "skip"），旧调用方与 generate 的判断不动。
     mode: str
@@ -53,6 +54,10 @@ class AgentState(TypedDict, total=False):
     # 检索层算出的**真实范围**（已与用户权限求交集），由 retrieve 节点写入。
     # 它是检索结果的一部分，不是入参 kb_ids 的回显 —— 后者没求过交集。
     searched_kb_ids: list[int] | None
+    # 文档清单（LIST）**列出过**的库 id 集合，由 list_docs 节点写入 ——
+    # 清单正文带【库名】+《文件名》而没有 sources，撤权后的回放脱敏靠它判定。
+    # （不能用 searched_kb_ids：它对管理员是 None，表达不了"列了哪些库"。）
+    catalog_kb_ids: list[int]
     # 取数过程的"诚实说明"：未匹配到整篇的名字 / 因预算被裁的名字 / 被截断的文档名。
     # 由 fetch_docs 写入、generate 拼进提示词 —— 让答案主动交代"缺了什么"，
     # 而不是看起来完整（缺一半的"对比"比答不出来更坏）。

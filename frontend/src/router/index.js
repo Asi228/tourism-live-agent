@@ -21,6 +21,7 @@ const VIEW_LOADERS = {
   chat: () => import('../views/Chat.vue'),
   users: () => import('../views/Users.vue'),
   system: () => import('../views/System.vue'),
+  'search-debug': () => import('../views/SearchDebug.vue'),
 }
 
 // children 由 NAV_ITEMS 生成：meta.title / meta.admin 都从那张表来，
@@ -40,7 +41,9 @@ const routes = [
     path: '/',
     component: MainLayout,
     // 默认落在概览页而不是知识库：第一屏应该是"我现在有什么、发生了什么"，
-    // 而不是一个功能列表。`meta.admin` 的页面由菜单层隐藏，路由层只做登录校验。
+    // 而不是一个功能列表。`meta.admin` 的页面由**菜单层隐藏**（体验层），
+    // 路由层下面的 beforeEach 仍有 admin 守卫（手输 URL 也会被拦走），
+    // 后端 require_admin 是最后一道。
     redirect: '/dashboard',
     children: layoutChildren,
   },

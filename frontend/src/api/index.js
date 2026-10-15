@@ -73,6 +73,9 @@ export const documentApi = {
   chunks: (id) => http.get(`/documents/${id}/chunks`),
   vectorize: (id) => http.post(`/documents/${id}/vectorize`),
   remove: (id) => http.delete(`/documents/${id}`),
+  // 上传白名单来自服务端（.env 的 ALLOWED_EXTENSIONS 是唯一权威）——
+  // 前端不再自己维护一份会漂移的格式清单（评审 2026-10-15 指出：第 4 份清单）。
+  uploadConfig: () => http.get('/documents/upload-config'),
   upload: (kbId, file, onProgress) => {
     const form = new FormData()
     form.append('kb_id', kbId)
@@ -95,9 +98,8 @@ export const chatApi = {
   // Agent：多步决策，返回执行轨迹；会多调几次模型，更慢也更贵
   askAgent: (payload, config, url) => http.post(url || '/agent/chat', payload, config),
   // 只检索不给模型：用来对比"重排前后"的排序差异（`/search` 默认 rerank=false）。
-  // ⚠️ **当前没有 UI 入口**——这是刻意的，它是**对照实验**用的封装
-  //（见 docs/benchmarks/query-rewrite.md 的做法），不是漏接线的界面功能。
-  // 重跑实验时用它，或走调试台的「万能请求」直接 POST。
+  // 界面入口在「检索调试」页（仅管理员，views/SearchDebug.vue）；
+  // 它也是对照实验用的封装（见 docs/benchmarks/query-rewrite.md 的做法）。
   search: (payload) => http.post('/search', payload),
 }
 

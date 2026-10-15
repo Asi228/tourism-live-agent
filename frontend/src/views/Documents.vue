@@ -114,6 +114,24 @@ async function onKbChange() {
 // ---------- 上传 ----------
 // 用 el-upload 的自定义上传（http-request），因为要走我们自己的 axios 封装
 // （自动带 token、统一错误提示），而不是 el-upload 内置的 XHR。
+
+// 选择器的白名单从后端取（.env 的 ALLOWED_EXTENSIONS 是唯一权威）——
+// 以前这里硬编码第 4 份清单：改了 .env 之后前端会继续放出一个服务端必拒的格式。
+// 兜底值只在接口失败时生效；服务端仍会对文件类型做最终校验。
+const uploadAccept = ref('.pdf,.txt,.md,.markdown,.docx')
+
+async function loadUploadConfig() {
+  try {
+    const body = await documentApi.uploadConfig()
+    const exts = body.data?.allowed_extensions
+    if (Array.isArray(exts) && exts.length) {
+      uploadAccept.value = exts.map((e) => `.${e}`).join(',')
+    }
+  } catch {
+    /* 保持兜底清单，不打断页面 */
+  }
+}
+
 async function customUpload(options) {
   const file = options.file
   try {
@@ -188,6 +206,7 @@ async function removeDoc(row) {
 
 onMounted(async () => {
   try {
+    await loadUploadConfig()
     await loadKbList()
     await loadDocs()
   } catch {
@@ -215,7 +234,7 @@ onUnmounted(stopPolling)
             :show-file-list="false"
             :http-request="customUpload"
             :disabled="!canWrite || !kbId"
-            accept=".pdf,.txt,.md,.markdown"
+            :accept="uploadAccept"
           >
             <el-button type="primary" :disabled="!canWrite || !kbId">上传文档</el-button>
           </el-upload>

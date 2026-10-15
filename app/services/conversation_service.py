@@ -406,8 +406,23 @@ def list_conversations(
     return conversation_repository.list_by_user(db, user.id, limit=limit, offset=offset)
 
 
-def _cites_revoked_kb(sources: list | None, allowed: list[int] | None) -> bool:
-    """这条答案有没有引用「此刻已无权访问」的知识库。
+def _cites_revoked_kb(
+    sources: list | None,
+    allowed: list[int] | None,
+    catalog_kb_ids: list[int] | None = None,
+    faq_kb_id: int | None = None,
+) -> bool:
+    """这条答案有没有触碰「此刻已无权访问」的知识库 —— 三条线索都要查：
+
+      · `sources[].knowledge_base_id` —— 普通答案的引用列表；
+      · `catalog_kb_ids`（meta 里）    —— 文档清单（answer_mode=catalog）没有 sources，
+        但正文里带着【库名】+《文件名》，撤权后同样不能原样回放
+        （2026-10-15 评审抓到的缺口：旧判据只看 sources，清单曾绕过这条防线）；
+      · `faq_kb_id`（meta 里）         —— FAQ 命中（answer_mode=faq）同样没有 sources，
+        标准答案出自哪个库全靠它（同日发现的第二个缺口，与 catalog 同型）。
+
+    ⚠️ 三者都是"答案**真正触及**的库"，与 `meta.searched_kb_ids`（检索范围）是两回事 ——
+    后者不能拿来判：在三个库里搜、只命中一个，另两个日后再撤权不该连坐这条答案。
 
     `allowed is None` 表示系统管理员不受限（见 knowledge_service.get_accessible_kb_ids），
     绝不能把它当空集合 —— 那会把管理员的引用全部抹掉。
@@ -418,6 +433,11 @@ def _cites_revoked_kb(sources: list | None, allowed: list[int] | None) -> bool:
         kb_id = s.get("knowledge_base_id")
         if kb_id is not None and kb_id not in allowed:
             return True
+    for kb_id in catalog_kb_ids or []:
+        if kb_id not in allowed:
+            return True
+    if faq_kb_id is not None and faq_kb_id not in allowed:
+        return True
     return False
 
 
@@ -459,18 +479,39 @@ def load_messages_for_display(
     allowed = knowledge_service.get_accessible_kb_ids(db, user)
     out: list[dict] = []
     for msg in rows:
-        if msg.role == ROLE_ASSISTANT and _cites_revoked_kb(msg.sources, allowed):
-            out.append({
-                "id": msg.id,
-                "role": msg.role,
-                "content": REDACTED_ANSWER,
-                "sources": [],
-                # 只留前端渲染分支需要的 source；meta 里其它字段（含 searched_kb_ids
-                # 这类库 id 回显）一并丢掉 —— 既然资料已经收回，连"查过哪个库"也不该再给了。
-                "meta": {"source": (msg.meta or {}).get("source"), "redacted": True},
-                "created_at": msg.created_at,
-            })
-            continue
+        meta = msg.meta or {}
+        if msg.role == ROLE_ASSISTANT:
+            # ---- 历史消息兼容（2026-10-15 修复之前落的库）----
+            # 修复前 FAQ / 清单消息的 meta 里**没有** faq_kb_id / catalog_kb_ids，
+            # 只按新键判的话这批历史消息会永久绕过撤权脱敏（评审实锤：真库有样本）。
+            # 回退读取，且只对这两类：
+            #   · FAQ：`searched_kb_ids` 恒为单元素 [faq.kb_id]（faq_service 一直这么写）；
+            #   · catalog：`searched_kb_ids` 是 list_docs 的检索范围，而清单列的就是
+            #     scope 内全部 completed 文档 —— **范围即引用**。
+            # ⚠️ 普通 RAG 消息不能这么回退：它的 searched_kb_ids 是纯"检索范围"，
+            # 拿它判会把"三库搜一中一、另两个后来撤权"的答案误连坐。
+            faq_kb_id = meta.get("faq_kb_id")
+            if faq_kb_id is None and meta.get("answer_mode") == "faq":
+                old = meta.get("searched_kb_ids")
+                if isinstance(old, list) and len(old) == 1:
+                    faq_kb_id = old[0]
+            catalog_kb_ids = meta.get("catalog_kb_ids")
+            if catalog_kb_ids is None and meta.get("answer_mode") == "catalog":
+                old = meta.get("searched_kb_ids")
+                if isinstance(old, list):
+                    catalog_kb_ids = old
+            if _cites_revoked_kb(msg.sources, allowed, catalog_kb_ids, faq_kb_id):
+                out.append({
+                    "id": msg.id,
+                    "role": msg.role,
+                    "content": REDACTED_ANSWER,
+                    "sources": [],
+                    # 只留前端渲染分支需要的 source；meta 里其它字段（含 searched_kb_ids
+                    # 这类库 id 回显）一并丢掉 —— 既然资料已经收回，连"查过哪个库"也不该再给了。
+                    "meta": {"source": meta.get("source"), "redacted": True},
+                    "created_at": msg.created_at,
+                })
+                continue
         out.append({
             "id": msg.id,
             "role": msg.role,

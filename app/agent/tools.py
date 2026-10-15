@@ -1,18 +1,20 @@
 """Agent 可用的工具。
 
-**两件工具，对应两种"取数能力"**：
+**三件工具，对应三种"取数能力"**：
   1. `search_knowledge` —— 语义检索（按内容找）
   2. `get_document`     —— 按文档名取全文（文档任务：总结 / 对比）
+  3. `list_documents`   —— 列可见文档清单（元数据查询："我们都有哪些制度文档"）
 
 为什么不按"任务类型"给工具（summarize / compare / extract 各来一个）：
 那三者本质都是"拿到文档内容 + 用不同提示词生成"，做成三个工具只会重叠；
 **工具按取数能力切，任务模式交给生成时的提示词**——这才是这套东西的真实分野。
 
 ⚠️ 上一版只有一件工具时的注释说"等真的出现第二种能力再加" —— 现在第二种
-能力（取指定文档）真的出现了，不是硬凑的，才加的它。
+能力（取指定文档）与第三种（元数据查询）都真的出现了，不是硬凑的，才加的它们。
+判断标准很简单：把工具去掉，对应的那类问题就**答不了**（而不是"答得差一点"）。
 
-**给模型看的工具描述**：这份插件的场景里模型是通过 DOCS 指令点名文档，
-再由图里的 fetch_docs 节点调用本工具 —— 所以这里不写 JSON schema，
+**给模型看的工具描述**：这份插件的场景里模型是通过 DOCS / LIST 指令选中能力，
+再由图里的节点调用这些工具 —— 所以这里不写 JSON schema，
 但每个函数的 docstring 都写清了"模型视角下它做什么"。
 """
 
@@ -24,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.document import STATUS_COMPLETED, Document
 from app.models.user import User
-from app.repositories import document_chunk_repository
+from app.repositories import document_chunk_repository, knowledge_repository
 from app.services import knowledge_service, vector_service
 
 logger = logging.getLogger(__name__)
@@ -203,3 +205,59 @@ def get_document(
         "matched": 1,
         "candidates": candidates,
     }
+
+
+# ---- 第三件工具：文档清单（元数据查询）----
+
+# 清单最多列几份：不是"技术限制"而是**产品判断** —— 几百行的目录谁也读不下去，
+# 超出时截断并在答案里说明（truncated=True）。
+LIST_MAX = 50
+
+
+def list_documents(
+    db: Session,
+    user: User,
+    kb_ids: list[int] | None = None,
+) -> dict:
+    """列出可见范围内的文档**清单**（按知识库分组）。
+
+    用途：用户问"我们都有哪些制度文档 / 库里有什么文件"—— 这是**元数据查询**，
+    与"按内容找"（search_knowledge）、"取某一篇全文"（get_document）并列的第三种取数：
+    它不产出资料正文，产出的是一份**目录**（由调用方直接呈现，无需模型加工）。
+
+    只列 **completed** 的文档（与检索口径一致：没处理完的取不到内容，
+    列出来只会让用户困惑"为什么它有但答不出来"）。
+    最多 `LIST_MAX` 份，超出时 `truncated=True`（调用方要在答案里说明还有更多）。
+    """
+    scope = _document_scope(db, user, kb_ids)
+    if scope == []:
+        return {"items": [], "truncated": False, "searched_kb_ids": []}
+
+    stmt = (
+        select(Document)
+        .where(Document.status == STATUS_COMPLETED)
+        .order_by(Document.knowledge_base_id, Document.filename)
+    )
+    if scope is not None:
+        stmt = stmt.where(Document.knowledge_base_id.in_(scope))
+    # 多取一条：用它判断"是否还有更多"（比再 count 一次省一条 SQL）
+    rows = list(db.scalars(stmt.limit(LIST_MAX + 1)))
+    truncated = len(rows) > LIST_MAX
+    rows = rows[:LIST_MAX]
+
+    kb_map = {
+        kb.id: kb.name
+        for kb in knowledge_repository.list_by_ids(
+            db, sorted({d.knowledge_base_id for d in rows})
+        )
+    }
+    items = [
+        {
+            "document_id": d.id,
+            "filename": d.filename,
+            "knowledge_base_id": d.knowledge_base_id,
+            "knowledge_base_name": kb_map.get(d.knowledge_base_id, "(知识库已删除)"),
+        }
+        for d in rows
+    ]
+    return {"items": items, "truncated": truncated, "searched_kb_ids": scope}

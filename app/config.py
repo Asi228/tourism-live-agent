@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     # 磁盘上的文件名由 uuid 生成，**绝不使用用户上传的文件名**（防路径穿越/重名覆盖）。
     UPLOAD_DIR: str = str(BASE_DIR / "uploads")
     MAX_UPLOAD_SIZE_MB: int = 20
-    ALLOWED_EXTENSIONS: str = "pdf,txt,md,markdown"
+    ALLOWED_EXTENSIONS: str = "pdf,txt,md,markdown,docx"
 
     # ===== 文本切分 =====
     # 单位是**字符**而不是 token。原因：BGE-M3 走 API，本地不装 tokenizer
@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     RAG_MAX_CONTEXT_CHARS: int = 6000
     # 引用列表里每条展示的正文摘要长度
     RAG_SNIPPET_CHARS: int = 120
+
+    # ===== 混合检索（Phase 16）=====
+    # 关键词路（jieba 提词 + MySQL 全文匹配）与向量路双路召回、RRF 融合。
+    # 为什么默认开：纯向量对"编号/型号/专有名词"（ISO27001、SQL-2000）不敏感，
+    # 关键词路正好补这个短板；两路都空时才真的没有结果 —— 融合让"召回"更稳。
+    # 关掉可一键退回纯向量（对照排查用）。
+    RAG_HYBRID_ENABLED: bool = True
+    # 关键词路召回条数（与 RAG_CANDIDATE_K 对齐：两路都进融合，再统一截断）
+    RAG_KEYWORD_K: int = 20
 
     # ===== Rerank 重排（Phase 7）=====
     # 开关：rerank 只是「让排序更准」，不是必需品，所以给一个能一键退回纯向量检索的开关。
@@ -275,6 +284,11 @@ class Settings(BaseSettings):
             raise ValueError("RAG_SNIPPET_CHARS 必须大于 0")
         if self.RAG_CANDIDATE_K <= 0:
             raise ValueError("RAG_CANDIDATE_K 必须大于 0")
+        if self.RAG_KEYWORD_K <= 0:
+            raise ValueError(
+                "RAG_KEYWORD_K 必须大于 0：0 会让关键词路静默查空（SQL 里就是 LIMIT 0），"
+                "混合检索名存实亡而界面上毫无提示；要关关键词路请用 RAG_HYBRID_ENABLED=false"
+            )
         if self.CONVERSATION_MAX_HISTORY_TURNS < 0:
             raise ValueError(
                 "CONVERSATION_MAX_HISTORY_TURNS 不能为负数（0 表示不带历史，是合法值）"

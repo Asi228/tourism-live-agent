@@ -127,6 +127,21 @@ def test_response_does_not_leak_server_path(client, make_user, doc_env):
         assert leaked not in body["data"]
 
 
+def test_upload_config_exposes_env_whitelist(client, make_user, monkeypatch):
+    """白名单接口 = 前端 accept 的唯一来源：改 .env 一处，界面不会继续放行被拒格式。
+
+    （前端曾硬编码第 4 份清单，评审 2026-10-15 指出。）
+    特意把配置改成**与默认值不同**的一组：接口若被写成硬编码，这条会红。
+    """
+    admin = make_user("admin")
+    monkeypatch.setattr(settings, "ALLOWED_EXTENSIONS", "txt, docx")
+
+    body = client.get("/api/documents/upload-config", headers=admin["headers"]).json()
+
+    assert body["code"] == 0, body
+    assert body["data"]["allowed_extensions"] == ["docx", "txt"]
+
+
 # ==================== 上传：校验与失败路径 ====================
 
 
@@ -441,6 +456,92 @@ def test_loader_rejects_unknown_type(tmp_path):
     with pytest.raises(Exception) as exc:
         loader.load(path, "csv")
     assert "不支持的文件类型" in str(exc.value)
+
+
+# ==================== Word（docx）解析 ====================
+
+
+def test_loader_reads_docx_in_document_order(tmp_path):
+    """🔴 Word 解析：段落与表格按**原始顺序**取，不是"所有段落 + 表格堆末尾"。
+
+    python-docx 的 `doc.paragraphs` / `doc.tables` 是两个分开的列表，
+    直接用会把"表格夹在段落中间"的制度文档变成"表格全在末尾" ——
+    表格和它对应的上下文错位，总结/对比任务就会张冠李戴。
+    """
+    from docx import Document as DocxDocument
+
+    d = DocxDocument()
+    d.add_paragraph("第一段：总则。")
+    table = d.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "天数"
+    table.cell(1, 0).text = "年假"
+    table.cell(1, 1).text = "5 天"
+    d.add_paragraph("第三段：附则。")
+    path = tmp_path / "制度.docx"
+    d.save(str(path))
+
+    pages = loader.load(path, "docx")
+
+    assert len(pages) == 1
+    page_number, text = pages[0]
+    assert page_number is None  # docx 没有可靠的"页"概念（同 txt/md）
+    # 顺序：段落 → 表格行 → 段落；表格转成 Markdown 行保留行列关系
+    assert text.index("第一段") < text.index("| 项目 | 天数 |") < text.index("第三段")
+    assert "| 年假 | 5 天 |" in text
+
+
+def test_loader_rejects_empty_docx(tmp_path):
+    """空 Word 文档 → 明确报错，不能静默产出一份没有内容的文档。"""
+    from docx import Document as DocxDocument
+
+    from app.core.exceptions import AppException
+
+    d = DocxDocument()
+    path = tmp_path / "empty.docx"
+    d.save(str(path))
+
+    with pytest.raises(AppException) as exc:
+        loader.load(path, "docx")
+    assert "未解析出任何文本" in str(exc.value)
+
+
+def test_upload_docx_end_to_end(client, make_user, doc_env):
+    """上传 docx → 扩展名白名单放行 → 解析 → 切块（两处都要认这个格式）。"""
+    from docx import Document as DocxDocument
+
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+
+    d = DocxDocument()
+    d.add_paragraph("第一章 年假制度")
+    d.add_paragraph("员工入职满一年可享受年假 5 天，满三年 10 天。")
+    d.add_paragraph("申请流程：先提交申请单，由主管审批。")
+    buf = io.BytesIO()
+    d.save(buf)
+
+    r = _upload(
+        client,
+        admin["headers"],
+        kb_id,
+        "员工手册.docx",
+        buf.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    body = r.json()
+    assert body["code"] == 0, body
+    doc_id = body["data"]["id"]
+    assert body["data"]["file_type"] == "docx"
+
+    detail = client.get(f"/api/documents/{doc_id}", headers=admin["headers"]).json()
+    assert detail["data"]["status"] == "completed", detail
+    assert detail["data"]["chunk_count"] >= 1
+
+    chunks = client.get(
+        f"/api/documents/{doc_id}/chunks", headers=admin["headers"]
+    ).json()["data"]
+    joined = "".join(c["content"] for c in chunks)
+    assert "年假 5 天" in joined, "docx 的正文没有被解析进切块"
 
 
 # ==================== 配置校验：错在启动时就炸，别等处理文档时才失败 ====================

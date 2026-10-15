@@ -4,6 +4,7 @@ import {
   Document,
   Monitor,
   Odometer,
+  Search,
   User,
 } from '@element-plus/icons-vue'
 
@@ -30,4 +31,7 @@ export const NAV_ITEMS = [
   // admin: true 的两项由菜单层按角色隐藏（体验层），路由层与后端仍然强校验
   { path: '/users', title: '用户管理', icon: User, admin: true },
   { path: '/system', title: '系统状态', icon: Monitor, admin: true },
+  // 检索调试：只检索不调模型，看双路召回/融合/重排的原始结果
+  // （原 devtools 单文件页的高频用途；devtools 仍保留作万能请求调试台）
+  { path: '/search-debug', title: '检索调试', icon: Search, admin: true },
 ]

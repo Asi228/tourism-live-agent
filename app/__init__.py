@@ -58,9 +58,12 @@ async def _lifespan(app: FastAPI):
     都不依赖它），所以这里只留一条 warning。代价说清楚：Milvus 不可达时启动会多等
     最多 `MILVUS_TIMEOUT` 秒（默认 10s）—— 这是"能自愈"换来的，如果哪天嫌慢，
     该改的是把探测换成 `vector_store.probe()` 那条短超时路径，而不是删掉这次加载。
+
+    顺带把**关键词路**也预热一次（jieba 词典构建，实测 ~0.8s）——
+    不预热它会落在每个新进程的第一个提问上，详见 `app/rag/keyword.py` 的 `warmup()`。
     """
     log = logging.getLogger(__name__)
-    from app.rag import vector_store
+    from app.rag import keyword, vector_store
 
     try:
         if not vector_store.ensure_loaded():
@@ -68,6 +71,15 @@ async def _lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         # get_client() 连不上时会抛 AppException —— 那不能让服务起不来
         log.warning("启动时加载向量集合失败（不阻断启动）：%s", str(exc)[:150])
+
+    # 关键词路预热：不预热的话这笔成本落在**每个新进程的第一个提问**上；
+    # 提前到这里，用户侧就没有"第一问特别慢"的窗口。同样**不阻断启动** ——
+    # 失败只是退回"首问付一次"的原状，功能不受影响。
+    if settings.RAG_HYBRID_ENABLED:
+        try:
+            keyword.warmup()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("启动时 jieba 预热失败（不阻断启动）：%s", str(exc)[:150])
     yield
 
 

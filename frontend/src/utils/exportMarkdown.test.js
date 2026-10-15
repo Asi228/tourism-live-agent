@@ -132,6 +132,16 @@ test('sourceScoreText：文档级命中（score=null）显示「整篇文档」�
   assert.equal(sourceScoreText(0), '相似度 0%') // 真的有 0 分与"没有分数"是两回事
 })
 
+test('sourceScoreText：仅关键词召回（retrieval_path=keyword）显示「关键词匹配」', () => {
+  // 那个分数是词项覆盖率（命中词数/提词数），不是余弦相似度 —— 混叫"相似度"是假精度。
+  assert.equal(sourceScoreText(0.5, 'keyword'), '关键词匹配')
+  assert.equal(sourceScoreText(0.5, 'vector'), '相似度 50%')
+  assert.equal(sourceScoreText(0.5, 'both'), '相似度 50%')
+  // 老数据（该字段不存在 → undefined）与"真的没有分数"都不受影响
+  assert.equal(sourceScoreText(0.5), '相似度 50%')
+  assert.equal(sourceScoreText(null, 'keyword'), '整篇文档')
+})
+
 test('文档任务来源在导出件里写「整篇文档」', () => {
   const md = build([
     {
@@ -147,4 +157,20 @@ test('文档任务来源在导出件里写「整篇文档」', () => {
   ])
   assert.ok(md.includes('- [1] 《员工考勤与休假管理制度.md》无页码，整篇文档'))
   assert.ok(!md.includes('相似度 0%'), '不能把"没有分数"渲染成 0%')
+})
+
+test('导出件：仅关键词召回写「关键词匹配」，不写相似度', () => {
+  const md = build([
+    {
+      id: 2,
+      role: 'assistant',
+      data: {
+        answer: '答案',
+        sources: [
+          { index: 1, document_name: '安全规范.md', page_number: null, score: 0.5, retrieval_path: 'keyword', snippet: '片段' },
+        ],
+      },
+    },
+  ])
+  assert.ok(md.includes('- [1] 《安全规范.md》无页码，关键词匹配'))
 })

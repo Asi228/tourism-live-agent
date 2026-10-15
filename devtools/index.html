@@ -904,7 +904,10 @@ function renderChat(resp) {
     var head = document.createElement('div');
     head.textContent = '[' + s.index + '] ' + s.document_name
       + (s.page_number ? '（第 ' + s.page_number + ' 页）' : '')
-      + '　相似度 ' + Number(s.score).toFixed(4);
+      // 仅关键词召回：分数是词项覆盖率，不是相似度（后端按 retrieval_path 标出来源）
+      + '　' + (s.retrieval_path === 'keyword'
+        ? '关键词匹配'
+        : '相似度 ' + Number(s.score).toFixed(4));
 
     var body = document.createElement('div');
     body.textContent = s.snippet;

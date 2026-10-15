@@ -52,6 +52,13 @@ def env(monkeypatch):
         # Phase 7 起 _hydrate 返回 (结果, 被跳过的孤儿数)
         return [dict(r) for r in box["results"]], box.get("skipped_orphans", 0)
 
+    def fake_keyword_recall(db, query, scope, limit):
+        # 关键词路（混合检索）在本文件被替成空路：这里测的是**重排的编排逻辑**，
+        # 混合检索的融合有自己的专门测试（tests/test_hybrid.py）。
+        # 替成空的另一个硬理由：本文件多个用例传的是 db=None 占位（依赖全被 mock），
+        # 真跑关键词路会去碰 db。
+        return []
+
     def fake_rerank(query, documents, top_n):
         box["rerank"].append({"query": query, "docs": documents, "top_n": top_n})
         if box["error"] is not None:
@@ -60,6 +67,7 @@ def env(monkeypatch):
 
     monkeypatch.setattr(vector_service.vector_store, "search", fake_milvus)
     monkeypatch.setattr(vector_service, "_hydrate", fake_hydrate)
+    monkeypatch.setattr(vector_service, "_keyword_recall", fake_keyword_recall)
     monkeypatch.setattr(vector_service.reranker, "rerank", fake_rerank)
     return box
 
@@ -365,6 +373,8 @@ def test_prompt_numbering_follows_reranked_order(client, make_user, monkeypatch)
         vector_service.embedding, "embed_query", lambda q: [0.0] * settings.EMBEDDING_DIM
     )
     monkeypatch.setattr(vector_service.vector_store, "search", lambda vec, scope, k: [])
+    # 关键词路同样替成空路（本用例只关心"编号跟不跟重排走"，见 env fixture 的说明）
+    monkeypatch.setattr(vector_service, "_keyword_recall", lambda db, query, scope, limit: [])
     # 向量顺序：A / B / C
     monkeypatch.setattr(
         vector_service, "_hydrate",

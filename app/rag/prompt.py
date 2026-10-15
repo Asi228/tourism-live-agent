@@ -155,6 +155,9 @@ def build_sources(adopted: list[dict], snippet_chars: int | None = None) -> list
             "knowledge_base_id": item["knowledge_base_id"],
             "page_number": item.get("page_number"),
             "score": item["score"],
+            # 召回来源（vector / keyword / both）；文档级命中（DOCS 路径）没有这个概念，
+            # 取不到就是 None。前端据此把"仅关键词"的覆盖率分显示为「关键词匹配」。
+            "retrieval_path": item.get("retrieval_path"),
             "snippet": _snippet(item.get("content") or "", snippet_chars),
         }
         for index, item in enumerate(adopted, start=1)

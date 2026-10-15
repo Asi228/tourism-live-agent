@@ -33,6 +33,7 @@ _RICH_SOURCE = {
     "knowledge_base_id": 1,
     "page_number": 3,
     "score": 0.87,
+    "retrieval_path": "both",
     "snippet": "入职满一年可享受带薪年假 5 天。",
 }
 _RICH_META = {

@@ -22,10 +22,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Uplo
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, rate_limit
+from app.config import settings
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.document import ChunkOut, DocumentOut, DocumentStatusOut
+from app.schemas.document import ChunkOut, DocumentOut, DocumentStatusOut, UploadConfigOut
 from app.schemas.search import VectorizeResult
 from app.services import document_service, vector_service
 
@@ -42,7 +43,7 @@ def _doc_out(doc) -> dict:
 async def upload_document(
     background_tasks: BackgroundTasks,
     kb_id: int = Form(..., description="目标知识库 id"),
-    file: UploadFile = File(..., description="pdf / txt / md"),
+    file: UploadFile = File(..., description="pdf / txt / md / markdown / docx"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -63,6 +64,24 @@ def list_documents(
 ):
     docs = document_service.list_documents(db, current_user, kb_id)
     return success([_doc_out(d) for d in docs])
+
+
+@router.get(
+    "/upload-config",
+    response_model=ApiResponse[UploadConfigOut],
+    summary="上传约束（前端取 accept 白名单用）",
+)
+def get_upload_config(current_user: User = Depends(get_current_user)):
+    """把 `.env` 的 `ALLOWED_EXTENSIONS` 下发给前端。
+
+    前端曾经在 Documents.vue 里硬编码了同一份清单（"第 4 份清单"）—— 改了 .env 之后，
+    界面会继续放出一个服务端必拒的格式（2026-10-15 评审指出）。现在白名单只有
+    后端这一处权威，前端从本接口取。
+
+    ⚠️ 本路由必须注册在 `/{document_id}` **之前** —— 否则 "upload-config" 会被
+    当成文档 id 去走校验，报 422 而不是走到这里。
+    """
+    return success({"allowed_extensions": sorted(settings.allowed_extensions_set)})
 
 
 @router.get("/{document_id}", summary="文档详情")

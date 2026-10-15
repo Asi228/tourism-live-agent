@@ -25,7 +25,8 @@ from app.core.response import ErrorCode
 from app.models.document import STATUS_COMPLETED
 from app.models.document_chunk import DocumentChunk
 from app.models.user import User
-from app.rag import embedding, reranker, vector_store
+from app.rag import embedding, keyword, reranker, vector_store
+from app.rag.fusion import rrf_merge
 from app.repositories import (
     document_chunk_repository,
     document_repository,
@@ -166,6 +167,49 @@ def _resolve_search_scope(
     return sorted(allowed_set)
 
 
+def _keyword_recall(
+    db: Session, query: str, scope: list[int] | None, limit: int
+) -> list[vector_store.SearchHit]:
+    """关键词路召回：jieba 提词 → MySQL 字面匹配 → 转成与向量路**同构**的 hits。
+
+    返回 `list[SearchHit]`（score = 命中词覆盖率，0~1）—— 让融合阶段能把两条路
+    当成同一种东西处理（RRF 只关心名次，这个 score 只在"仅关键词命中"时用于展示）。
+
+    提不出词（全是虚词）或没命中都返回 `[]`：关键词路空跑对融合是透明的，
+    检索自动退化成纯向量 —— 这条路的失败模式必须是"没有贡献"，不是"拖垮检索"。
+    """
+    keywords = keyword.extract_keywords(query)
+    if not keywords:
+        return []
+    rows = document_chunk_repository.search_by_keywords(db, keywords, scope, limit)
+    if not rows:
+        return []
+
+    # 覆盖率 = 命中词数 / 提词总数。与余弦分同落 0~1，展示口径一致
+    # （严格说是"词项覆盖率"而不是"相似度"—— 检索层已按 retrieval_path 标出来源，
+    #  前端对"仅关键词"显示「关键词匹配」，不再混叫"相似度"）
+    total = len(keywords)
+    doc_ids = sorted({chunk.document_id for chunk, _ in rows})
+    doc_map = {d.id: d for d in document_repository.get_by_ids(db, doc_ids)}
+
+    hits: list[vector_store.SearchHit] = []
+    for chunk, hit_count in rows:
+        doc = doc_map.get(chunk.document_id)
+        if doc is None:
+            # 文档已被删而块还残留（外键未生效的历史数据）：与孤儿向量同性质，跳过
+            continue
+        hits.append(
+            vector_store.SearchHit(
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                knowledge_base_id=doc.knowledge_base_id,
+                page_number=chunk.page_number,
+                score=round(min(1.0, hit_count / total), 4),
+            )
+        )
+    return hits
+
+
 def _hydrate(db: Session, hits: list[vector_store.SearchHit]) -> tuple[list[dict], int]:
     """用 Milvus 命中的 chunk_id 回 MySQL 取正文和文件名。
 
@@ -257,11 +301,15 @@ def search(
     top_k: int = 5,
     rerank: bool = False,
 ) -> dict:
-    """向量检索：算权限 → 向量化查询 → 带 filter 检索 → 回库取正文 →（可选）重排。
+    """检索：算权限 → 双路召回（向量 + 关键词）→ RRF 融合 → 回库取正文 →（可选）重排。
 
     `rerank=True` 时走**两段式**：先多召回 `RAG_CANDIDATE_K` 条（保召回率），
-    再由 reranker 精排到 top_k（保精度）。默认关 —— 所以 `/api/search` 仍是纯向量检索，
+    再由 reranker 精排到 top_k（保精度）。默认关 —— 所以 `/api/search` 默认不做重排，
     正好可以和自己对比"重排到底有没有用"；`/api/chat` 显式开启。
+
+    `RAG_HYBRID_ENABLED`（默认开）时另走**关键词路**：jieba 提词做 MySQL 字面匹配，
+    两路候选按名次 RRF 融合 —— 补纯向量对编号/专有名词不敏感的短板；
+    关掉即退回纯向量（对照排查用）。关键词路空跑不拖累检索（融合对空路透明）。
     """
     scope = _resolve_search_scope(db, user, kb_ids)
 
@@ -280,8 +328,42 @@ def search(
     candidate_k = max(top_k, settings.RAG_CANDIDATE_K) if use_rerank else top_k
 
     vector = embedding.embed_query(query)
-    hits = vector_store.search(vector, scope, candidate_k)
-    results, skipped_orphans = _hydrate(db, hits)
+    vector_hits = vector_store.search(vector, scope, candidate_k)
+
+    # ---- 关键词路（混合检索）：与向量路并列的一条召回路径 ----
+    # 关了开关或提不出词 → 空路；RRF 对空路透明（融合退化成向量路原顺序）。
+    keyword_hits: list[vector_store.SearchHit] = []
+    if settings.RAG_HYBRID_ENABLED:
+        keyword_hits = _keyword_recall(db, query, scope, settings.RAG_KEYWORD_K)
+
+    # RRF 融合两路名次，再统一截到候选预算 ——
+    # 两路各召回 20 条，融合后**仍只 20 条进重排**（成本与纯向量一致），
+    # 但"谁能进这 20 条"由两条路共同决定（关键词排前面的不再被向量路挤掉）。
+    fused_order = rrf_merge(
+        [[h.chunk_id for h in vector_hits], [h.chunk_id for h in keyword_hits]]
+    )[:candidate_k]
+
+    # 分数口径：向量路的命中保留**余弦相似度**（有"相似度"语义）；只有关键词路命中的
+    # 用覆盖率分数（0~1，与余弦同量纲）。所以向量路优先，setdefault 保序不覆盖。
+    hit_map: dict[int, vector_store.SearchHit] = {h.chunk_id: h for h in vector_hits}
+    for h in keyword_hits:
+        hit_map.setdefault(h.chunk_id, h)
+    fused_hits = [hit_map[cid] for cid, _ in fused_order if cid in hit_map]
+
+    results, skipped_orphans = _hydrate(db, fused_hits)
+
+    # 给每条结果标**召回来源**（vector / keyword / both）—— 两条路的分数语义不同：
+    # 仅关键词命中的 score 是词项覆盖率，不是余弦相似度；展示层据此把这类显示为
+    # 「关键词匹配」而不是「相似度」。放在重排**之前**：_apply_rerank 是 dict 拷贝，
+    # 标注会跟着走（它描述的是"哪条路召回了它"，与排序无关）。
+    vector_ids = {h.chunk_id for h in vector_hits}
+    keyword_ids = {h.chunk_id for h in keyword_hits}
+    for r in results:
+        in_vector = r["chunk_id"] in vector_ids
+        in_keyword = r["chunk_id"] in keyword_ids
+        r["retrieval_path"] = (
+            "both" if in_vector and in_keyword else ("keyword" if in_keyword else "vector")
+        )
 
     reranked = False
     if use_rerank:
@@ -296,10 +378,13 @@ def search(
     # 顺手把**分数分布**打进日志：RAG 要不要相似度阈值（RAG_MIN_SCORE）现在定不了
     # —— 样本太少，设高了会漏掉本该命中的资料，比噪声更糟。先攒数据，
     # 攒够一批「问题 -> 命中分数」再回来看分布。一行日志，不建表、不落库。
+    # hybrid= 后是两路各自的原始命中数（融合前）——"为什么结果变了"看这里。
     logger.info(
-        "向量检索 user=%s scope=%s 候选=%s hits=%s reranked=%s 跳过的孤儿=%s top_scores=%s",
-        user.username, "ALL" if scope is None else scope, candidate_k, len(results),
-        reranked, skipped_orphans,
+        "检索 user=%s scope=%s hybrid=%s 向量/关键词=%s/%s 候选=%s hits=%s reranked=%s "
+        "跳过的孤儿=%s top_scores=%s",
+        user.username, "ALL" if scope is None else scope,
+        settings.RAG_HYBRID_ENABLED, len(vector_hits), len(keyword_hits),
+        candidate_k, len(results), reranked, skipped_orphans,
         "/".join("%.3f" % r["score"] for r in results[:5]) or "-",
     )
     return {

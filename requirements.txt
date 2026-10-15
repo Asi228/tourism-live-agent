@@ -16,6 +16,14 @@ email-validator==2.2.0
 # pypdf is pure python (no native binary), used for PDF text extraction.
 # TXT / Markdown are read with the standard library, no extra package needed.
 pypdf==6.19.0
+# python-docx: .docx paragraph + table extraction (Phase 16, Word support).
+python-docx==1.2.0
+
+# hybrid retrieval keyword path (Phase 16)
+# jieba: Chinese word segmentation for keyword extraction; tokens are matched
+#   against document chunks with plain LIKE (see app/rag/keyword.py).
+#   Pure python (a bundled dictionary, ~20MB) - no native build step.
+jieba==0.42.1
 
 # embedding + vector store (Phase 5)
 # langchain-openai: OpenAI-compatible client wrapper, used to call SiliconFlow's

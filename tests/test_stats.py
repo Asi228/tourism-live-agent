@@ -127,6 +127,11 @@ def test_trends_zero_fills_empty_days(client, make_user):
 
 def test_trends_counts_questions_and_documents(client, make_user, monkeypatch, session_factory):
     """有数据时：今天的提问要落在最后一天、各库文档数按数量倒序。"""
+    from datetime import datetime
+
+    from sqlalchemy import update as sa_update
+
+    from app.models import Message
     from app.models.document import Document
     from app.rag import llm as llm_module
 
@@ -136,6 +141,15 @@ def test_trends_counts_questions_and_documents(client, make_user, monkeypatch, s
         lambda *a, **k: {"answer": "答案", "usage": {"total_tokens": 1}, "finish_reason": "stop"},
     )
     client.post("/api/chat", json={"query": "年假几天"}, headers=admin["headers"])
+
+    # ⚠️ 对齐生产的时间语义（否则这条用例**只在本地 08:00 前会红**，很难查）：
+    # SQLite 的 CURRENT_TIMESTAMP 写的是 **UTC**，而 question_trend 按**本地日期**分桶
+    # （date.today()）—— 本地凌晨创建的消息，UTC 日期还在前一天，会被分到"昨天"。
+    # 生产（MySQL）的 CURRENT_TIMESTAMP 用服务器本地时区，没有这个偏差；
+    # 测试把时间戳改写成本地时间，才是和生产一致的形态。
+    with session_factory() as db:
+        db.execute(sa_update(Message).values(created_at=datetime.now()))
+        db.commit()
 
     kb = client.post(
         "/api/knowledge", json={"name": "库A"}, headers=admin["headers"]

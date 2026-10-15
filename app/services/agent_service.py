@@ -239,6 +239,10 @@ def answer(
             # 轨迹一起存：它是"这次为什么绕了两圈"的唯一证据。
             # 体积很小（每步就 node/ms 加几个字段），但回放历史时没有它就只能干瞪眼。
             "steps": steps,
+            # 文档清单涉及的库（仅 LIST 路径有值，其余为 None）—— 清单正文带
+            # 【库名】+《文件名》而没有 sources，撤权后的回放脱敏靠它判定
+            # （见 conversation_service._cites_revoked_kb）。
+            "catalog_kb_ids": final.get("catalog_kb_ids"),
         },
     )
     db.commit()
@@ -453,6 +457,9 @@ def _agent_stream_events(
                     "elapsed_ms": elapsed,
                     # 轨迹一起存：它是"这次为什么绕了两圈"的唯一证据。
                     "steps": steps,
+                    # 文档清单涉及的库（仅 LIST 路径有值）—— 撤权后的回放脱敏靠它判定，
+                    # 与非流式的 meta 组装保持一致（两处都要加，漏一处就漏一半）。
+                    "catalog_kb_ids": final.get("catalog_kb_ids"),
                 },
                 defer_maintenance=True,
             )

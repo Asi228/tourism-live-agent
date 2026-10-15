@@ -1,5 +1,7 @@
 """RAG 问答的请求 / 响应模型。"""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -43,6 +45,11 @@ class SourceItem(BaseModel):
             "Agent 的文档任务（总结/对比）取的是整篇文档，没有「相似度」这个概念；"
             "前端对 null 显示「整篇文档」。编一个 1.0 会显示成「相似度 100%」，是假精度"
         ),
+    )
+    retrieval_path: Literal["vector", "keyword", "both"] | None = Field(
+        default=None,
+        description="召回来源：vector=仅向量路；keyword=仅关键词路（score 是词项覆盖率）、"
+                    "both=两路都命中；null=非检索命中（如整篇文档）。前端对 keyword 显示「关键词匹配」",
     )
     snippet: str = Field(description="正文摘要，便于前端展示引用")
 
