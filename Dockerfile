@@ -19,8 +19,8 @@ COPY . .
 COPY --from=frontend-build /build/frontend/dist ./frontend/dist
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /tmp/enterprise-agent/uploads /tmp/enterprise-agent/rpa \
-    && chown -R appuser:appuser /tmp/enterprise-agent
+    && mkdir -p /app/logs /tmp/enterprise-agent/uploads /tmp/enterprise-agent/rpa \
+    && chown -R appuser:appuser /app/logs /tmp/enterprise-agent
 
 USER appuser
 EXPOSE 8000
