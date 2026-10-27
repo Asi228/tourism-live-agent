@@ -78,6 +78,14 @@ def test_demo_collection_task_completes_without_external_worker(
     assert result["code"] == 0
     assert result["data"]["status"] == "succeeded"
     assert result["data"]["result"]["verified"] is True
+    assert result["data"]["result"]["inspection"] == {
+        "status": "completed",
+        "conclusion": "ready",
+        "score": 100,
+        "blocker_count": 0,
+        "warning_count": 0,
+    }
+    assert len(result["data"]["result"]["snapshots"]) == 1
     assert [step["step_code"] for step in result["data"]["steps"]] == [
         "login", "collect", "persist", "inspect"
     ]
@@ -139,4 +147,6 @@ def test_session_owner_can_see_and_execute_another_users_demo_approval(
     ).json()["data"]
     assert task["status"] == "succeeded"
     assert task["result"]["verified"] is True
+    assert task["result"]["expected"] == {"live_price": "499.00"}
+    assert task["result"]["approval_id"] == approval["id"]
     assert len(task["steps"]) == 4

@@ -76,8 +76,15 @@ def _complete_demo_task(
         sku_codes = list((task.payload or {}).get("sku_codes") or [])
         task.result = {
             "collected": [{"sku_code": code, "source": "demo_mock_platform"} for code in sku_codes],
+            "snapshots": [{"sku_code": code, "saved": True} for code in sku_codes],
             "missing_sku_codes": [],
-            "inspection": {"status": "completed", "conclusion": "ready"},
+            "inspection": {
+                "status": "completed",
+                "conclusion": "ready",
+                "score": 100,
+                "blocker_count": 0,
+                "warning_count": 0,
+            },
             "verified": True,
         }
         steps = (
@@ -104,8 +111,10 @@ def _complete_demo_task(
         task.result = {
             "sku_code": sku_code,
             "before": before,
+            "expected": expected,
             "actual": expected,
             "verified": True,
+            "approval_id": (task.payload or {}).get("approval_id"),
             "source": "demo_mock_platform",
         }
         steps = (
