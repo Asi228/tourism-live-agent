@@ -17,6 +17,7 @@
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -25,12 +26,24 @@ from app.api.deps import get_current_user, rate_limit
 from app.config import settings
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
+from app.models.document import DOCUMENT_TYPES
 from app.models.user import User
 from app.schemas.document import ChunkOut, DocumentOut, DocumentStatusOut, UploadConfigOut
 from app.schemas.search import VectorizeResult
 from app.services import document_service, vector_service
 
 logger = logging.getLogger(__name__)
+
+DOCUMENT_TYPE_LABELS = {
+    "general": "通用资料",
+    "product_manual": "商品说明",
+    "claim_evidence": "宣传依据",
+    "platform_rule": "平台规则",
+    "after_sales": "售后政策",
+    "logistics": "物流发货",
+    "live_policy": "直播规范",
+    "replay_report": "直播复盘",
+}
 
 router = APIRouter(prefix="/documents", tags=["文档"])
 
@@ -43,11 +56,28 @@ def _doc_out(doc) -> dict:
 async def upload_document(
     background_tasks: BackgroundTasks,
     kb_id: int = Form(..., description="目标知识库 id"),
+    product_id: int | None = Form(default=None, description="关联商品 id"),
+    sku_id: int | None = Form(default=None, description="关联 SKU id"),
+    document_type: str = Form(default="general", description="业务资料类型"),
+    version: str = Form(default="v1", description="业务资料版本"),
+    effective_from: datetime | None = Form(default=None, description="生效时间"),
+    effective_to: datetime | None = Form(default=None, description="失效时间"),
     file: UploadFile = File(..., description="pdf / txt / md / markdown / docx"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    doc = await document_service.upload_document(db, current_user, kb_id, file)
+    doc = await document_service.upload_document(
+        db,
+        current_user,
+        kb_id,
+        file,
+        product_id=product_id,
+        sku_id=sku_id,
+        document_type=document_type,
+        version=version,
+        effective_from=effective_from,
+        effective_to=effective_to,
+    )
 
     # 注意：后台任务拿的是 document_id 而不是 ORM 对象 —— 请求结束后这个 session 就关了，
     # 对象会处于 detached 状态。后台任务自己开新 session 重新查一次。
@@ -59,10 +89,22 @@ async def upload_document(
 @router.get("", summary="文档列表")
 def list_documents(
     kb_id: int | None = Query(default=None, description="不传则返回所有可访问知识库的文档"),
+    product_id: int | None = Query(default=None, ge=1),
+    sku_id: int | None = Query(default=None, ge=1),
+    document_type: str | None = Query(default=None),
+    active_only: bool = Query(default=False, description="只返回当前时间有效的资料"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    docs = document_service.list_documents(db, current_user, kb_id)
+    docs = document_service.list_documents(
+        db,
+        current_user,
+        kb_id,
+        product_id=product_id,
+        sku_id=sku_id,
+        document_type=document_type,
+        active_only=active_only,
+    )
     return success([_doc_out(d) for d in docs])
 
 
@@ -81,7 +123,13 @@ def get_upload_config(current_user: User = Depends(get_current_user)):
     ⚠️ 本路由必须注册在 `/{document_id}` **之前** —— 否则 "upload-config" 会被
     当成文档 id 去走校验，报 422 而不是走到这里。
     """
-    return success({"allowed_extensions": sorted(settings.allowed_extensions_set)})
+    return success({
+        "allowed_extensions": sorted(settings.allowed_extensions_set),
+        "document_types": [
+            {"value": value, "label": DOCUMENT_TYPE_LABELS[value]}
+            for value in DOCUMENT_TYPES
+        ],
+    })
 
 
 @router.get("/{document_id}", summary="文档详情")

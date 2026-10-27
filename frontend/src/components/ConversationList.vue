@@ -64,6 +64,8 @@ function formatTime(s) {
 <style scoped>
 .new-btn {
   width: 100%;
+  height: 38px;
+  border-radius: 9px;
 }
 .conv-list {
   flex: 1;
@@ -71,13 +73,14 @@ function formatTime(s) {
   /* 会话多起来时它必须能被压缩 —— flex 子项默认 min-height:auto 会拒绝 */
   min-height: 0;
   background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  padding: 6px;
+  border: 1px solid #e7ebf2;
+  border-radius: 10px;
+  padding: 7px;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 3%);
 }
 .conv-item {
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 10px 11px;
+  border-radius: 8px;
   cursor: pointer;
   margin-bottom: 4px;
 }
@@ -86,6 +89,7 @@ function formatTime(s) {
 }
 .conv-item.active {
   background: var(--el-color-primary-light-9);
+  box-shadow: inset 3px 0 0 var(--el-color-primary);
 }
 .conv-title {
   font-size: 13px;

@@ -1,0 +1,313 @@
+{
+  "summary": {
+    "action_accuracy": 1.0,
+    "approval_boundary_accuracy": 1.0,
+    "target_value_accuracy": 1.0,
+    "wrong_action_rate": 0.0,
+    "risk_traceability_rate": 1.0,
+    "explanation_completeness": 1.0,
+    "citation_accuracy": 1.0,
+    "overall_score": 1.0,
+    "total_tokens": 5180,
+    "total_elapsed_ms": 19047,
+    "case_count": 7
+  },
+  "results": [
+    {
+      "case_id": "no-inspection",
+      "name": "尚未巡检",
+      "risk_count": 0,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": "本场还没有巡检记录，当前无法判断是否可以开播。请先执行平台采集和直播前巡检。"
+    },
+    {
+      "case_id": "inventory-shortage",
+      "name": "库存不足",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 7662,
+      "tokens": 781,
+      "answer": "**不能开播。** 当前巡检结论为 blocked（评分 75），存在 1 个阻断项。\n\n**阻断项**\n- SKU-A（sku_id 11）：可售库存 5，低于本场计划销量 30，不满足“可售库存充足”规则（INVENTORY_SUFFICIENT）。按 [1]《直播库存管理规范》，可售库存低于计划销量时应阻断开播并补充库存。\n\n**处理建议（对应风险 1101）**\n1. 重新采集该 SKU 的库存，确认实际可售数量（我只有只读权限，无法代为执行采集）。\n2. 补充库存至不低于计划销量 30；或下调本场计划销量至不超过当前可售库存 5。\n3. 处理完成后重新巡检，阻断项消除后方可开播。\n\n**审批与任务**\n- 该建议动作 requires_approval 为 false，当前无需审批；若后续涉及改价、下架等动作，需另行确认是否“需要审批”。\n- 当前无审批单、无 RPA 任务记录。"
+    },
+    {
+      "case_id": "price-mismatch",
+      "name": "计划价与平台价不一致",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 2179,
+      "tokens": 776,
+      "answer": "**不能直接开播。** 当前巡检结论为 blocked，存在 1 个阻断项。\n\n**阻断项**\n- 风险 1201（PRICE_MATCH，SKU 12）：SKU-B 计算到手价 **129.00** 与计划到手价 **99.00** 不一致，属于 blocker，会阻断开播。\n\n**能否直接修复**\n不能直接修复。建议动作是“核对平台活动配置或调整本场计划到手价”，且该动作 **requires_approval = true**，即 **需要审批**。当前审批单为空，尚未看到审批通过记录。\n\n**处理建议**\n1. 先核对 SKU-B 的平台活动配置，查明 129.00 与 99.00 差异来源。\n2. 如需改价，按高风险操作提交审批，**需要审批**；审批通过前不要开播。\n3. 审批通过并复检价格一致后，再评估开播。\n\n依据：平台改价属于高风险操作，必须经过负责人审批 [1]。"
+    },
+    {
+      "case_id": "promotion-inactive",
+      "name": "开播时无有效活动",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 2454,
+      "tokens": 744,
+      "answer": "可以开播，但有一个警告项需要处理。\n\n**结论：可以开播（巡检结论为 ready，评分 92），不构成阻断。**\n\n**警告项（1 项）**\n- SKU-C（sku_id 13）在计划开播时间没有有效活动（规则 PROMOTION_ACTIVE，风险 1301）。系统查到的活动列表为空，说明该商品当前没有挂上任何生效中的促销活动。\n\n**建议处理**\n1. 核对 SKU-C 的活动时间设置，确认活动是否已到生效时间、是否被提前结束。\n2. 如果本场该商品确实需要促销，请补齐或重新绑定有效活动后再开播；如果本场不需要促销，请确认后按无促销方案开播。\n3. 该动作对应建议为“检查活动时间，或确认本场商品无需促销”，不需要审批。\n\n**其他说明**\n- 当前无待审批单、无 RPA 任务，也没有可引用的知识库资料，因此以上仅为巡检事实与操作建议，不代表公司制度条款。\n- 我只有只读权限，未执行任何活动修改、补建或审批操作，需由运营人员在后台自行处理。"
+    },
+    {
+      "case_id": "sku-inactive",
+      "name": "商品已停用",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 1886,
+      "tokens": 734,
+      "answer": "**不能开播。** 当前巡检结论为 blocked（得分 75），存在 1 个阻断项。\n\n**阻断项**\n- 风险 1401「商品与 SKU 状态」（blocker，SKU 14）：SKU-D 的商品或 SKU 已停用。巡检证据显示商品状态为 inactive、SKU 状态为 active，即商品本身已停用，导致该 SKU 不可用。\n\n**处理建议（对应风险 1401）**\n1. 重新启用该商品与 SKU，或把 SKU 14 移出本场选品。\n2. 该动作对应建议为“复核 SKU 状态”，优先级 high，**需要审批**；当前审批单为空，需先发起审批。\n3. 处理完成后重新巡检，确认阻断项消除再开播。\n\n**警告项**：无。\n\n说明：本次未提供知识库资料，以上仅依据结构化巡检事实；我只有只读权限，未执行任何启用、下架或审批操作。"
+    },
+    {
+      "case_id": "missing-documents",
+      "name": "商品说明和宣称依据缺失",
+      "risk_count": 2,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 2380,
+      "tokens": 934,
+      "answer": "**不能开播。** 当前巡检结论为 blocked（评分 67），存在 1 个阻断项，必须先处理。\n\n**阻断项**\n- SKU-E（sku_id 15）缺少“商品说明资料有效”，风险编号 1501。系统未查到任何商品说明文档（document_ids 为空）。\n- 处理：上传已处理完成、且覆盖开播时间的商品说明。该动作不需要审批。\n\n**警告项**\n- SKU-E 缺少“宣传宣称依据有效”，风险编号 1502。系统未查到相关依据文档。\n- 处理：补充质检报告、品牌授权或宣传宣称依据。该动作不需要审批；但在补齐前，不建议对该 SKU 做相关功效或资质类宣称。\n\n**补充说明**\n- 本次没有审批单，也没有 RPA 任务，因此不存在“已提交待审批”或“系统正在补资料”的情况。\n- 我只有只读权限，未执行任何上传、补资料或审批操作，以上均需由运营人员自行完成。\n- 本次未提供知识库资料，以上判断仅依据结构化巡检事实，不涉及公司制度条款。\n\n资料不齐全。请先补齐 SKU-E 的商品说明（阻断项），再补宣传宣称依据（警告项），两项完成后再重新巡检确认能否开播。"
+    },
+    {
+      "case_id": "multiple-risks",
+      "name": "库存、价格、活动多风险",
+      "risk_count": 3,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": 1.0,
+      "citation_accuracy": 1.0,
+      "elapsed_ms": 2486,
+      "tokens": 1211,
+      "answer": "**结论：当前不能开播。** 巡检结论为 blocked（评分 42），存在 2 个阻断项，必须先处理完阻断项，再处理警告项。\n\n**阻断项（需优先处理，处理完才能开播）**\n\n1. **SKU-F 可售库存为 0，低于计划销量 50**（风险 1601）\n   - 处理：补充库存，或把计划销量降到可售库存能覆盖的范围。该动作不需要审批。\n   - 注意：我只有只读权限，不能代为补库存或改销量，需要运营在后台操作。\n\n2. **SKU-F 到手价不一致：计算价 199.00，计划价 159.00**（风险 1602）\n   - 处理：核对平台活动配置，发起价格修复，目标到手价 159.00。\n   - **需要审批**：价格修改必须经过审批 [1]。当前审批单为空，需先提交审批并等待通过。\n\n**警告项（阻断项处理完后跟进）**\n\n3. **SKU-F 在计划开播时间没有有效活动**（风险 1603）\n   - 处理：检查活动时间配置，确认开播时段有生效活动。该动作不需要审批。\n\n**建议处理顺序**：先并行推进库存补充/销量调整（1601）和价格修复审批（1602），两项阻断都解除后再核查活动时间（1603），最后重新巡检确认可开播。依据：阻断项优先于警告项处理，价格修改必须经过审批 [1]。"
+    }
+  ],
+  "predictions": [
+    {
+      "case_id": "no-inspection",
+      "answer": "本场还没有巡检记录，当前无法判断是否可以开播。请先执行平台采集和直播前巡检。",
+      "actions": [
+        {
+          "risk_id": 9001,
+          "action_type": "run_inspection",
+          "requires_approval": false,
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "inventory-shortage",
+      "answer": "**不能开播。** 当前巡检结论为 blocked（评分 75），存在 1 个阻断项。\n\n**阻断项**\n- SKU-A（sku_id 11）：可售库存 5，低于本场计划销量 30，不满足“可售库存充足”规则（INVENTORY_SUFFICIENT）。按 [1]《直播库存管理规范》，可售库存低于计划销量时应阻断开播并补充库存。\n\n**处理建议（对应风险 1101）**\n1. 重新采集该 SKU 的库存，确认实际可售数量（我只有只读权限，无法代为执行采集）。\n2. 补充库存至不低于计划销量 30；或下调本场计划销量至不超过当前可售库存 5。\n3. 处理完成后重新巡检，阻断项消除后方可开播。\n\n**审批与任务**\n- 该建议动作 requires_approval 为 false，当前无需审批；若后续涉及改价、下架等动作，需另行确认是否“需要审批”。\n- 当前无审批单、无 RPA 任务记录。",
+      "actions": [
+        {
+          "risk_id": 1101,
+          "rule_code": "INVENTORY_SUFFICIENT",
+          "action_type": "refresh_or_restock",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 11,
+          "title": "可售库存充足",
+          "description": "重新采集库存、补充库存或降低本场计划销量",
+          "expected_value": null
+        }
+      ],
+      "usage": {
+        "input_tokens": 548,
+        "output_tokens": 233,
+        "total_tokens": 781
+      },
+      "elapsed_ms": 7662
+    },
+    {
+      "case_id": "price-mismatch",
+      "answer": "**不能直接开播。** 当前巡检结论为 blocked，存在 1 个阻断项。\n\n**阻断项**\n- 风险 1201（PRICE_MATCH，SKU 12）：SKU-B 计算到手价 **129.00** 与计划到手价 **99.00** 不一致，属于 blocker，会阻断开播。\n\n**能否直接修复**\n不能直接修复。建议动作是“核对平台活动配置或调整本场计划到手价”，且该动作 **requires_approval = true**，即 **需要审批**。当前审批单为空，尚未看到审批通过记录。\n\n**处理建议**\n1. 先核对 SKU-B 的平台活动配置，查明 129.00 与 99.00 差异来源。\n2. 如需改价，按高风险操作提交审批，**需要审批**；审批通过前不要开播。\n3. 审批通过并复检价格一致后，再评估开播。\n\n依据：平台改价属于高风险操作，必须经过负责人审批 [1]。",
+      "actions": [
+        {
+          "risk_id": 1201,
+          "rule_code": "PRICE_MATCH",
+          "action_type": "request_price_fix",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 12,
+          "title": "计划到手价一致",
+          "description": "核对平台活动配置或调整本场计划到手价",
+          "expected_value": {
+            "live_price": "99.00"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 556,
+        "output_tokens": 220,
+        "total_tokens": 776
+      },
+      "elapsed_ms": 2179
+    },
+    {
+      "case_id": "promotion-inactive",
+      "answer": "可以开播，但有一个警告项需要处理。\n\n**结论：可以开播（巡检结论为 ready，评分 92），不构成阻断。**\n\n**警告项（1 项）**\n- SKU-C（sku_id 13）在计划开播时间没有有效活动（规则 PROMOTION_ACTIVE，风险 1301）。系统查到的活动列表为空，说明该商品当前没有挂上任何生效中的促销活动。\n\n**建议处理**\n1. 核对 SKU-C 的活动时间设置，确认活动是否已到生效时间、是否被提前结束。\n2. 如果本场该商品确实需要促销，请补齐或重新绑定有效活动后再开播；如果本场不需要促销，请确认后按无促销方案开播。\n3. 该动作对应建议为“检查活动时间，或确认本场商品无需促销”，不需要审批。\n\n**其他说明**\n- 当前无待审批单、无 RPA 任务，也没有可引用的知识库资料，因此以上仅为巡检事实与操作建议，不代表公司制度条款。\n- 我只有只读权限，未执行任何活动修改、补建或审批操作，需由运营人员在后台自行处理。",
+      "actions": [
+        {
+          "risk_id": 1301,
+          "rule_code": "PROMOTION_ACTIVE",
+          "action_type": "review_promotion",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 13,
+          "title": "开播时活动有效",
+          "description": "检查活动时间，或确认本场商品无需促销",
+          "expected_value": null
+        }
+      ],
+      "usage": {
+        "input_tokens": 492,
+        "output_tokens": 252,
+        "total_tokens": 744
+      },
+      "elapsed_ms": 2454
+    },
+    {
+      "case_id": "sku-inactive",
+      "answer": "**不能开播。** 当前巡检结论为 blocked（得分 75），存在 1 个阻断项。\n\n**阻断项**\n- 风险 1401「商品与 SKU 状态」（blocker，SKU 14）：SKU-D 的商品或 SKU 已停用。巡检证据显示商品状态为 inactive、SKU 状态为 active，即商品本身已停用，导致该 SKU 不可用。\n\n**处理建议（对应风险 1401）**\n1. 重新启用该商品与 SKU，或把 SKU 14 移出本场选品。\n2. 该动作对应建议为“复核 SKU 状态”，优先级 high，**需要审批**；当前审批单为空，需先发起审批。\n3. 处理完成后重新巡检，确认阻断项消除再开播。\n\n**警告项**：无。\n\n说明：本次未提供知识库资料，以上仅依据结构化巡检事实；我只有只读权限，未执行任何启用、下架或审批操作。",
+      "actions": [
+        {
+          "risk_id": 1401,
+          "rule_code": "SKU_ACTIVE",
+          "action_type": "review_sku_status",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 14,
+          "title": "商品与 SKU 状态",
+          "description": "重新启用商品与 SKU，或将该 SKU 移出本场选品",
+          "expected_value": null
+        }
+      ],
+      "usage": {
+        "input_tokens": 515,
+        "output_tokens": 219,
+        "total_tokens": 734
+      },
+      "elapsed_ms": 1886
+    },
+    {
+      "case_id": "missing-documents",
+      "answer": "**不能开播。** 当前巡检结论为 blocked（评分 67），存在 1 个阻断项，必须先处理。\n\n**阻断项**\n- SKU-E（sku_id 15）缺少“商品说明资料有效”，风险编号 1501。系统未查到任何商品说明文档（document_ids 为空）。\n- 处理：上传已处理完成、且覆盖开播时间的商品说明。该动作不需要审批。\n\n**警告项**\n- SKU-E 缺少“宣传宣称依据有效”，风险编号 1502。系统未查到相关依据文档。\n- 处理：补充质检报告、品牌授权或宣传宣称依据。该动作不需要审批；但在补齐前，不建议对该 SKU 做相关功效或资质类宣称。\n\n**补充说明**\n- 本次没有审批单，也没有 RPA 任务，因此不存在“已提交待审批”或“系统正在补资料”的情况。\n- 我只有只读权限，未执行任何上传、补资料或审批操作，以上均需由运营人员自行完成。\n- 本次未提供知识库资料，以上判断仅依据结构化巡检事实，不涉及公司制度条款。\n\n资料不齐全。请先补齐 SKU-E 的商品说明（阻断项），再补宣传宣称依据（警告项），两项完成后再重新巡检确认能否开播。",
+      "actions": [
+        {
+          "risk_id": 1501,
+          "rule_code": "PRODUCT_MANUAL_VALID",
+          "action_type": "upload_product_manual",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 15,
+          "title": "商品说明资料有效",
+          "description": "上传已处理完成且覆盖开播时间的商品说明",
+          "expected_value": null
+        },
+        {
+          "risk_id": 1502,
+          "rule_code": "CLAIM_EVIDENCE_VALID",
+          "action_type": "upload_claim_evidence",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 15,
+          "title": "宣传宣称依据有效",
+          "description": "补充质检报告、品牌授权或宣传宣称依据",
+          "expected_value": null
+        }
+      ],
+      "usage": {
+        "input_tokens": 657,
+        "output_tokens": 277,
+        "total_tokens": 934
+      },
+      "elapsed_ms": 2380
+    },
+    {
+      "case_id": "multiple-risks",
+      "answer": "**结论：当前不能开播。** 巡检结论为 blocked（评分 42），存在 2 个阻断项，必须先处理完阻断项，再处理警告项。\n\n**阻断项（需优先处理，处理完才能开播）**\n\n1. **SKU-F 可售库存为 0，低于计划销量 50**（风险 1601）\n   - 处理：补充库存，或把计划销量降到可售库存能覆盖的范围。该动作不需要审批。\n   - 注意：我只有只读权限，不能代为补库存或改销量，需要运营在后台操作。\n\n2. **SKU-F 到手价不一致：计算价 199.00，计划价 159.00**（风险 1602）\n   - 处理：核对平台活动配置，发起价格修复，目标到手价 159.00。\n   - **需要审批**：价格修改必须经过审批 [1]。当前审批单为空，需先提交审批并等待通过。\n\n**警告项（阻断项处理完后跟进）**\n\n3. **SKU-F 在计划开播时间没有有效活动**（风险 1603）\n   - 处理：检查活动时间配置，确认开播时段有生效活动。该动作不需要审批。\n\n**建议处理顺序**：先并行推进库存补充/销量调整（1601）和价格修复审批（1602），两项阻断都解除后再核查活动时间（1603），最后重新巡检确认可开播。依据：阻断项优先于警告项处理，价格修改必须经过审批 [1]。",
+      "actions": [
+        {
+          "risk_id": 1601,
+          "rule_code": "INVENTORY_SUFFICIENT",
+          "action_type": "refresh_or_restock",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 16,
+          "title": "可售库存充足",
+          "description": "补充库存或降低计划销量",
+          "expected_value": null
+        },
+        {
+          "risk_id": 1602,
+          "rule_code": "PRICE_MATCH",
+          "action_type": "request_price_fix",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 16,
+          "title": "计划到手价一致",
+          "description": "核对平台活动配置",
+          "expected_value": {
+            "live_price": "159.00"
+          }
+        },
+        {
+          "risk_id": 1603,
+          "rule_code": "PROMOTION_ACTIVE",
+          "action_type": "review_promotion",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 16,
+          "title": "开播时活动有效",
+          "description": "检查活动时间",
+          "expected_value": null
+        }
+      ],
+      "usage": {
+        "input_tokens": 881,
+        "output_tokens": 330,
+        "total_tokens": 1211
+      },
+      "elapsed_ms": 2486
+    }
+  ]
+}

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     )
 
     # ===== 应用 =====
-    APP_NAME: str = "企业知识库智能 Agent"
+    APP_NAME: str = "直播电商 RPA 智能运营 Agent"
     APP_ENV: str = "dev"            # dev / test / prod
     # 只控制日志详细度（True=DEBUG 级别，False=INFO）。
     # 注意 FastAPI 的 debug 页恒为 False，见 app/__init__.py 里的说明：
@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     MYSQL_USER: str = "root"
     MYSQL_PASSWORD: str = ""
     MYSQL_DATABASE: str = "enterprise_kb"
+    # 云平台通常直接提供完整连接串；填写后优先于上面的拆分字段。
+    MYSQL_URL: str = ""
 
     # 连接池 / SQL 日志（独立开关，不跟 DEBUG 绑，避免调试页和刷屏绑在一起）
     DB_POOL_SIZE: int = 5
@@ -63,6 +65,20 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: str = ""
     REDIS_DB: int = 0
+    # 支持 Upstash / Railway 等提供的 redis:// 或 rediss:// 完整地址。
+    REDIS_URL: str = ""
+
+    # ===== RPA 与开发期模拟平台 =====
+    MOCK_PLATFORM_BASE_URL: str = "http://127.0.0.1:8000/mock-platform"
+    MOCK_PLATFORM_USERNAME: str = "demo_operator"
+    MOCK_PLATFORM_PASSWORD: str = "demo_password"
+    RPA_HEADLESS: bool = True
+    RPA_SCREENSHOT_DIR: str = str(BASE_DIR / "artifacts" / "rpa")
+    # 定时监控调度器扫描数据库的间隔；采集频率由每条 monitoring_plan 单独配置。
+    RPA_SCHEDULER_POLL_SECONDS: int = 15
+    # 单步页面操作的默认超时。给足 15s：本地首次打开 Chromium 冷启动偏慢，
+    # 设太小会把"机器慢"误判成"登录失败"。
+    RPA_TIMEOUT_MS: int = 15000
 
     # ===== Milvus =====
     MILVUS_HOST: str = "127.0.0.1"
@@ -71,6 +87,10 @@ class Settings(BaseSettings):
     # 两边存的是同一种东西（切分块），名字一致对应关系一眼看得出。
     MILVUS_COLLECTION: str = "document_chunks"
     MILVUS_TIMEOUT: float = 10.0
+    # Zilliz Cloud 使用 HTTPS endpoint + token；本地留空时继续使用 HOST/PORT。
+    MILVUS_URI: str = ""
+    MILVUS_TOKEN: str = ""
+    MILVUS_DB_NAME: str = "default"
 
     # ===== JWT =====
     JWT_SECRET: str = "change-me"
@@ -89,6 +109,10 @@ class Settings(BaseSettings):
     # "谁能进这个系统"的公开入口，而且会被人用来占用户名 / 邮箱。
     # 需要自助注册的场景（比如内网试用）可以打开，但要知道自己开了什么。
     AUTH_ALLOW_REGISTER: bool = False
+
+    # 公网作品展示：限制固定访客账号修改业务数据，仍允许问答和检索。
+    DEMO_READ_ONLY: bool = False
+    DEMO_READ_ONLY_USERNAME: str = "demo_operator"
 
     # ===== 文档上传 =====
     # 落盘根目录。每个知识库一个子目录（uploads/<kb_id>/），
@@ -357,6 +381,12 @@ class Settings(BaseSettings):
         密码里只要出现 @ : / # ? 之一，不编码就会把连接串解析错位
         （例如密码 p@ss/w#rd 会让 host 变成 "ss"）。
         """
+        if self.MYSQL_URL.strip():
+            url = self.MYSQL_URL.strip()
+            # 常见托管平台给 mysql://，SQLAlchemy 需要显式选择 PyMySQL 驱动。
+            if url.startswith("mysql://"):
+                url = "mysql+pymysql://" + url[len("mysql://"):]
+            return url
         return (
             f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{quote_plus(self.MYSQL_DATABASE)}"
@@ -365,6 +395,8 @@ class Settings(BaseSettings):
 
     @property
     def redis_url(self) -> str:
+        if self.REDIS_URL.strip():
+            return self.REDIS_URL.strip()
         auth = f":{quote_plus(self.REDIS_PASSWORD)}@" if self.REDIS_PASSWORD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 

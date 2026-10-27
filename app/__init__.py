@@ -2,7 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,7 +19,10 @@ from app.api import (
     feedback,
     health,
     knowledge,
+    live_commerce,
     memories,
+    mock_platform,
+    rpa,
     search,
     stats,
     users,
@@ -30,6 +34,42 @@ from app.core.logging import setup_logging
 
 # 开发期自用的接口调试台（纯静态单文件，不属于业务代码）
 DEVTOOLS_DIR = Path(BASE_DIR) / "devtools"
+FRONTEND_DIST_DIR = Path(BASE_DIR) / "frontend" / "dist"
+
+_DEMO_ALLOWED_WRITES = (
+    "/api/chat",
+    "/api/agent/chat",
+    "/api/search",
+    "/api/feedback",
+)
+
+
+def _install_demo_read_only_guard(app: FastAPI) -> None:
+    """公网展示时阻止访客账号改业务数据，同时保留 RAG/Agent 体验。"""
+    if not settings.DEMO_READ_ONLY:
+        return
+
+    @app.middleware("http")
+    async def guard_demo_mutations(request: Request, call_next):
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return await call_next(request)
+        path = request.url.path
+        if path == f"{settings.API_PREFIX}/auth/login" or path.startswith(_DEMO_ALLOWED_WRITES):
+            return await call_next(request)
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            try:
+                from app.core.security import decode_access_token
+
+                payload = decode_access_token(authorization.split(" ", 1)[1])
+                if payload.get("username") == settings.DEMO_READ_ONLY_USERNAME:
+                    return JSONResponse(
+                        status_code=200,
+                        content={"code": 40300, "message": "公开演示账号为只读模式，请使用现有演示数据体验", "data": None},
+                    )
+            except Exception:  # 令牌是否合法仍交给正常鉴权链路处理
+                pass
+        return await call_next(request)
 
 
 def _resolve_cors_origins() -> list[str]:
@@ -119,11 +159,13 @@ def create_app() -> FastAPI:
     logger.info("CORS 允许来源: %s", allowed_origins)
 
     register_exception_handlers(app)
+    _install_demo_read_only_guard(app)
 
     app.include_router(health.router, prefix=settings.API_PREFIX)
     app.include_router(auth.router, prefix=settings.API_PREFIX)
     app.include_router(users.router, prefix=settings.API_PREFIX)
     app.include_router(knowledge.router, prefix=settings.API_PREFIX)
+    app.include_router(live_commerce.router, prefix=settings.API_PREFIX)
     app.include_router(documents.router, prefix=settings.API_PREFIX)
     app.include_router(search.router, prefix=settings.API_PREFIX)
     app.include_router(vector.router, prefix=settings.API_PREFIX)
@@ -136,6 +178,10 @@ def create_app() -> FastAPI:
     app.include_router(chunks.router, prefix=settings.API_PREFIX)
     app.include_router(stats.router, prefix=settings.API_PREFIX)
     app.include_router(audit.router, prefix=settings.API_PREFIX)
+    app.include_router(rpa.router, prefix=settings.API_PREFIX)
+    # ⚠️ 模拟电商后台**不带 API 前缀**：它模拟的是"外部平台网页"（HTML + 表单），
+    # 不是本系统的 JSON API —— RPA 用浏览器访问它，路径要与真实平台形态一致。
+    app.include_router(mock_platform.router)
 
     # 调试台只在 dev 环境挂载：生产环境（APP_ENV=prod）压根不存在这个路径，
     # 外部访问不到。安全靠"默认不挂载"，而不是靠人记得删文件。
@@ -154,5 +200,10 @@ def create_app() -> FastAPI:
             logger.warning("APP_ENV=dev 但未找到调试台目录 %s，已跳过挂载", DEVTOOLS_DIR)
     else:
         logger.info("非 dev 环境（APP_ENV=%s），调试台未挂载", settings.APP_ENV)
+
+    # 生产容器同时托管 Vue 构建产物，API/模拟平台路由已先注册，因此不会被静态站覆盖。
+    if settings.APP_ENV == "prod" and FRONTEND_DIST_DIR.exists():
+        app.mount("/", StaticFiles(directory=str(FRONTEND_DIST_DIR), html=True), name="frontend")
+        logger.info("前端构建产物已挂载: /")
 
     return app

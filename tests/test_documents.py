@@ -34,10 +34,12 @@ def doc_env(tmp_path, monkeypatch, session_factory):
     return tmp_path
 
 
-def _upload(client, headers, kb_id, filename, content: bytes, content_type="text/plain"):
+def _upload(
+    client, headers, kb_id, filename, content: bytes, content_type="text/plain", **metadata
+):
     return client.post(
         "/api/documents/upload",
-        data={"kb_id": kb_id},
+        data={"kb_id": kb_id, **metadata},
         files={"file": (filename, io.BytesIO(content), content_type)},
         headers=headers,
     )
@@ -79,6 +81,101 @@ def test_upload_txt_triggers_processing(client, make_user, doc_env):
     assert detail["data"]["chunk_count"] >= 1
     assert detail["data"]["char_count"] > 0
     assert detail["data"]["error_msg"] is None
+
+
+def _make_product_sku(client, admin_headers, code="DOC-SKU-001"):
+    product = client.post(
+        "/api/commerce/products",
+        json={"name": "修护洗发水", "brand": "云岚", "category": "洗护"},
+        headers=admin_headers,
+    ).json()["data"]
+    sku = client.post(
+        f"/api/commerce/products/{product['id']}/skus",
+        json={"sku_code": code, "specification": "450ml", "list_price": "129.00"},
+        headers=admin_headers,
+    ).json()["data"]
+    return product, sku
+
+
+def test_upload_records_product_sku_version_and_effective_period(client, make_user, doc_env):
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    product, sku = _make_product_sku(client, admin["headers"])
+
+    result = _upload(
+        client,
+        admin["headers"],
+        kb_id,
+        "商品说明.txt",
+        _txt(SAMPLE),
+        document_type="product_manual",
+        sku_id=str(sku["id"]),
+        version="2026.10",
+        effective_from="2026-10-01T00:00:00",
+        effective_to="2027-01-01T00:00:00",
+    ).json()
+
+    assert result["code"] == 0, result
+    doc = result["data"]
+    assert doc["product_id"] == product["id"], "只传 SKU 时应由后端推导商品"
+    assert doc["sku_id"] == sku["id"]
+    assert doc["document_type"] == "product_manual"
+    assert doc["version"] == "2026.10"
+    assert doc["effective_from"].startswith("2026-10-01")
+
+    filtered = client.get(
+        "/api/documents",
+        params={"kb_id": kb_id, "sku_id": sku["id"], "active_only": True},
+        headers=admin["headers"],
+    ).json()
+    assert [row["id"] for row in filtered["data"]] == [doc["id"]]
+
+
+def test_product_document_requires_scope_and_rejects_mismatched_sku(client, make_user, doc_env):
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+
+    missing = _upload(
+        client,
+        admin["headers"],
+        kb_id,
+        "宣传依据.txt",
+        _txt(SAMPLE),
+        document_type="claim_evidence",
+    ).json()
+    assert missing["code"] == 40000
+    assert "关联商品" in missing["message"]
+
+    product_a, _ = _make_product_sku(client, admin["headers"], "DOC-SKU-A")
+    _, sku_b = _make_product_sku(client, admin["headers"], "DOC-SKU-B")
+    mismatch = _upload(
+        client,
+        admin["headers"],
+        kb_id,
+        "错误关联.txt",
+        _txt(SAMPLE),
+        document_type="product_manual",
+        product_id=str(product_a["id"]),
+        sku_id=str(sku_b["id"]),
+    ).json()
+    assert mismatch["code"] == 40000
+    assert "不属于" in mismatch["message"]
+
+
+def test_upload_rejects_reversed_effective_period(client, make_user, doc_env):
+    admin = make_user("admin")
+    kb_id = _make_kb(client, admin["headers"])
+    result = _upload(
+        client,
+        admin["headers"],
+        kb_id,
+        "时间错误.txt",
+        _txt(SAMPLE),
+        effective_from="2027-01-01T00:00:00",
+        effective_to="2026-01-01T00:00:00",
+    ).json()
+    assert result["code"] == 40000
+    assert "生效时间" in result["message"]
 
 
 def test_uploaded_files_land_in_kb_subdir_with_uuid_name(client, make_user, doc_env):

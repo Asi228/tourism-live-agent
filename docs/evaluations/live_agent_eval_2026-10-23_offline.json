@@ -1,0 +1,289 @@
+{
+  "summary": {
+    "action_accuracy": 1.0,
+    "approval_boundary_accuracy": 1.0,
+    "target_value_accuracy": 1.0,
+    "wrong_action_rate": 0.0,
+    "risk_traceability_rate": 1.0,
+    "explanation_completeness": null,
+    "citation_accuracy": null,
+    "overall_score": 1.0,
+    "total_tokens": 0,
+    "total_elapsed_ms": 0,
+    "case_count": 7
+  },
+  "results": [
+    {
+      "case_id": "no-inspection",
+      "name": "尚未巡检",
+      "risk_count": 0,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "inventory-shortage",
+      "name": "库存不足",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "price-mismatch",
+      "name": "计划价与平台价不一致",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "promotion-inactive",
+      "name": "开播时无有效活动",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "sku-inactive",
+      "name": "商品已停用",
+      "risk_count": 1,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "missing-documents",
+      "name": "商品说明和宣称依据缺失",
+      "risk_count": 2,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    },
+    {
+      "case_id": "multiple-risks",
+      "name": "库存、价格、活动多风险",
+      "risk_count": 3,
+      "action_accuracy": 1.0,
+      "approval_boundary_accuracy": 1.0,
+      "target_value_accuracy": 1.0,
+      "wrong_action_rate": 0.0,
+      "risk_traceability_rate": 1.0,
+      "explanation_completeness": null,
+      "citation_accuracy": null,
+      "elapsed_ms": 0,
+      "tokens": null,
+      "answer": null
+    }
+  ],
+  "predictions": [
+    {
+      "case_id": "no-inspection",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 9001,
+          "action_type": "run_inspection",
+          "requires_approval": false,
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "inventory-shortage",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1101,
+          "rule_code": "INVENTORY_SUFFICIENT",
+          "action_type": "refresh_or_restock",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 11,
+          "title": "可售库存充足",
+          "description": "重新采集库存、补充库存或降低本场计划销量",
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "price-mismatch",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1201,
+          "rule_code": "PRICE_MATCH",
+          "action_type": "request_price_fix",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 12,
+          "title": "计划到手价一致",
+          "description": "核对平台活动配置或调整本场计划到手价",
+          "expected_value": {
+            "live_price": "99.00"
+          }
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "promotion-inactive",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1301,
+          "rule_code": "PROMOTION_ACTIVE",
+          "action_type": "review_promotion",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 13,
+          "title": "开播时活动有效",
+          "description": "检查活动时间，或确认本场商品无需促销",
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "sku-inactive",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1401,
+          "rule_code": "SKU_ACTIVE",
+          "action_type": "review_sku_status",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 14,
+          "title": "商品与 SKU 状态",
+          "description": "重新启用商品与 SKU，或将该 SKU 移出本场选品",
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "missing-documents",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1501,
+          "rule_code": "PRODUCT_MANUAL_VALID",
+          "action_type": "upload_product_manual",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 15,
+          "title": "商品说明资料有效",
+          "description": "上传已处理完成且覆盖开播时间的商品说明",
+          "expected_value": null
+        },
+        {
+          "risk_id": 1502,
+          "rule_code": "CLAIM_EVIDENCE_VALID",
+          "action_type": "upload_claim_evidence",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 15,
+          "title": "宣传宣称依据有效",
+          "description": "补充质检报告、品牌授权或宣传宣称依据",
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    },
+    {
+      "case_id": "multiple-risks",
+      "answer": null,
+      "actions": [
+        {
+          "risk_id": 1601,
+          "rule_code": "INVENTORY_SUFFICIENT",
+          "action_type": "refresh_or_restock",
+          "priority": "high",
+          "requires_approval": false,
+          "sku_id": 16,
+          "title": "可售库存充足",
+          "description": "补充库存或降低计划销量",
+          "expected_value": null
+        },
+        {
+          "risk_id": 1602,
+          "rule_code": "PRICE_MATCH",
+          "action_type": "request_price_fix",
+          "priority": "high",
+          "requires_approval": true,
+          "sku_id": 16,
+          "title": "计划到手价一致",
+          "description": "核对平台活动配置",
+          "expected_value": {
+            "live_price": "159.00"
+          }
+        },
+        {
+          "risk_id": 1603,
+          "rule_code": "PROMOTION_ACTIVE",
+          "action_type": "review_promotion",
+          "priority": "medium",
+          "requires_approval": false,
+          "sku_id": 16,
+          "title": "开播时活动有效",
+          "description": "检查活动时间",
+          "expected_value": null
+        }
+      ],
+      "usage": null,
+      "elapsed_ms": 0
+    }
+  ]
+}

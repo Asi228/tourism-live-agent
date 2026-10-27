@@ -54,6 +54,9 @@ langgraph==1.2.12
 #   Also used by GET /health to probe Redis connectivity.
 redis==8.1.0
 
+# browser automation worker
+playwright==1.56.0
+
 # migrations (Phase 11)
 # alembic: schema migrations. create_all() only ever CREATES tables - it cannot
 #   alter them, so every future column change would otherwise be a hand-written

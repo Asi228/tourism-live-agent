@@ -70,3 +70,48 @@ class AgentChatResponse(BaseModel):
         description="本次问答所属的会话 id（Phase 9）。不传 conversation_id 时由后端隐式创建，"
                     "后续轮次带上它就能接着上文问。",
     )
+
+
+class LiveSessionAgentRequest(BaseModel):
+    question: str = Field(
+        default="为什么本场直播现在不能开播？请按优先级给出处理建议。",
+        min_length=1,
+        max_length=1000,
+    )
+    kb_ids: list[int] | None = Field(
+        default=None, description="可选：限定用于补充规则依据的运营知识库"
+    )
+
+
+class LiveSessionAgentResponse(BaseModel):
+    session_id: int
+    inspection_id: int | None
+    answer: str
+    conclusion: str | None
+    score: int | None
+    risks: list[dict] = Field(default_factory=list)
+    recommended_actions: list[dict] = Field(default_factory=list)
+    approvals: list[dict] = Field(default_factory=list)
+    rpa_tasks: list[dict] = Field(default_factory=list)
+    sources: list[SourceItem] = Field(default_factory=list)
+    steps: list[AgentStep] = Field(default_factory=list)
+    usage: ChatUsage | None = None
+    elapsed_ms: int
+
+
+class ApprovalDraftRequest(BaseModel):
+    risk_id: int = Field(ge=1, description="最新巡检中的失败结果 ID")
+
+
+class ApprovalDraftResponse(BaseModel):
+    session_id: int
+    inspection_id: int
+    source_inspection_result_id: int
+    task_type: Literal["price_fix", "delist"]
+    sku_id: int
+    sku_code: str
+    expected_value: dict
+    reason: str
+    evidence: dict
+    can_submit: bool
+    existing_approval_id: int | None = None

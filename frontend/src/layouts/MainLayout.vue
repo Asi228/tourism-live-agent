@@ -2,7 +2,7 @@
 import { onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { Reading, SwitchButton } from '@element-plus/icons-vue'
+import { InfoFilled, Reading, SwitchButton } from '@element-plus/icons-vue'
 
 import { useUserStore } from '../stores/user'
 import { NAV_ITEMS } from '../router/nav'
@@ -10,14 +10,6 @@ import { NAV_ITEMS } from '../router/nav'
 const route = useRoute()
 const router = useRouter()
 const user = useUserStore()
-
-// 应急调试台的地址：dev 下前端在 5173、后端在 8000，**不同源**，必须显式指到 8000
-// （与 vite.config.js 的 proxy target 保持一致）；生产同域反代后用相对路径即可。
-// 端口写死不理想，但 dev 下后端端口就一个，且 proxy target 也是写死的 8000 ——
-// 真要改，两边一起改。
-const devtoolsUrl = import.meta.env.DEV
-  ? 'http://127.0.0.1:8000/devtools/'
-  : '/devtools/'
 
 // 刷新页面后 store 是空的（内存态），但 token 还在 localStorage —— 这里补一次用户信息。
 // 失败不拦：可能是 token 过期，http 拦截器已经处理跳登录。
@@ -48,8 +40,8 @@ async function handleLogout() {
       <div class="brand">
         <div class="brand-logo"><el-icon><Reading /></el-icon></div>
         <div class="brand-text">
-          <div class="brand-title">企业知识库</div>
-          <div class="brand-sub">智能 Agent</div>
+          <div class="brand-title">旅播智营</div>
+          <div class="brand-sub">旅游直播运营平台</div>
         </div>
       </div>
 
@@ -61,22 +53,13 @@ async function handleLogout() {
         <template v-for="item in NAV_ITEMS" :key="item.path">
           <!-- 管理入口只对管理员渲染。这是"权限差异感"：员工看不到的入口干脆不出现，
                而不是点进去才被后端拒。后端 require_admin 仍然强校验（这里只是体验层）。 -->
-          <el-menu-item v-if="!item.admin || user.isAdmin" :index="item.path">
+          <el-menu-item v-if="!item.admin || user.isAdmin" :index="item.path" :title="item.title">
             <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.title }}</span>
+            <span class="menu-label">{{ item.title }}</span>
           </el-menu-item>
         </template>
       </el-menu>
 
-      <div class="aside-foot">
-        <!-- ⚠️ dev 下前端(5173)与后端(8000)**不同源**，写 `/devtools/` 会指到 vite 自己，
-             被它的 SPA fallback 接住又返回前端页面 —— 死循环，永远打不开真调试台。
-             （这个错躺了很久：vite 的 proxy target 是 8000，dev 下指过去就对了；
-              生产同域反代时才该用相对路径。）
-             另外它已从"主调试入口"降级为**应急通道**：日常功能前端都有，
-             它只剩"前端挂了时验证后端还活着"和"万能请求"两个价值。 -->
-        <a :href="devtoolsUrl" target="_blank" rel="noopener">应急调试台 →</a>
-      </div>
     </el-aside>
 
     <el-container>
@@ -87,6 +70,7 @@ async function handleLogout() {
              显示一个谎（用户以为自己还在概览页）。宁可空着，也不说谎。 -->
         <div class="header-title">{{ route.meta.title }}</div>
         <div class="header-right">
+          <el-button text :icon="InfoFilled" @click="router.push('/intro')">项目介绍</el-button>
           <el-tag v-if="user.roleName" size="small" type="info">{{ user.roleName }}</el-tag>
           <span class="username">{{ user.displayName }}</span>
           <el-button link type="primary" @click="handleLogout">
@@ -118,14 +102,17 @@ async function handleLogout() {
 .aside {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--el-border-color-light);
-  background: var(--el-bg-color);
+  border-right: none;
+  background: var(--app-sidebar);
+  box-shadow: 4px 0 18px rgb(15 23 42 / 10%);
+  transition: width .2s ease;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 18px 16px 14px;
+  color: white;
 }
 /* 品牌方块：给纯文字的品牌区一个视觉锚点，否则侧边栏顶部显得空 */
 .brand-logo {
@@ -135,7 +122,7 @@ async function handleLogout() {
   height: 34px;
   flex: none;
   border-radius: 8px;
-  background: var(--el-color-primary);
+  background: linear-gradient(145deg, #3b82f6, #06b6d4);
   color: var(--el-color-white);
   font-size: 20px;
 }
@@ -145,14 +132,15 @@ async function handleLogout() {
 }
 .brand-sub {
   font-size: var(--el-font-size-extra-small);
-  color: var(--el-text-color-secondary);
+  color: #94a3b8;
   margin-top: 2px;
 }
 /* 菜单选中态：左侧色条 + 浅色底 + 加粗。
    色条用 ::before 而不是 border-left —— border 会把文字挤位，且 hover 时也带着边框 */
 .menu :deep(.el-menu-item.is-active) {
-  background: var(--el-color-primary-light-9);
-  font-weight: 500;
+  background: rgb(37 99 235 / 22%);
+  color: #fff;
+  font-weight: 600;
 }
 .menu :deep(.el-menu-item.is-active)::before {
   content: '';
@@ -162,7 +150,7 @@ async function handleLogout() {
   bottom: 20%;
   width: 3px;
   border-radius: 0 2px 2px 0;
-  background: var(--el-color-primary);
+  background: #38bdf8;
 }
 /* 窗口变矮时菜单项放不下：以前是顶穿 100vh 让页面长出滚动条，
    现在 .layout 收了 overflow:hidden，那会变成**被裁掉且滚不出来** ——
@@ -172,27 +160,31 @@ async function handleLogout() {
   min-height: 0;
   overflow-y: auto;
   border-right: none;
+  background: transparent;
 }
-.aside-foot {
-  padding: 12px 16px;
-  font-size: var(--el-font-size-extra-small);
-  border-top: 1px solid var(--el-border-color-lighter);
+.menu :deep(.el-menu-item) {
+  height: 48px;
+  margin: 3px 10px;
+  padding: 0 14px !important;
+  border-radius: 8px;
+  color: #aebbd0;
 }
-.aside-foot a {
-  color: var(--el-color-primary);
-  text-decoration: none;
+.menu :deep(.el-menu-item:hover) {
+  background: rgb(148 163 184 / 12%);
+  color: #fff;
 }
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--el-border-color-light);
+  height: 64px;
+  border-bottom: 1px solid #e8ecf2;
   background: var(--el-bg-color);
 }
 /* 顶栏标题就是"我在哪一页"，字重字号要压得住 —— 否则用户得靠侧边栏高亮来判断位置 */
 .header-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 650;
   color: var(--el-text-color-primary);
 }
 .header-right {
@@ -208,8 +200,29 @@ async function handleLogout() {
    把外壳顶穿、让根容器再长出一条滚动条。Chat 那两条滚动条里"外面那条"就是这么来的。
    归零之后：超出部分由它自己的 `overflow:auto` 消化，不会外溢到页面级。 */
 .main {
-  background: var(--el-bg-color-page);
-  padding: 16px;
+  background: var(--app-page);
+  padding: 20px;
   min-height: 0;
+}
+.main > :deep(*) {
+  width: 100%;
+  max-width: 1600px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+@media (max-width: 900px) {
+  .aside { width: 72px !important; }
+  .brand { justify-content: center; padding: 16px 10px; }
+  .brand-text, .menu-label { display: none; }
+  .menu :deep(.el-menu-item) { justify-content: center; margin: 4px 10px; padding: 0 !important; }
+  .menu :deep(.el-menu-item .el-icon) { margin-right: 0; font-size: 19px; }
+  .main { padding: 14px; }
+}
+
+@media (max-width: 620px) {
+  .header { padding: 0 14px; }
+  .header-right .el-tag { display: none; }
+  .username { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 </style>

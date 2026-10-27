@@ -1,6 +1,8 @@
 """文档数据访问。只负责查/写数据库，不做权限判断。"""
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.document import STATUS_COMPLETED, STATUS_FAILED, Document
@@ -63,6 +65,12 @@ def create(
     file_path: str,
     file_type: str,
     file_size: int,
+    product_id: int | None = None,
+    sku_id: int | None = None,
+    document_type: str = "general",
+    version: str = "v1",
+    effective_from: datetime | None = None,
+    effective_to: datetime | None = None,
 ) -> Document:
     """只 flush 不 commit —— 事务边界归 Service 层（全项目统一约定）。"""
     doc = Document(
@@ -73,10 +81,45 @@ def create(
         file_path=file_path,
         file_type=file_type,
         file_size=file_size,
+        product_id=product_id,
+        sku_id=sku_id,
+        document_type=document_type,
+        version=version,
+        effective_from=effective_from,
+        effective_to=effective_to,
     )
     db.add(doc)
     db.flush()
     return doc
+
+
+def list_filtered(
+    db: Session,
+    *,
+    kb_ids: list[int] | None,
+    product_id: int | None = None,
+    sku_id: int | None = None,
+    document_type: str | None = None,
+    active_at: datetime | None = None,
+) -> list[Document]:
+    """按权限范围和业务元数据列文档；``kb_ids=None`` 表示系统管理员全量范围。"""
+    if kb_ids == []:
+        return []
+    stmt = select(Document)
+    if kb_ids is not None:
+        stmt = stmt.where(Document.knowledge_base_id.in_(kb_ids))
+    if product_id is not None:
+        stmt = stmt.where(Document.product_id == product_id)
+    if sku_id is not None:
+        stmt = stmt.where(Document.sku_id == sku_id)
+    if document_type is not None:
+        stmt = stmt.where(Document.document_type == document_type)
+    if active_at is not None:
+        stmt = stmt.where(
+            or_(Document.effective_from.is_(None), Document.effective_from <= active_at),
+            or_(Document.effective_to.is_(None), Document.effective_to >= active_at),
+        )
+    return list(db.scalars(stmt.order_by(Document.id.desc())))
 
 
 def delete(db: Session, doc: Document) -> None:

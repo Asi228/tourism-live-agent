@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: tourism-live-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: APP_ENV
+        value: prod
+      - key: DEBUG
+        value: "false"
+      - key: AUTH_ALLOW_REGISTER
+        value: "false"
+      - key: DEMO_READ_ONLY
+        value: "true"
+      - key: DEMO_READ_ONLY_USERNAME
+        value: demo_operator
+      - key: SEED_DEMO_ON_START
+        value: "true"
+      - key: UPLOAD_DIR
+        value: /tmp/enterprise-agent/uploads
+      - key: RPA_SCREENSHOT_DIR
+        value: /tmp/enterprise-agent/rpa
+      - key: APP_RELOAD
+        value: "false"
+      - key: MYSQL_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: MILVUS_URI
+        sync: false
+      - key: MILVUS_TOKEN
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: portfolio_admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: EMBEDDING_API_KEY
+        sync: false
+      - key: EMBEDDING_BASE_URL
+        sync: false
+      - key: EMBEDDING_MODEL
+        value: BAAI/bge-m3

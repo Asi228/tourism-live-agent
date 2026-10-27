@@ -13,6 +13,7 @@ write 档位在 Phase 3 就留好了（当时注释里写明是留给文档写�
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -23,6 +24,8 @@ from app.core.exceptions import AppException
 from app.core.response import ErrorCode
 from app.db import session as db_session
 from app.models.document import (
+    DOCUMENT_TYPES,
+    PRODUCT_SCOPED_DOCUMENT_TYPES,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_PROCESSING,
@@ -32,6 +35,7 @@ from app.models.document_chunk import DocumentChunk
 from app.models.user import User
 from app.rag import cleaner, loader, splitter
 from app.repositories import document_chunk_repository, document_repository
+from app.repositories import live_commerce_repository
 from app.services import knowledge_service
 from app.utils import file_storage
 
@@ -45,10 +49,44 @@ NO_ACCESS_MSG = "文档不存在或无权访问"
 
 
 async def upload_document(
-    db: Session, user: User, kb_id: int, upload: UploadFile
+    db: Session,
+    user: User,
+    kb_id: int,
+    upload: UploadFile,
+    *,
+    product_id: int | None = None,
+    sku_id: int | None = None,
+    document_type: str = "general",
+    version: str = "v1",
+    effective_from: datetime | None = None,
+    effective_to: datetime | None = None,
 ) -> Document:
     """保存文件并建一条 pending 记录。真正的解析由 process_document 在后台做。"""
     kb = knowledge_service.ensure_kb_permission(db, user, kb_id, knowledge_service.PERM_WRITE)
+
+    doc_type = document_type.strip().lower()
+    if doc_type not in DOCUMENT_TYPES:
+        raise AppException(ErrorCode.PARAM_ERROR, "不支持的资料类型")
+    doc_version = version.strip()
+    if not doc_version:
+        raise AppException(ErrorCode.PARAM_ERROR, "资料版本不能为空")
+    if len(doc_version) > 32:
+        raise AppException(ErrorCode.PARAM_ERROR, "资料版本最多 32 个字符")
+    if effective_from and effective_to and effective_from > effective_to:
+        raise AppException(ErrorCode.PARAM_ERROR, "生效时间不能晚于失效时间")
+
+    product = live_commerce_repository.get_product(db, product_id) if product_id else None
+    if product_id is not None and product is None:
+        raise AppException(ErrorCode.NOT_FOUND, "关联商品不存在")
+    sku = live_commerce_repository.get_sku(db, sku_id) if sku_id else None
+    if sku_id is not None and sku is None:
+        raise AppException(ErrorCode.NOT_FOUND, "关联 SKU 不存在")
+    if sku is not None:
+        if product_id is not None and sku.product_id != product_id:
+            raise AppException(ErrorCode.PARAM_ERROR, "SKU 不属于所选商品")
+        product_id = sku.product_id
+    if doc_type in PRODUCT_SCOPED_DOCUMENT_TYPES and product_id is None:
+        raise AppException(ErrorCode.PARAM_ERROR, "该资料类型必须关联商品或 SKU")
 
     saved = await file_storage.save_upload(upload, kb.id)
     try:
@@ -61,6 +99,12 @@ async def upload_document(
             file_path=str(saved.file_path),
             file_type=saved.file_type,
             file_size=saved.file_size,
+            product_id=product_id,
+            sku_id=sku_id,
+            document_type=doc_type,
+            version=doc_version,
+            effective_from=effective_from,
+            effective_to=effective_to,
         )
         db.commit()
     except Exception:
@@ -159,7 +203,14 @@ def process_document(document_id: int) -> None:
 
 
 def list_documents(
-    db: Session, user: User, kb_id: int | None = None
+    db: Session,
+    user: User,
+    kb_id: int | None = None,
+    *,
+    product_id: int | None = None,
+    sku_id: int | None = None,
+    document_type: str | None = None,
+    active_only: bool = False,
 ) -> list[Document]:
     """列文档。
 
@@ -172,13 +223,21 @@ def list_documents(
     """
     if kb_id is not None:
         knowledge_service.ensure_kb_permission(db, user, kb_id, knowledge_service.PERM_READ)
-        return document_repository.list_by_kb(db, kb_id)
+        scope = [kb_id]
+    else:
+        scope = knowledge_service.get_accessible_kb_ids(db, user)
 
-    allowed = knowledge_service.get_accessible_kb_ids(db, user)
-    if allowed is None:
-        # None = 系统管理员，不受限
-        return document_repository.list_all(db)
-    return document_repository.list_by_kb_ids(db, allowed)
+    doc_type = document_type.strip().lower() if document_type else None
+    if doc_type is not None and doc_type not in DOCUMENT_TYPES:
+        raise AppException(ErrorCode.PARAM_ERROR, "不支持的资料类型")
+    return document_repository.list_filtered(
+        db,
+        kb_ids=scope,
+        product_id=product_id,
+        sku_id=sku_id,
+        document_type=doc_type,
+        active_at=datetime.now() if active_only else None,
+    )
 
 
 

@@ -33,6 +33,19 @@ from app.models.knowledge_base_faq import (
     KnowledgeBaseFaq,
 )
 from app.models.knowledge_base_member import KnowledgeBaseMember
+from app.models.live_commerce import (
+    InspectionBatch,
+    InspectionRuleConfig,
+    InspectionResult,
+    InventorySnapshot,
+    LiveSession,
+    LiveSessionItem,
+    PreparationPackage,
+    Product,
+    ProductSku,
+    Promotion,
+    PromotionSku,
+)
 from app.models.message import ALL_ROLES, ROLE_ASSISTANT, ROLE_USER, Message
 from app.models.message_feedback import (
     ALL_RATINGS,
@@ -43,6 +56,7 @@ from app.models.message_feedback import (
     MessageFeedback,
 )
 from app.models.role import Role
+from app.models.rpa import MonitoringPlan, MockPlatformSku, RpaApproval, RpaTask, RpaTaskStep
 from app.models.user import User
 from app.models.user_memory import CONTENT_MAX_LENGTH as MEMORY_MAX_LENGTH, UserMemory
 
@@ -79,9 +93,25 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeBaseFaq",
     "KnowledgeBaseMember",
+    "InventorySnapshot",
+    "InspectionBatch",
+    "InspectionRuleConfig",
+    "InspectionResult",
+    "LiveSession",
+    "LiveSessionItem",
     "Message",
     "MessageFeedback",
+    "PreparationPackage",
+    "Product",
+    "ProductSku",
+    "Promotion",
+    "PromotionSku",
     "Role",
+    "MockPlatformSku",
+    "MonitoringPlan",
+    "RpaApproval",
+    "RpaTask",
+    "RpaTaskStep",
     "User",
     "UserMemory",
 ]

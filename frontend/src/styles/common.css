@@ -26,6 +26,47 @@ body,
   margin: 0;
 }
 
+:root {
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #5b82ee;
+  --el-color-primary-light-5: #91adf5;
+  --el-color-primary-light-7: #c4d3fa;
+  --el-color-primary-light-9: #eef4ff;
+  --el-border-radius-base: 8px;
+  --app-surface: #ffffff;
+  --app-page: #f3f6fb;
+  --app-sidebar: #0f172a;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+body {
+  color: #172033;
+  background: var(--app-page);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.el-card {
+  border-color: #e7ebf2;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgb(15 23 42 / 4%);
+}
+
+.el-table {
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-row-hover-bg-color: #f3f7ff;
+  --el-table-border-color: #edf0f5;
+  border-radius: 8px;
+}
+
+.el-table th.el-table__cell { color: #475569; font-weight: 600; }
+.el-button { font-weight: 500; }
+.page-title { color: #172033; font-size: 18px; font-weight: 650; }
+.page-subtitle { margin-top: 5px; color: #64748b; font-size: 12px; line-height: 1.6; }
+
 /* 卡片标题行：左标题、右操作区。各页共用同一套间距，视觉才统一。
    加 padding-bottom + border-bottom：EP 的 el-card header 默认**不带边框**，
    标题和表格糊在一起，层级就立不起来。 */
@@ -42,4 +83,9 @@ body,
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+@media (max-width: 720px) {
+  .card-head { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .head-actions { width: 100%; flex-wrap: wrap; }
 }

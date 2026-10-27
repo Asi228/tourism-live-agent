@@ -3,8 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { knowledgeApi, faqApi, userApi, vectorApi } from '../api'
-import { metricOrDash, visibilityView } from '../utils/vectorHealth'
+import { knowledgeApi, faqApi, userApi } from '../api'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
@@ -99,22 +98,6 @@ async function removeFaq(row) {
     await loadFaqs()
   } catch {
     /* 拦截器已提示 */
-  }
-}
-
-// ---- 向量库自检 ----
-const vectorLoading = ref(false)
-const vectorHealth = ref(null)
-
-async function loadVectorHealth() {
-  vectorLoading.value = true
-  try {
-    const body = await vectorApi.health()
-    vectorHealth.value = body.data || null
-  } catch {
-    /* 拦截器已提示（非管理员会看到"无权限"） */
-  } finally {
-    vectorLoading.value = false
   }
 }
 
@@ -259,6 +242,10 @@ function goDocuments(kb) {
   router.push({ path: '/documents', query: { kb: kb.id } })
 }
 
+function goAsk(kb) {
+  router.push({ path: '/chat', query: { kb: kb.id } })
+}
+
 const isEmpty = computed(() => !loading.value && rows.value.length === 0)
 
 onMounted(load)
@@ -266,89 +253,13 @@ onMounted(load)
 
 <template>
   <div>
-    <!-- 向量库自检：devtools 里唯一有日常运维价值、而前端一直没有的功能。
-         孤儿向量 / 向量缺失都会静默改变检索结果，documents 表里却没有对应字段，
-         从任何界面上都看不出来 —— 所以给它一个正式入口，而不是埋在应急调试台里。 -->
-    <el-card v-if="user.isAdmin" v-loading="vectorLoading" class="vector-card">
-      <template #header>
-        <div class="card-head">
-          <span>向量库自检</span>
-          <el-button size="small" :loading="vectorLoading" @click="loadVectorHealth">自检</el-button>
-        </div>
-      </template>
-
-      <template v-if="vectorHealth">
-        <div v-if="!vectorHealth.available" class="vector-down">
-          <el-tag type="danger" size="small">不可用</el-tag>
-          <span class="vector-reason">{{ vectorHealth.reason }}</span>
-        </div>
-        <template v-else>
-          <!-- 结论先行：四个数字本身看不出"数据在但读不到"这种最坑的状态，
-               所以把后端的 visibility 放在数字上面，而不是藏在说明文字里。 -->
-          <div class="vector-verdict">
-            <el-tag :type="visibilityView(vectorHealth.visibility).type" size="small">
-              {{ visibilityView(vectorHealth.visibility).label }}
-            </el-tag>
-            <span v-if="vectorHealth.visibility_hint" class="vector-hint">
-              {{ vectorHealth.visibility_hint }}
-            </span>
-          </div>
-          <div class="vector-grid">
-            <div class="vector-item">
-              <span class="vector-num">{{ metricOrDash(vectorHealth.vector_count) }}</span>
-              <span class="vector-label">向量总数（检索可见）</span>
-            </div>
-            <div class="vector-item">
-              <span class="vector-num">{{ metricOrDash(vectorHealth.stored_rows) }}</span>
-              <span class="vector-label">服务端行数</span>
-            </div>
-            <div class="vector-item" :class="{ warn: vectorHealth.orphan_vector_count }">
-              <span class="vector-num">{{ metricOrDash(vectorHealth.orphan_vector_count) }}</span>
-              <span class="vector-label">孤儿向量</span>
-            </div>
-            <div class="vector-item" :class="{ warn: vectorHealth.documents_without_vectors }">
-              <span class="vector-num">
-                {{ metricOrDash(vectorHealth.documents_without_vectors) }}
-              </span>
-              <span class="vector-label">缺向量文档</span>
-            </div>
-          </div>
-          <div class="vector-meta">
-            Milvus {{ vectorHealth.server_version }}　·　collection
-            <code>{{ vectorHealth.collection }}</code>
-            <template v-if="!vectorHealth.collection_exists">（尚未创建）</template>
-          </div>
-          <!-- 同实例里的陌生集合：它们有行数，但本应用永远读不到。
-               不指出来的话，"看到有向量"就会把人引向错误的结论。 -->
-          <div v-if="vectorHealth.foreign_collections?.length" class="vector-meta">
-            同实例其它集合（非本应用结构，不参与检索）：<code>{{ vectorHealth.foreign_collections.join('、') }}</code>
-          </div>
-          <div v-if="vectorHealth.orphan_vector_count || vectorHealth.documents_without_vectors" class="vector-warn">
-            <template v-if="vectorHealth.orphan_vector_count">
-              孤儿向量：所属知识库已删除、却仍留在 Milvus 里 —— 它们会被检索命中，占着 top_k 名额，
-              却拿不到正文（答案里出现"内容缺失"就是它）。<br>
-            </template>
-            <template v-if="vectorHealth.documents_without_vectors">
-              缺向量文档：已处理完成却一条向量都没有 —— 它们<b>永远检索不到</b>，答案里也引用不到。
-              去「文档管理」对它们点"向量化"即可。
-            </template>
-          </div>
-          <!-- 与"缺向量"处置方式**相反**的一种状态，必须单独说：
-               重灌向量只会临时治好它，而且会让人以为数据丢过。 -->
-          <div v-if="vectorHealth.visibility === 'not_visible'" class="vector-warn danger">
-            <b>不要重新向量化</b>：数据其实在库里，只是检索路径读不到。
-            服务端已写入会自动落盘；若仍反复出现，要在 Milvus 侧确认 collection 已 load、
-            以及 flush（落盘）是否成功 —— 重启后读不到就是这个原因。
-          </div>
-        </template>
-      </template>
-      <div v-else class="vector-empty">点右上角「自检」查看向量库状态</div>
-    </el-card>
-
     <el-card>
       <template #header>
         <div class="card-head">
-          <span>知识库</span>
+          <div>
+            <div class="page-title">业务知识管理</div>
+            <div class="page-subtitle">集中管理景区门票、酒店套餐、预约规则、直播话术和售后政策。</div>
+          </div>
           <div class="head-actions">
             <el-button :loading="loading" @click="load">刷新</el-button>
             <el-button v-if="user.isAdmin" type="primary" @click="openCreate">新建知识库</el-button>
@@ -377,9 +288,10 @@ onMounted(load)
         <el-table-column label="创建者" width="120">
           <template #default="{ row }">{{ row.owner?.username || row.owner_id }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column label="操作" width="310" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="goDocuments(row)">文档</el-button>
+            <el-button link type="success" @click="goAsk(row)">使用助手</el-button>
+            <el-button link type="primary" @click="goDocuments(row)">管理资料</el-button>
             <!-- 「成员」只给系统管理员：抽屉里的授权表单要靠 /api/users 列用户，而那个接口
                  是 require_admin。给库级 admin 开这个入口只会让他"看得到列表、加不了人" ——
                  与其做个半开的能力，不如先把口径收齐（后端放宽接口后再一起放开）。 -->
@@ -405,8 +317,7 @@ onMounted(load)
       width="640px"
     >
       <div class="faq-tip">
-        最多 {{ FAQ_MAX }} 条（{{ faqs.length }}/{{ FAQ_MAX }}）。答案<b>不参与检索</b> ——
-        它是命中即返回的快捷方式，与 RAG 两条独立的路。
+        可维护最多 {{ FAQ_MAX }} 条高频问题（{{ faqs.length }}/{{ FAQ_MAX }}），用户提问命中后会直接返回统一答案。
       </div>
 
       <el-table v-loading="faqLoading" :data="faqs" size="small" max-height="320">
@@ -425,7 +336,7 @@ onMounted(load)
       <div class="faq-add">
         <el-input
           v-model="faqDraft.question"
-          placeholder="问题，如：年假可以休几天"
+          placeholder="问题，如：儿童没有身份证怎么入园"
           maxlength="200"
         />
         <el-input
@@ -433,7 +344,7 @@ onMounted(load)
           type="textarea"
           :rows="2"
           maxlength="2000"
-          placeholder="标准答案"
+          placeholder="填写运营或客服统一使用的标准答案"
         />
         <el-button
           type="primary"
@@ -450,7 +361,7 @@ onMounted(load)
     <el-dialog v-model="editVisible" :title="editing ? '编辑知识库' : '新建知识库'" width="480px">
       <el-form ref="formRef" :model="form" :rules="formRules" label-width="80px">
         <el-form-item label="名称" prop="name">
-          <el-input v-model="form.name" placeholder="例如：员工手册" />
+          <el-input v-model="form.name" placeholder="例如：景区门票与入园规则" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="3" placeholder="可选" />
@@ -541,80 +452,13 @@ onMounted(load)
   display: flex;
   gap: 8px;
 }
-
-/* ---- 向量库自检卡片 ---- */
-.vector-card {
-  margin-bottom: 14px;
-}
-/* 结论行：标签 + 后端给的人话。放在四个数字**上面** ——
-   "数据在但读不到"这种状态，光看数字是看不出来的。 */
-.vector-verdict {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.vector-hint {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.vector-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-}
-.vector-item {
-  padding: 10px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
-  text-align: center;
-}
-.vector-item.warn {
-  border-color: var(--el-color-warning);
-  background: var(--el-color-warning-light-9);
-}
-.vector-num {
-  display: block;
-  font-size: 20px;
+.page-title {
   font-weight: 600;
-  line-height: 1.3;
 }
-.vector-item.warn .vector-num {
-  color: var(--el-color-warning);
-}
-.vector-label {
-  font-size: var(--el-font-size-extra-small);
+.page-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
   color: var(--el-text-color-secondary);
-}
-.vector-meta {
-  margin-top: 10px;
-  font-size: var(--el-font-size-extra-small);
-  color: var(--el-text-color-secondary);
-}
-.vector-warn {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--el-color-warning-light-9);
-  color: var(--el-text-color-regular);
-  font-size: var(--el-font-size-extra-small);
-  line-height: 1.7;
-}
-/* 同一块版式、不同严重度：not_visible 是"数据在但读不到"，比"缺向量"更需要拦住人别去重灌 */
-.vector-warn.danger {
-  background: var(--el-color-danger-light-9);
-}
-.vector-down {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.vector-reason {
-  font-size: 13px;
-  color: var(--el-text-color-regular);
-}
-.vector-empty {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
 }
 </style>

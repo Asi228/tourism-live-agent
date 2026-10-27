@@ -32,6 +32,136 @@ from app.services import knowledge_service, vector_service
 logger = logging.getLogger(__name__)
 
 
+def _risk_action(result) -> dict:
+    """把确定性巡检结果翻译成可供 Agent/UI 使用的结构化动作草稿。"""
+    action_map = {
+        "SESSION_HAS_ITEMS": ("add_session_item", False),
+        "SKU_ACTIVE": ("review_sku_status", True),
+        "INVENTORY_SUFFICIENT": ("refresh_or_restock", False),
+        "INVENTORY_FRESH": ("collect_platform_data", False),
+        "PROMOTION_ACTIVE": ("review_promotion", False),
+        "PRICE_MATCH": ("request_price_fix", True),
+        "PRODUCT_MANUAL_VALID": ("upload_product_manual", False),
+        "CLAIM_EVIDENCE_VALID": ("upload_claim_evidence", False),
+    }
+    action_type, requires_approval = action_map.get(
+        result.rule_code, ("manual_review", False)
+    )
+    # “价格不一致”有两种完全不同的业务含义：有计划价时才是平台改价，
+    # 没有计划价时只是计划数据没填。后者不能生成改价审批，否则目标值为空。
+    planned_price = (result.evidence or {}).get("planned_unit_price")
+    if result.rule_code == "PRICE_MATCH" and planned_price is None:
+        action_type = "set_planned_price"
+        requires_approval = False
+    return {
+        "risk_id": result.id,
+        "rule_code": result.rule_code,
+        "action_type": action_type,
+        "priority": "high" if result.severity == "blocker" else "medium",
+        "requires_approval": requires_approval,
+        "sku_id": result.sku_id,
+        "title": result.rule_name,
+        "description": result.suggestion or result.message,
+        "expected_value": (
+            {"live_price": planned_price}
+            if result.rule_code == "PRICE_MATCH"
+            and planned_price is not None
+            else None
+        ),
+    }
+
+
+def get_live_session_context(db: Session, user: User, session_id: int) -> dict:
+    """读取一场直播的实时业务上下文，不执行任何写操作。
+
+    这是直播运营 Agent 的核心业务工具。权限沿用直播场次：管理员可查看全部，
+    普通用户只能查看自己负责的场次。返回最新巡检、风险、审批和 RPA 状态，
+    避免模型凭自然语言猜测数据库事实。
+    """
+    # 局部导入避免通用知识工具加载时形成 service 循环依赖。
+    from app.models.live_commerce import RULE_FAILED
+    from app.repositories import rpa_repository
+    from app.services import live_commerce_service
+
+    session = live_commerce_service.get_session(db, user, session_id)
+    inspections = live_commerce_service.list_inspections(
+        db, user, session_id=session_id
+    )
+    latest = inspections[0] if inspections else None
+    failed = (
+        [row for row in latest.results if row.status == RULE_FAILED]
+        if latest is not None
+        else []
+    )
+    tasks = rpa_repository.list_tasks_for_session(db, session_id)
+    approvals = rpa_repository.list_approvals_for_session(db, session_id)
+
+    risks = [
+        {
+            "id": row.id,
+            "rule_code": row.rule_code,
+            "rule_name": row.rule_name,
+            "severity": row.severity,
+            "sku_id": row.sku_id,
+            "message": row.message,
+            "suggestion": row.suggestion,
+            "evidence": row.evidence or {},
+        }
+        for row in failed
+    ]
+    return {
+        "session": {
+            "id": session.id,
+            "title": session.title,
+            "status": session.status,
+            "starts_at": session.starts_at.isoformat(),
+            "item_count": len(session.items),
+            "sku_codes": [item.sku.sku_code for item in session.items],
+        },
+        "inspection": (
+            {
+                "id": latest.id,
+                "status": latest.status,
+                "conclusion": latest.conclusion,
+                "score": latest.score,
+                "blocker_count": latest.blocker_count,
+                "warning_count": latest.warning_count,
+                "passed_count": latest.passed_count,
+                "rule_version": latest.rule_version,
+                "completed_at": latest.completed_at.isoformat()
+                if latest.completed_at else None,
+            }
+            if latest is not None
+            else None
+        ),
+        "risks": risks,
+        "recommended_actions": [_risk_action(row) for row in failed],
+        "approvals": [
+            {
+                "id": row.id,
+                "task_type": row.task_type,
+                "sku_id": row.sku_id,
+                "status": row.status,
+                "expected_value": row.expected_value,
+                "task_id": row.task_id,
+            }
+            for row in approvals
+        ],
+        "rpa_tasks": [
+            {
+                "id": row.id,
+                "task_type": row.task_type,
+                "status": row.status,
+                "attempt_count": row.attempt_count,
+                "error_message": row.error_message,
+                "completed_at": row.completed_at.isoformat()
+                if row.completed_at else None,
+            }
+            for row in tasks
+        ],
+    }
+
+
 def search_knowledge(
     db: Session,
     user: User,

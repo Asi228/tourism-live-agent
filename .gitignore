@@ -26,6 +26,9 @@ htmlcov/
 # 上传文件与向量库本地数据
 uploads/
 
+# RPA 执行截图证据（按任务分目录；属运行产物，不进仓库）
+artifacts/
+
 # 前端（依赖与构建产物都不进仓库）
 frontend/node_modules/
 frontend/dist/

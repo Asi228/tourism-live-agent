@@ -1,10 +1,11 @@
 import {
-  ChatDotRound,
   Collection,
-  Document,
+  ChatDotRound,
   Monitor,
   Odometer,
-  Search,
+  Refresh,
+  Warning,
+  ShoppingCart,
   User,
 } from '@element-plus/icons-vue'
 
@@ -24,14 +25,19 @@ import {
  * 显示一个**谎**（用户以为自己在概览页）。现在标题为空就是空的，比说谎好。
  */
 export const NAV_ITEMS = [
-  { path: '/dashboard', title: '概览', icon: Odometer },
-  { path: '/knowledge', title: '知识库', icon: Collection },
-  { path: '/documents', title: '文档管理', icon: Document },
-  { path: '/chat', title: '智能问答', icon: ChatDotRound },
-  // admin: true 的两项由菜单层按角色隐藏（体验层），路由层与后端仍然强校验
-  { path: '/users', title: '用户管理', icon: User, admin: true },
-  { path: '/system', title: '系统状态', icon: Monitor, admin: true },
-  // 检索调试：只检索不调模型，看双路召回/融合/重排的原始结果
-  // （原 devtools 单文件页的高频用途；devtools 仍保留作万能请求调试台）
-  { path: '/search-debug', title: '检索调试', icon: Search, admin: true },
+  { path: '/dashboard', title: '运营工作台', icon: Odometer },
+  { path: '/commerce', title: '直播运营', icon: ShoppingCart },
+  { path: '/automation', title: '自动化中心', icon: Refresh },
+  { path: '/approvals', title: '审批中心', icon: Warning },
+  { path: '/chat', title: '业务知识助手', icon: ChatDotRound },
+  { path: '/knowledge', title: '知识管理', icon: Collection },
+  // 管理入口由菜单层按角色隐藏，路由与后端仍然强校验。
+  { path: '/users', title: '用户与权限', icon: User, admin: true },
+  { path: '/system', title: '系统管理', icon: Monitor, admin: true },
+]
+
+// 二级能力保留路由，但不占用一级导航。文档从知识库进入，检索诊断仅供管理员排障。
+export const SECONDARY_ROUTES = [
+  { path: '/documents', title: '业务资料' },
+  { path: '/search-debug', title: '检索诊断', admin: true },
 ]

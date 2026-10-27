@@ -11,6 +11,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.document_chunk import DocumentChunk
     from app.models.knowledge_base import KnowledgeBase
+    from app.models.live_commerce import Product, ProductSku
     from app.models.user import User
 
 # 文档处理状态。用字符串而不是枚举表：
@@ -21,6 +22,26 @@ STATUS_PROCESSING = "processing"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 ALL_STATUSES = (STATUS_PENDING, STATUS_PROCESSING, STATUS_COMPLETED, STATUS_FAILED)
+
+DOC_TYPE_GENERAL = "general"
+DOC_TYPE_PRODUCT_MANUAL = "product_manual"
+DOC_TYPE_CLAIM_EVIDENCE = "claim_evidence"
+DOC_TYPE_PLATFORM_RULE = "platform_rule"
+DOC_TYPE_AFTER_SALES = "after_sales"
+DOC_TYPE_LOGISTICS = "logistics"
+DOC_TYPE_LIVE_POLICY = "live_policy"
+DOC_TYPE_REPLAY_REPORT = "replay_report"
+DOCUMENT_TYPES = (
+    DOC_TYPE_GENERAL,
+    DOC_TYPE_PRODUCT_MANUAL,
+    DOC_TYPE_CLAIM_EVIDENCE,
+    DOC_TYPE_PLATFORM_RULE,
+    DOC_TYPE_AFTER_SALES,
+    DOC_TYPE_LOGISTICS,
+    DOC_TYPE_LIVE_POLICY,
+    DOC_TYPE_REPLAY_REPORT,
+)
+PRODUCT_SCOPED_DOCUMENT_TYPES = (DOC_TYPE_PRODUCT_MANUAL, DOC_TYPE_CLAIM_EVIDENCE)
 
 
 class Document(Base):
@@ -40,6 +61,28 @@ class Document(Base):
     )
     uploader_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), index=True, nullable=False, comment="上传者"
+    )
+    product_id: Mapped[int | None] = mapped_column(
+        ForeignKey("products.id", ondelete="SET NULL"), index=True, nullable=True,
+        comment="关联商品；平台规则等通用资料可为空",
+    )
+    sku_id: Mapped[int | None] = mapped_column(
+        ForeignKey("product_skus.id", ondelete="SET NULL"), index=True, nullable=True,
+        comment="关联到具体 SKU；为空表示适用于整个商品",
+    )
+    document_type: Mapped[str] = mapped_column(
+        String(32), default=DOC_TYPE_GENERAL, server_default=DOC_TYPE_GENERAL,
+        index=True, nullable=False, comment="业务资料类型",
+    )
+    version: Mapped[str] = mapped_column(
+        String(32), default="v1", server_default="v1", nullable=False,
+        comment="业务资料版本",
+    )
+    effective_from: Mapped[datetime | None] = mapped_column(
+        DateTime, index=True, nullable=True, comment="生效时间；为空表示不限制起始时间"
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(
+        DateTime, index=True, nullable=True, comment="失效时间；为空表示长期有效"
     )
 
     filename: Mapped[str] = mapped_column(
@@ -81,6 +124,8 @@ class Document(Base):
         back_populates="documents", lazy="joined"
     )
     uploader: Mapped["User"] = relationship(lazy="joined")
+    product: Mapped["Product | None"] = relationship(foreign_keys=[product_id], lazy="joined")
+    sku: Mapped["ProductSku | None"] = relationship(foreign_keys=[sku_id], lazy="joined")
 
     # 删除文档时连带删掉它的 chunk，不留孤儿行
     chunks: Mapped[list["DocumentChunk"]] = relationship(

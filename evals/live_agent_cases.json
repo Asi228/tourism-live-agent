@@ -1,0 +1,69 @@
+{
+  "version": "2026.10-v1",
+  "cases": [
+    {
+      "id": "no-inspection",
+      "name": "尚未巡检",
+      "question": "这场直播现在能开播吗？",
+      "inspection": null,
+      "risks": [],
+      "special_action": {"risk_id": 9001, "action_type": "run_inspection", "requires_approval": false, "expected_value": null},
+      "knowledge_references": [],
+      "expected": {"actions": [{"risk_id": 9001, "action_type": "run_inspection", "requires_approval": false, "expected_value": null}], "answer_fact_groups": [["没有巡检", "尚未巡检"], ["先执行", "先进行"]], "citation_required": false}
+    },
+    {
+      "id": "inventory-shortage",
+      "name": "库存不足",
+      "question": "为什么不能开播，应该怎么处理？",
+      "inspection": {"id": 101, "conclusion": "blocked", "score": 75},
+      "risks": [{"id": 1101, "rule_code": "INVENTORY_SUFFICIENT", "rule_name": "可售库存充足", "severity": "blocker", "sku_id": 11, "message": "SKU-A 可售库存 5，不足以支持计划销量 30", "suggestion": "重新采集库存、补充库存或降低本场计划销量", "evidence": {"sellable_quantity": 5, "planned_sales": 30}}],
+      "knowledge_references": [{"ref": "K1", "document_name": "直播库存管理规范.md", "content": "可售库存低于计划销量时应阻断开播并补充库存。"}],
+      "expected": {"actions": [{"risk_id": 1101, "action_type": "refresh_or_restock", "requires_approval": false, "expected_value": null}], "answer_fact_groups": [["不能开播", "不可开播"], ["库存"], ["5"], ["30"]], "citation_required": true}
+    },
+    {
+      "id": "price-mismatch",
+      "name": "计划价与平台价不一致",
+      "question": "价格风险是什么，能直接修复吗？",
+      "inspection": {"id": 102, "conclusion": "blocked", "score": 75},
+      "risks": [{"id": 1201, "rule_code": "PRICE_MATCH", "rule_name": "计划到手价一致", "severity": "blocker", "sku_id": 12, "message": "SKU-B 计算到手价 129.00 与计划价格 99.00 不一致", "suggestion": "核对平台活动配置或调整本场计划到手价", "evidence": {"planned_unit_price": "99.00", "calculated_unit_price": "129.00"}}],
+      "knowledge_references": [{"ref": "K1", "document_name": "直播价格管理制度.md", "content": "平台改价属于高风险操作，必须经过负责人审批。"}],
+      "expected": {"actions": [{"risk_id": 1201, "action_type": "request_price_fix", "requires_approval": true, "expected_value": {"live_price": "99.00"}}], "answer_fact_groups": [["不能开播", "不能直接开播", "不可开播"], ["129"], ["99"], ["审批"]], "citation_required": true}
+    },
+    {
+      "id": "promotion-inactive",
+      "name": "开播时无有效活动",
+      "question": "活动有什么问题？",
+      "inspection": {"id": 103, "conclusion": "ready", "score": 92},
+      "risks": [{"id": 1301, "rule_code": "PROMOTION_ACTIVE", "rule_name": "开播时活动有效", "severity": "warning", "sku_id": 13, "message": "SKU-C 在计划开播时间没有有效活动", "suggestion": "检查活动时间，或确认本场商品无需促销", "evidence": {"promotion_ids": []}}],
+      "knowledge_references": [],
+      "expected": {"actions": [{"risk_id": 1301, "action_type": "review_promotion", "requires_approval": false, "expected_value": null}], "answer_fact_groups": [["可以开播", "可开播"], ["活动"], ["检查", "确认"]], "citation_required": false}
+    },
+    {
+      "id": "sku-inactive",
+      "name": "商品已停用",
+      "question": "这个商品为什么阻断开播？",
+      "inspection": {"id": 104, "conclusion": "blocked", "score": 75},
+      "risks": [{"id": 1401, "rule_code": "SKU_ACTIVE", "rule_name": "商品与 SKU 状态", "severity": "blocker", "sku_id": 14, "message": "SKU-D 的商品或 SKU 已停用", "suggestion": "重新启用商品与 SKU，或将该 SKU 移出本场选品", "evidence": {"product_status": "inactive", "sku_status": "active"}}],
+      "knowledge_references": [],
+      "expected": {"actions": [{"risk_id": 1401, "action_type": "review_sku_status", "requires_approval": true, "expected_value": null}], "answer_fact_groups": [["不能开播", "不可开播"], ["停用"], ["重新启用", "移出"]], "citation_required": false}
+    },
+    {
+      "id": "missing-documents",
+      "name": "商品说明和宣称依据缺失",
+      "question": "资料是否齐全？",
+      "inspection": {"id": 105, "conclusion": "blocked", "score": 67},
+      "risks": [{"id": 1501, "rule_code": "PRODUCT_MANUAL_VALID", "rule_name": "商品说明资料有效", "severity": "blocker", "sku_id": 15, "message": "SKU-E 缺少商品说明资料有效", "suggestion": "上传已处理完成且覆盖开播时间的商品说明", "evidence": {"document_ids": []}}, {"id": 1502, "rule_code": "CLAIM_EVIDENCE_VALID", "rule_name": "宣传宣称依据有效", "severity": "warning", "sku_id": 15, "message": "SKU-E 缺少宣传宣称依据有效", "suggestion": "补充质检报告、品牌授权或宣传宣称依据", "evidence": {"document_ids": []}}],
+      "knowledge_references": [],
+      "expected": {"actions": [{"risk_id": 1501, "action_type": "upload_product_manual", "requires_approval": false, "expected_value": null}, {"risk_id": 1502, "action_type": "upload_claim_evidence", "requires_approval": false, "expected_value": null}], "answer_fact_groups": [["不能开播", "不可开播"], ["商品说明"], ["宣传宣称", "质检报告", "品牌授权"]], "citation_required": false}
+    },
+    {
+      "id": "multiple-risks",
+      "name": "库存、价格、活动多风险",
+      "question": "请按优先级说明本场问题和处理顺序。",
+      "inspection": {"id": 106, "conclusion": "blocked", "score": 42},
+      "risks": [{"id": 1601, "rule_code": "INVENTORY_SUFFICIENT", "rule_name": "可售库存充足", "severity": "blocker", "sku_id": 16, "message": "SKU-F 可售库存 0，不足以支持计划销量 50", "suggestion": "补充库存或降低计划销量", "evidence": {"sellable_quantity": 0, "planned_sales": 50}}, {"id": 1602, "rule_code": "PRICE_MATCH", "rule_name": "计划到手价一致", "severity": "blocker", "sku_id": 16, "message": "SKU-F 计算到手价 199.00 与计划价格 159.00 不一致", "suggestion": "核对平台活动配置", "evidence": {"planned_unit_price": "159.00", "calculated_unit_price": "199.00"}}, {"id": 1603, "rule_code": "PROMOTION_ACTIVE", "rule_name": "开播时活动有效", "severity": "warning", "sku_id": 16, "message": "SKU-F 在计划开播时间没有有效活动", "suggestion": "检查活动时间", "evidence": {"promotion_ids": []}}],
+      "knowledge_references": [{"ref": "K1", "document_name": "直播运营检查规范.md", "content": "阻断项优先于警告项处理；价格修改必须经过审批。"}],
+      "expected": {"actions": [{"risk_id": 1601, "action_type": "refresh_or_restock", "requires_approval": false, "expected_value": null}, {"risk_id": 1602, "action_type": "request_price_fix", "requires_approval": true, "expected_value": {"live_price": "159.00"}}, {"risk_id": 1603, "action_type": "review_promotion", "requires_approval": false, "expected_value": null}], "answer_fact_groups": [["不能开播", "不可开播"], ["库存"], ["价格"], ["活动"], ["审批"]], "citation_required": true}
+    }
+  ]
+}

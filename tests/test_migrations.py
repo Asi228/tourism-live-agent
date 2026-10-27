@@ -87,6 +87,20 @@ def _assert_database_is_at_head() -> None:
     )
 
 
+def _include_object(object_, name, type_, reflected, compare_to):
+    """drift 比对时跳过的库对象（**刻意**，不是遗漏）。
+
+    `ix_document_chunks_content_ft` 是迁移 d9e4f1a2b3c5 用
+    `CREATE FULLTEXT INDEX ... WITH PARSER ngram` 建的 MySQL 专有索引 ——
+    SQLAlchemy 的 Index 表达不了 parser，模型里因此没有它，
+    Alembic 会把它判成"库里多出来的索引、建议删除"。
+    真删了关键词路就退回 LIKE 全表扫描，所以这里必须忽略。
+    """
+    if type_ == "index" and name == "ix_document_chunks_content_ft":
+        return False
+    return True
+
+
 @requires_mysql
 def test_models_and_migrations_are_in_sync():
     """`alembic upgrade head` 之后，模型与库结构必须**零差异**。
@@ -103,7 +117,10 @@ def test_models_and_migrations_are_in_sync():
     _assert_database_is_at_head()  # 先判版本：给出能照做的提示，而不是一长串 diff
 
     with engine.connect() as conn:
-        ctx = MigrationContext.configure(conn, opts={"compare_type": True})
+        ctx = MigrationContext.configure(
+            conn,
+            opts={"compare_type": True, "include_object": _include_object},
+        )
         diff = compare_metadata(ctx, Base.metadata)
 
     assert diff == [], (

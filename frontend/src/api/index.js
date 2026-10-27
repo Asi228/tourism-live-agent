@@ -34,9 +34,6 @@ export const userApi = {
 export const statsApi = {
   // 概览统计，**口径按当前用户可见范围**（员工看到的是他有权访问的那部分）
   overview: () => http.get('/stats/overview'),
-  // 图表用的趋势数据（近 N 天提问数 + 各库文档数）。
-  // 与 overview **分开取**：首屏不该为"补了 6 个 0 的折线"付流量，图表按需再要。
-  trends: (days = 7) => http.get(`/stats/trends?days=${days}`),
 }
 
 export const auditApi = {
@@ -66,8 +63,57 @@ export const knowledgeApi = {
   vectorize: (id) => http.post(`/knowledge/${id}/vectorize`),
 }
 
+export const commerceApi = {
+  products: () => http.get('/commerce/products'),
+  createProduct: (payload) => http.post('/commerce/products', payload),
+  createSku: (productId, payload) => http.post(`/commerce/products/${productId}/skus`, payload),
+  sessions: () => http.get('/commerce/sessions'),
+  session: (id) => http.get(`/commerce/sessions/${id}`),
+  recap: (id) => http.get(`/commerce/sessions/${id}/recap`),
+  createSession: (payload) => http.post('/commerce/sessions', payload),
+  addSessionItem: (sessionId, payload) =>
+    http.post(`/commerce/sessions/${sessionId}/items`, payload),
+  createPackage: (sessionId) => http.post(`/commerce/sessions/${sessionId}/packages`),
+  inspections: (sessionId) => http.get(`/commerce/sessions/${sessionId}/inspections`),
+  runInspection: (sessionId) => http.post(`/commerce/sessions/${sessionId}/inspections`),
+  inspection: (batchId) => http.get(`/commerce/inspections/${batchId}`),
+  inspectionRules: () => http.get('/commerce/inspection-rules'),
+  updateInspectionRule: (ruleCode, payload) =>
+    http.patch(`/commerce/inspection-rules/${ruleCode}`, payload),
+  inventory: (skuId) => http.get('/commerce/inventory', { params: skuId ? { sku_id: skuId } : {} }),
+  createInventory: (payload) => http.post('/commerce/inventory', payload),
+  promotions: (skuId) => http.get('/commerce/promotions', { params: skuId ? { sku_id: skuId } : {} }),
+  createPromotion: (payload) => http.post('/commerce/promotions', payload),
+  previewPrice: (payload) => http.post('/commerce/price-preview', payload),
+  explainSession: (sessionId, payload) =>
+    http.post(`/agent/live-sessions/${sessionId}/explain`, payload),
+  approvalDraft: (sessionId, riskId) =>
+    http.post(`/agent/live-sessions/${sessionId}/approval-draft`, { risk_id: riskId }),
+}
+
+// 自动化任务（RPA）：列表 / 详情 / 重新入队 + 开发期模拟平台数据
+export const rpaApi = {
+  metrics: (days = 30) => http.get('/rpa/metrics', { params: { days } }),
+  monitoringPlans: () => http.get('/rpa/monitoring-plans'),
+  saveMonitoringPlan: (sessionId, payload) =>
+    http.put(`/rpa/monitoring-plans/${sessionId}`, payload),
+  tasks: () => http.get('/rpa/tasks'),
+  task: (id) => http.get(`/rpa/tasks/${id}`),
+  createCollect: (sessionId) => http.post('/rpa/tasks', { session_id: sessionId }),
+  requeue: (id) => http.post(`/rpa/tasks/${id}/requeue`),
+  // 截图走带鉴权的端点（静态目录挂载会把"谁的证据"交出去）
+  screenshotUrl: (taskId, stepId) => `/api/rpa/tasks/${taskId}/steps/${stepId}/screenshot`,
+  mockSkus: () => http.get('/rpa/mock-platform/skus'),
+  initMock: () => http.post('/rpa/mock-platform/initialize'),
+  updateMockSku: (rowId, payload) => http.put(`/rpa/mock-platform/skus/${rowId}`, payload),
+  // 高风险操作审批（改价 / 下架）：申请 → 决策（通过则生成唯一执行任务）
+  approvals: () => http.get('/rpa/approvals'),
+  createApproval: (payload) => http.post('/rpa/approvals', payload),
+  decideApproval: (id, payload) => http.post(`/rpa/approvals/${id}/decision`, payload),
+}
+
 export const documentApi = {
-  list: (kbId) => http.get('/documents', { params: { kb_id: kbId } }),
+  list: (kbId, filters = {}) => http.get('/documents', { params: { kb_id: kbId, ...filters } }),
   detail: (id) => http.get(`/documents/${id}`),
   status: (id) => http.get(`/documents/${id}/status`),
   chunks: (id) => http.get(`/documents/${id}/chunks`),
@@ -76,10 +122,13 @@ export const documentApi = {
   // 上传白名单来自服务端（.env 的 ALLOWED_EXTENSIONS 是唯一权威）——
   // 前端不再自己维护一份会漂移的格式清单（评审 2026-10-15 指出：第 4 份清单）。
   uploadConfig: () => http.get('/documents/upload-config'),
-  upload: (kbId, file, onProgress) => {
+  upload: (kbId, file, metadata = {}, onProgress) => {
     const form = new FormData()
     form.append('kb_id', kbId)
     form.append('file', file)
+    Object.entries(metadata).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== '') form.append(key, value)
+    })
     // 上传单独放宽超时：20MB 文件在慢速网络下可能超过默认值
     return http.post('/documents/upload', form, {
       timeout: 300000,

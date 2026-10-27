@@ -66,6 +66,17 @@ METRIC_TYPE = "COSINE"
 CONSISTENCY_LEVEL = "Strong"
 
 
+def _connection_args(timeout: float) -> tuple[str, dict]:
+    """同时兼容本地 Milvus 与 Zilliz Cloud，不把 token 写进日志。"""
+    uri = settings.MILVUS_URI.strip() or f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
+    kwargs: dict = {"uri": uri, "timeout": timeout}
+    if settings.MILVUS_TOKEN.strip():
+        kwargs["token"] = settings.MILVUS_TOKEN.strip()
+    if settings.MILVUS_DB_NAME.strip():
+        kwargs["db_name"] = settings.MILVUS_DB_NAME.strip()
+    return uri, kwargs
+
+
 @dataclass(frozen=True)
 class ChunkVector:
     """一条待写入的向量记录。"""
@@ -98,9 +109,9 @@ def get_client() -> MilvusClient:
     """
     global _client
     if _client is None:
-        uri = f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
+        uri, kwargs = _connection_args(settings.MILVUS_TIMEOUT)
         try:
-            _client = MilvusClient(uri=uri, timeout=settings.MILVUS_TIMEOUT)
+            _client = MilvusClient(**kwargs)
             version = _client.get_server_version()
             logger.info("Milvus 已连接 uri=%s server_version=%s", uri, version)
         except Exception as exc:  # noqa: BLE001
@@ -126,8 +137,8 @@ def probe(timeout_seconds: float) -> None:
       · 不碰共享单例（绝不能为了探活去调低全局 MILVUS_TIMEOUT，那是检索路径的超时）；
       · 调用方（api/health.py）有结果缓存，所以"每次新建客户端"的开销可以接受。
     """
-    uri = f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
-    client = MilvusClient(uri=uri, timeout=timeout_seconds)
+    _uri, kwargs = _connection_args(timeout_seconds)
+    client = MilvusClient(**kwargs)
     client.get_server_version()
 
 

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { chatApi, chunkApi, conversationApi, faqApi, feedbackApi, knowledgeApi, streamChat } from '../api'
@@ -11,13 +12,26 @@ import { answerModeTag } from '../utils/answerMode'
 import { buildConversationMarkdown, formatStamp, sourceScoreText } from '../utils/exportMarkdown'
 import { buildChatPayload, conversationTitle as conversationTitleOf, toChatMessage } from '../utils/chatView'
 
+const route = useRoute()
+
 const kbList = ref([])
 const selectedKbs = ref([]) // 空 = 用当前用户全部可访问的库（**注意不能传空数组**，见 buildPayload）
-const mode = ref('rag') // rag | agent
+const mode = ref('agent') // rag | agent；业务入口默认展示多步 Agent，仍可切到更快的纯 RAG
 const query = ref('')
 const asking = ref(false)
 const messages = ref([])
 const scroller = ref()
+const showMemory = ref(false)
+const starterPrompts = [
+  '今晚直播的旅游商品需要检查哪些事项？',
+  '景区儿童票需要满足什么条件？',
+  '酒店套餐周末和节假日需要加价吗？',
+  '客户预约后想退款，应该怎么处理？',
+]
+
+function choosePrompt(text) {
+  query.value = text
+}
 
 // ---- 会话（Phase 9）----
 const conversations = ref([])
@@ -100,11 +114,12 @@ const canAsk = computed(() => !!query.value.trim() && !asking.value)
 // dev-only 工具条的开关。vite 在 build 时把它静态替换为 false → 运行时不渲染。
 // （同类说明见上面 MOCK_MODE：运行时不可达，但模板分支的字符串仍会进产物。）
 const isDev = import.meta.env.DEV
+const mockToolsOpen = ref(false)
 
 const emptyHint = computed(() => {
   const base = mode.value === 'agent'
-    ? 'Agent 会先判断要不要查库，查到后再评估资料够不够，不够就换个关键词再查一次 —— 比纯 RAG 更慢也更贵，但寒暄类问题会更自然、更省。'
-    : '纯 RAG：检索一次就生成，快且便宜。答案只依据检索到的资料，并带引用编号。'
+    ? '系统会自动理解问题、查找相关业务资料，并给出带来源的处理建议。'
+    : '适合快速查询明确的商品规则、使用说明、直播话术和售后政策。'
   // mock 模式下必须让人看见"现在连的不是真后端"，否则会误以为系统坏了
   return MOCK_MODE ? `⚠️ SSE 故障模拟中（${MOCK_MODE}）—— 这条请求不会打到后端。${base}` : base
 })
@@ -691,6 +706,11 @@ function exportConversation() {
 
 onMounted(async () => {
   await Promise.all([loadKbList(), loadConversations()])
+  // 从知识库列表点击“问答”进入时自动限定到该库，避免用户再次手工选择。
+  const requestedKb = Number(route.query.kb)
+  if (Number.isInteger(requestedKb) && kbList.value.some((kb) => kb.id === requestedKb)) {
+    selectedKbs.value = [requestedKb]
+  }
   // FAQ 依赖知识库列表，等它回来再拉一次（首次渲染时 selectedKbs 还是空的）
   await loadFaqs()
 })
@@ -703,6 +723,15 @@ onBeforeUnmount(() => abortStream())
   <div class="chat-page">
     <!-- 左：会话列表 -->
     <aside class="side">
+      <div class="side-head">
+        <div>
+          <strong>对话记录</strong>
+          <span>连续追问会自动关联上下文</span>
+        </div>
+        <el-button text size="small" @click="showMemory = !showMemory">
+          {{ showMemory ? '收起记忆' : '我的记忆' }}
+        </el-button>
+      </div>
       <ConversationList
         :conversations="conversations"
         :current-id="currentConvId"
@@ -713,7 +742,7 @@ onBeforeUnmount(() => abortStream())
         @remove="removeConversation"
         @load-more="loadConversations({ append: true })"
       />
-      <MemoryPanel />
+      <MemoryPanel v-if="showMemory" />
     </aside>
 
     <!-- 右：对话区 -->
@@ -725,7 +754,7 @@ onBeforeUnmount(() => abortStream())
            可见区，界面看起来"没有问答功能"。（这个错从加上它的那轮就存在，
            跑 build 和 curl 都发现不了，只有真看浏览器才会暴露。）
            `import.meta.env.DEV` 在 build 时被静态替换成 false，运行时不渲染。 -->
-      <div v-if="isDev" class="mock-bar">
+      <div v-if="isDev && mockToolsOpen" class="mock-bar">
         <span class="mock-bar-label">SSE 故障模拟</span>
         <button
           v-for="b in MOCK_BUTTONS"
@@ -749,21 +778,27 @@ onBeforeUnmount(() => abortStream())
             multiple
             collapse-tags
             collapse-tags-tooltip
-            placeholder="检索范围：不选 = 我有权限的全部知识库"
+            placeholder="查询资料范围（默认查询全部）"
             style="flex: 1; min-width: 240px"
           >
             <el-option v-for="kb in kbList" :key="kb.id" :label="kb.name" :value="kb.id" />
           </el-select>
 
           <el-radio-group v-model="mode">
-            <el-radio-button value="rag">纯 RAG</el-radio-button>
-            <el-radio-button value="agent">Agent 多步</el-radio-button>
+            <el-radio-button value="agent">智能分析</el-radio-button>
+            <el-radio-button value="rag">快速查询</el-radio-button>
           </el-radio-group>
+
+          <el-button v-if="isDev" text size="small" class="toolbar-link" @click="mockToolsOpen = !mockToolsOpen">
+            {{ mockToolsOpen ? '收起测试' : 'SSE 测试' }}
+          </el-button>
 
           <!-- 导出当前对话为 Markdown。**只导界面上看得到的**：
                脱敏过的答案导出来就是脱敏后的，不会把无权看的原文写进文件。 -->
           <el-button
-            size="default"
+            size="small"
+            text
+            class="toolbar-link"
             :disabled="!messages.length"
             title="把当前对话（含引用来源）导出为 Markdown"
             @click="exportConversation"
@@ -790,14 +825,17 @@ onBeforeUnmount(() => abortStream())
 
       <el-card class="body-card">
         <div ref="scroller" class="scroller">
-          <el-empty v-if="!messages.length" description="还没有提问">
-            <div class="empty-tips">
-              试试问：<br />
-              「年假可以休几天」<br />
-              「出差住宿费能报多少」<br />
-              <span class="tips-note">同一段对话会记住上文，可以直接追问「那病假呢」</span>
+          <div v-if="!messages.length" class="empty-state">
+            <div class="assistant-mark">旅</div>
+            <h2>旅游业务知识助手</h2>
+            <p>直接询问景区门票、酒店套餐、预约方式、使用限制和售后政策，答案会标明资料来源。</p>
+            <div class="starter-grid">
+              <button v-for="item in starterPrompts" :key="item" @click="choosePrompt(item)">
+                {{ item }}
+              </button>
             </div>
-          </el-empty>
+            <span class="tips-note">同一段对话支持连续追问，系统会自动关联上文。</span>
+          </div>
 
           <div v-if="convHasOlder" class="older-wrap">
             <el-button text size="small" :loading="olderLoading" @click="loadOlderMessages">
@@ -873,23 +911,7 @@ onBeforeUnmount(() => abortStream())
                     <el-tag v-else size="small" :type="m.data.hit ? 'success' : 'info'">
                       {{ m.data.hit ? '有资料依据' : '未使用知识库资料' }}
                     </el-tag>
-                    <span v-if="m.mode === 'rag' && !m.data.redacted">
-                      重排：{{ m.data.reranked ? '已重排' : '未重排' }}
-                    </span>
-                    <!-- 只在**真的检索过**时显示轮数（>0）：文档任务与寒暄的 iterations 是 0，
-                         "检索轮数：0" 不是信息而是噪声；文档任务"取没取过数"看 sources 与命中标签。 -->
-                    <span v-if="m.mode === 'agent' && m.data.iterations > 0">检索轮数：{{ m.data.iterations }}</span>
-                    <span v-if="m.data.model">模型：{{ m.data.model }}</span>
-                    <span v-if="m.data.usage">tokens：{{ m.data.usage.total_tokens }}</span>
-                    <span v-if="m.data.elapsed_ms != null">耗时：{{ m.data.elapsed_ms }}ms</span>
-                    <!-- 这个字段有三种语义，展示要分开：
-                         数组非空 = 真实检索范围；null = 管理员不受限；空数组 = 本次没检索。
-                         （空数组在 JS 里是 truthy，直接 v-if 会渲染成"检索范围："后面空着） -->
-                    <span v-if="m.data.searched_kb_ids?.length">
-                      检索范围：{{ m.data.searched_kb_ids.join('、') }}
-                    </span>
-                    <span v-else-if="m.data.searched_kb_ids === null">检索范围：全部库（管理员不受限）</span>
-                    <span v-if="m.data.skipped_orphans">⚠ 跳过孤儿向量 {{ m.data.skipped_orphans }} 条</span>
+                    <span v-if="m.data.elapsed_ms != null">用时 {{ (m.data.elapsed_ms / 1000).toFixed(1) }} 秒</span>
                   </div>
 
                   <!-- 答案反馈（Bad Case 闭环）。只出现在 assistant 消息上，
@@ -911,9 +933,9 @@ onBeforeUnmount(() => abortStream())
                     <span v-if="m.myFeedback" class="feedback-done">已反馈</span>
                   </div>
 
-                  <!-- Agent 轨迹：这是"它自己怎么决定走的"唯一证据 -->
+                  <!-- 处理轨迹默认收起，普通用户只需要在排查答案时查看。 -->
                   <el-collapse v-if="m.mode === 'agent' && m.data.steps?.length" class="trace">
-                    <el-collapse-item :title="`执行轨迹（${m.data.steps.length} 步）`">
+                    <el-collapse-item :title="`查看处理过程（${m.data.steps.length} 步）`">
                       <el-timeline>
                         <el-timeline-item
                           v-for="(s, si) in m.data.steps"
@@ -969,7 +991,7 @@ onBeforeUnmount(() => abortStream())
               <span class="dot" />
               <span class="dot" />
               <span class="dot" />
-              {{ mode === 'agent' ? 'Agent 正在多步推理…' : '正在检索并生成…' }}
+              {{ mode === 'agent' ? '正在分析问题并查找资料…' : '正在查找资料…' }}
             </div>
           </div>
         </div>
@@ -1043,7 +1065,7 @@ onBeforeUnmount(() => abortStream())
         </div>
         <div class="foot-hint">
           <template v-if="currentConvId">
-            对话已保存（id={{ currentConvId }}）—— 左侧列表里可以随时翻回来接着问。
+            对话已自动保存，可以在左侧随时继续追问。
           </template>
           <template v-else>首次提问会自动建一段新对话，之后就能追问上文了。</template>
         </div>
@@ -1060,7 +1082,7 @@ onBeforeUnmount(() => abortStream())
 }
 /* ---- 会话列表 ---- */
 .side {
-  width: 220px;
+  width: 238px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -1069,6 +1091,17 @@ onBeforeUnmount(() => abortStream())
      侧边栏内容一多就把 .chat-page 顶出去，el-main 的滚动条又出来了 */
   min-height: 0;
 }
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 4px;
+}
+.side-head strong,
+.side-head span { display: block; }
+.side-head strong { color: #1e293b; font-size: 14px; }
+.side-head span { margin-top: 3px; color: var(--el-text-color-secondary); font-size: 10px; }
 
 /* ---- 右侧对话区 ---- */
 .main-col {
@@ -1080,7 +1113,12 @@ onBeforeUnmount(() => abortStream())
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid #e3e8f0;
+  border-radius: 14px;
+  background: var(--el-bg-color);
+  box-shadow: 0 8px 28px rgb(15 23 42 / 7%);
 }
 /* 三张卡片都要归零：body-card 靠 flex:1 吸收剩余高度，
    另外两张若拒绝收缩，总量就把 .chat-page 顶出去（外层滚动条就是这么来的） */
@@ -1088,7 +1126,12 @@ onBeforeUnmount(() => abortStream())
 .input-card,
 .body-card {
   min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
+.head-card { border-bottom: 1px solid #edf0f5; }
+.input-card { border-top: 1px solid #edf0f5; }
 .head-card :deep(.el-card__body),
 .input-card :deep(.el-card__body) {
   padding: 12px 16px;
@@ -1133,14 +1176,58 @@ onBeforeUnmount(() => abortStream())
   justify-content: center;
   margin-bottom: 8px;
 }
-.empty-tips {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.9;
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 28px 20px;
+  text-align: center;
+}
+.assistant-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  color: white;
+  background: linear-gradient(145deg, #2563eb, #06b6d4);
+  box-shadow: 0 8px 20px rgb(37 99 235 / 22%);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+.empty-state h2 { margin: 14px 0 6px; color: #172033; font-size: 19px; }
+.empty-state p { max-width: 540px; margin: 0; color: #64748b; font-size: 13px; line-height: 1.7; }
+.starter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(560px, 100%);
+  gap: 9px;
+  margin: 20px 0 12px;
+}
+.starter-grid button {
+  padding: 10px 12px;
+  border: 1px solid #e1e7f0;
+  border-radius: 9px;
+  color: #334155;
+  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  transition: .15s ease;
+}
+.starter-grid button:hover {
+  border-color: var(--el-color-primary-light-5);
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  transform: translateY(-1px);
 }
 .tips-note {
-  font-size: var(--el-font-size-extra-small);
+  color: #94a3b8;
+  font-size: 11px;
 }
 .msg {
   display: flex;
@@ -1166,8 +1253,8 @@ onBeforeUnmount(() => abortStream())
   word-break: break-word;
 }
 .agent-bubble {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
+  background: #f8fafc;
+  border: 1px solid #e8edf4;
 }
 .asking {
   display: flex;
@@ -1230,7 +1317,8 @@ onBeforeUnmount(() => abortStream())
   gap: 6px;
   padding: 6px 10px;
   border: 1px dashed var(--el-color-warning);
-  border-radius: 6px;
+  margin: 10px 12px 0;
+  border-radius: 8px;
   background: var(--el-fill-color-lighter);
   font-size: var(--el-font-size-extra-small);
 }
@@ -1331,6 +1419,16 @@ onBeforeUnmount(() => abortStream())
   gap: 10px;
   align-items: flex-end;
 }
+.input-row :deep(.el-textarea__inner) {
+  min-height: 58px !important;
+  padding: 11px 13px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #dfe5ee inset;
+}
+.input-row :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+}
+.input-row > .el-button { min-width: 86px; height: 42px; border-radius: 9px; }
 .foot-hint {
   margin-top: 6px;
   font-size: var(--el-font-size-extra-small);
@@ -1362,6 +1460,7 @@ onBeforeUnmount(() => abortStream())
 .faq-card :deep(.el-card__body) {
   padding: 10px 16px;
 }
+.faq-card { border-bottom: 1px solid #edf0f5; }
 
 .faq-head {
   margin-bottom: 8px;
@@ -1435,5 +1534,20 @@ onBeforeUnmount(() => abortStream())
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .side { width: 190px; }
+  .side-head span { display: none; }
+  .starter-grid { grid-template-columns: 1fr; }
+  .bubble { max-width: 92%; }
+}
+
+@media (max-height: 650px) {
+  .mode-hint { display: none; }
+  .head-card :deep(.el-card__body) { padding-top: 10px; padding-bottom: 10px; }
+  .empty-state { padding: 14px 18px; }
+  .empty-state h2 { margin-top: 9px; }
+  .starter-grid { margin: 12px 0 8px; }
 }
 </style>

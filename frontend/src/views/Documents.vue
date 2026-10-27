@@ -1,9 +1,9 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { documentApi, knowledgeApi } from '../api'
+import { commerceApi, documentApi, knowledgeApi } from '../api'
 
 const route = useRoute()
 
@@ -11,11 +11,25 @@ const kbList = ref([])
 const kbId = ref(null)
 const loading = ref(false)
 const rows = ref([])
+const products = ref([])
+const documentTypes = ref([])
+const filters = reactive({ product_id: null, document_type: '', active_only: false })
 
 const chunkVisible = ref(false)
 const chunkDoc = ref(null)
 const chunks = ref([])
 const chunkLoading = ref(false)
+const uploadVisible = ref(false)
+const uploadFile = ref(null)
+const uploading = ref(false)
+const uploadMeta = reactive({
+  product_id: null,
+  sku_id: null,
+  document_type: 'general',
+  version: 'v1',
+  effective_from: null,
+  effective_to: null,
+})
 
 const STATUS_TEXT = {
   pending: '待处理',
@@ -35,6 +49,19 @@ const canWrite = computed(() => {
   if (!kb) return false
   return kb.my_permission === 'write' || kb.my_permission === 'admin'
 })
+
+const uploadSkuOptions = computed(() => {
+  const product = products.value.find((p) => p.id === uploadMeta.product_id)
+  return product?.skus || []
+})
+
+const productMap = computed(() =>
+  Object.fromEntries(products.value.map((product) => [product.id, product])),
+)
+
+const documentTypeMap = computed(() =>
+  Object.fromEntries(documentTypes.value.map((item) => [item.value, item.label])),
+)
 
 function formatSize(bytes) {
   if (bytes == null) return '-'
@@ -58,7 +85,11 @@ async function loadDocs() {
   }
   loading.value = true
   try {
-    const body = await documentApi.list(kbId.value)
+    const body = await documentApi.list(kbId.value, {
+      ...(filters.product_id ? { product_id: filters.product_id } : {}),
+      ...(filters.document_type ? { document_type: filters.document_type } : {}),
+      ...(filters.active_only ? { active_only: true } : {}),
+    })
     rows.value = body.data || []
     schedulePolling()
   } catch {
@@ -90,7 +121,11 @@ function schedulePolling() {
       return
     }
     try {
-      const body = await documentApi.list(kbId.value)
+      const body = await documentApi.list(kbId.value, {
+        ...(filters.product_id ? { product_id: filters.product_id } : {}),
+        ...(filters.document_type ? { document_type: filters.document_type } : {}),
+        ...(filters.active_only ? { active_only: true } : {}),
+      })
       rows.value = body.data || []
     } catch {
       /* 单次失败忽略，继续下一次 */
@@ -127,19 +162,58 @@ async function loadUploadConfig() {
     if (Array.isArray(exts) && exts.length) {
       uploadAccept.value = exts.map((e) => `.${e}`).join(',')
     }
+    if (Array.isArray(body.data?.document_types)) {
+      documentTypes.value = body.data.document_types
+    }
   } catch {
     /* 保持兜底清单，不打断页面 */
   }
 }
 
-async function customUpload(options) {
-  const file = options.file
+function openUpload() {
+  uploadFile.value = null
+  Object.assign(uploadMeta, {
+    product_id: null,
+    sku_id: null,
+    document_type: 'general',
+    version: 'v1',
+    effective_from: null,
+    effective_to: null,
+  })
+  uploadVisible.value = true
+}
+
+function onUploadFileChange(file) {
+  uploadFile.value = file.raw || null
+}
+
+function onUploadProductChange() {
+  uploadMeta.sku_id = null
+}
+
+async function submitUpload() {
+  const file = uploadFile.value
+  if (!file) {
+    ElMessage.warning('请选择要上传的文件')
+    return
+  }
+  if (!uploadMeta.version?.trim()) {
+    ElMessage.warning('请填写资料版本')
+    return
+  }
+  uploading.value = true
   try {
-    await documentApi.upload(kbId.value, file)
+    await documentApi.upload(kbId.value, file, {
+      ...uploadMeta,
+      version: uploadMeta.version.trim(),
+    })
     ElMessage.success(`「${file.name}」已上传，正在后台解析`)
+    uploadVisible.value = false
     await loadDocs()
   } catch {
     /* 拦截器已提示（类型不支持 / 超限 / 无权限…） */
+  } finally {
+    uploading.value = false
   }
 }
 
@@ -206,7 +280,10 @@ async function removeDoc(row) {
 
 onMounted(async () => {
   try {
-    await loadUploadConfig()
+    await Promise.all([
+      loadUploadConfig(),
+      commerceApi.products().then((body) => { products.value = body.data || [] }),
+    ])
     await loadKbList()
     await loadDocs()
   } catch {
@@ -230,14 +307,9 @@ onUnmounted(stopPolling)
         <div class="right">
           <el-button :loading="loading" @click="loadDocs">刷新</el-button>
           <el-button :disabled="!canWrite" @click="vectorizeAll">批量向量化</el-button>
-          <el-upload
-            :show-file-list="false"
-            :http-request="customUpload"
-            :disabled="!canWrite || !kbId"
-            :accept="uploadAccept"
-          >
-            <el-button type="primary" :disabled="!canWrite || !kbId">上传文档</el-button>
-          </el-upload>
+          <el-button type="primary" :disabled="!canWrite || !kbId" @click="openUpload">
+            上传业务资料
+          </el-button>
         </div>
       </div>
     </template>
@@ -251,10 +323,48 @@ onUnmounted(stopPolling)
       style="margin-bottom: 12px"
     />
 
+    <div class="filters">
+      <el-select
+        v-model="filters.product_id" clearable filterable placeholder="全部商品"
+        style="width: 220px" @change="loadDocs"
+      >
+        <el-option v-for="product in products" :key="product.id" :label="product.name" :value="product.id" />
+      </el-select>
+      <el-select
+        v-model="filters.document_type" clearable placeholder="全部资料类型"
+        style="width: 160px" @change="loadDocs"
+      >
+        <el-option
+          v-for="item in documentTypes" :key="item.value" :label="item.label" :value="item.value"
+        />
+      </el-select>
+      <el-switch
+        v-model="filters.active_only" inline-prompt active-text="当前有效" inactive-text="全部时期"
+        style="--el-switch-on-color: var(--el-color-success)" @change="loadDocs"
+      />
+    </div>
+
     <el-table v-loading="loading" :data="rows" stripe>
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="filename" label="文件名" min-width="200" show-overflow-tooltip />
       <el-table-column prop="file_type" label="类型" width="80" />
+      <el-table-column label="业务资料" min-width="150">
+        <template #default="{ row }">
+          <div class="business-meta">
+            <span>{{ documentTypeMap[row.document_type] || row.document_type }}</span>
+            <small>{{ row.version }}</small>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="关联范围" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <template v-if="row.product_id">
+            {{ productMap[row.product_id]?.name || `商品 #${row.product_id}` }}
+            <span v-if="row.sku_id" class="muted"> · SKU #{{ row.sku_id }}</span>
+          </template>
+          <span v-else class="muted">通用资料</span>
+        </template>
+      </el-table-column>
       <el-table-column label="大小" width="100">
         <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
       </el-table-column>
@@ -288,6 +398,78 @@ onUnmounted(stopPolling)
 
     <el-empty v-if="!loading && !rows.length" description="这个知识库还没有文档" />
 
+    <el-dialog v-model="uploadVisible" title="上传业务资料" width="620px">
+      <el-alert
+        type="info" :closable="false" show-icon
+        title="商品说明和宣传依据必须关联商品；平台规则、直播规范等可以作为通用资料。"
+        style="margin-bottom: 16px"
+      />
+      <el-form label-position="top">
+        <el-form-item label="资料文件" required>
+          <el-upload
+            :auto-upload="false" :limit="1" :accept="uploadAccept"
+            :on-change="onUploadFileChange" :on-remove="() => { uploadFile = null }"
+          >
+            <el-button>选择文件</el-button>
+            <template #tip><div class="el-upload__tip">允许格式：{{ uploadAccept }}</div></template>
+          </el-upload>
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="资料类型" required>
+            <el-select v-model="uploadMeta.document_type" style="width: 100%">
+              <el-option
+                v-for="item in documentTypes" :key="item.value" :label="item.label" :value="item.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="资料版本" required>
+            <el-input v-model="uploadMeta.version" maxlength="32" placeholder="例如 2026.10 或 v2" />
+          </el-form-item>
+        </div>
+        <div class="form-grid">
+          <el-form-item label="关联商品">
+            <el-select
+              v-model="uploadMeta.product_id" clearable filterable placeholder="不关联商品"
+              style="width: 100%" @change="onUploadProductChange"
+            >
+              <el-option
+                v-for="product in products" :key="product.id" :label="product.name" :value="product.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="关联 SKU">
+            <el-select
+              v-model="uploadMeta.sku_id" clearable filterable :disabled="!uploadMeta.product_id"
+              placeholder="适用于整个商品" style="width: 100%"
+            >
+              <el-option
+                v-for="sku in uploadSkuOptions" :key="sku.id"
+                :label="`${sku.specification}（${sku.sku_code}）`" :value="sku.id"
+              />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="form-grid">
+          <el-form-item label="生效时间">
+            <el-date-picker
+              v-model="uploadMeta.effective_from" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss"
+              placeholder="立即生效" style="width: 100%"
+            />
+          </el-form-item>
+          <el-form-item label="失效时间">
+            <el-date-picker
+              v-model="uploadMeta.effective_to" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss"
+              placeholder="长期有效" style="width: 100%"
+            />
+          </el-form-item>
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="uploadVisible = false">取消</el-button>
+        <el-button type="primary" :loading="uploading" @click="submitUpload">上传并解析</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 切块预览 -->
     <el-drawer v-model="chunkVisible" :title="`切块预览 · ${chunkDoc?.filename || ''}`" size="640px">
       <div v-loading="chunkLoading">
@@ -319,6 +501,27 @@ onUnmounted(stopPolling)
   align-items: center;
   gap: 10px;
 }
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.business-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.business-meta small,
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
 .chunk {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
@@ -337,5 +540,9 @@ onUnmounted(stopPolling)
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+}
+@media (max-width: 780px) {
+  .form-grid { grid-template-columns: 1fr; gap: 0; }
+  .filters { align-items: stretch; flex-direction: column; }
 }
 </style>

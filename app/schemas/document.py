@@ -18,6 +18,12 @@ class DocumentOut(BaseModel):
     id: int
     knowledge_base_id: int
     uploader_id: int
+    product_id: int | None = None
+    sku_id: int | None = None
+    document_type: str
+    version: str
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
     filename: str
     file_type: str
     file_size: int
@@ -78,4 +84,7 @@ class UploadConfigOut(BaseModel):
 
     allowed_extensions: list[str] = Field(
         description="允许上传的扩展名（小写、不带点），如 pdf / docx —— 前端用它拼 accept"
+    )
+    document_types: list[dict[str, str]] = Field(
+        description="业务资料类型的 value/label 清单，前端无需维护第二份映射"
     )

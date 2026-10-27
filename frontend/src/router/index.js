@@ -3,7 +3,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { getToken } from '../api/http'
 import MainLayout from '../layouts/MainLayout.vue'
 import { useUserStore } from '../stores/user'
-import { NAV_ITEMS } from './nav'
+import { NAV_ITEMS, SECONDARY_ROUTES } from './nav'
 
 /**
  * 用 **hash 模式**（URL 形如 /#/chat）而不是 history：
@@ -16,6 +16,9 @@ import { NAV_ITEMS } from './nav'
 // "哪个路径对应哪个视图"，用查表比 `import.meta.glob` 更利于静态分析。
 const VIEW_LOADERS = {
   dashboard: () => import('../views/Dashboard.vue'),
+  commerce: () => import('../views/Commerce.vue'),
+  automation: () => import('../views/Automation.vue'),
+  approvals: () => import('../views/Approvals.vue'),
   knowledge: () => import('../views/Knowledge.vue'),
   documents: () => import('../views/Documents.vue'),
   chat: () => import('../views/Chat.vue'),
@@ -26,7 +29,7 @@ const VIEW_LOADERS = {
 
 // children 由 NAV_ITEMS 生成：meta.title / meta.admin 都从那张表来，
 // 不再在这里手写第二份（否则顶栏与菜单各一套文字，迟早漂移）。
-const layoutChildren = NAV_ITEMS.map(({ path, title, icon: _icon, admin }) => {
+const layoutChildren = [...NAV_ITEMS, ...SECONDARY_ROUTES].map(({ path, title, icon: _icon, admin }) => {
   const name = path.replace(/^\//, '')
   const loader = VIEW_LOADERS[name]
   if (!loader) {
@@ -36,6 +39,7 @@ const layoutChildren = NAV_ITEMS.map(({ path, title, icon: _icon, admin }) => {
 })
 
 const routes = [
+  { path: '/intro', name: 'intro', component: () => import('../views/Intro.vue'), meta: { public: true } },
   { path: '/login', name: 'login', component: () => import('../views/Login.vue'), meta: { public: true } },
   {
     path: '/',
@@ -44,11 +48,11 @@ const routes = [
     // 而不是一个功能列表。`meta.admin` 的页面由**菜单层隐藏**（体验层），
     // 路由层下面的 beforeEach 仍有 admin 守卫（手输 URL 也会被拦走），
     // 后端 require_admin 是最后一道。
-    redirect: '/dashboard',
+    redirect: () => getToken() ? '/dashboard' : '/intro',
     children: layoutChildren,
   },
   // 兜底：手输错地址时回首页，而不是白屏
-  { path: '/:pathMatch(.*)*', redirect: '/' },
+  { path: '/:pathMatch(.*)*', redirect: () => getToken() ? '/dashboard' : '/intro' },
 ]
 
 const router = createRouter({

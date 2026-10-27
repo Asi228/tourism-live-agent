@@ -1,11 +1,12 @@
-# 企业知识库智能 Agent
+# 直播电商 RPA 智能运营 Agent
 
-面向企业内部文档的 RAG 问答系统：把公司制度、流程类文档灌进知识库，
-员工用自然语言提问，**答案必须来自公司文档，并带着可点击核对的来源引用**。
+面向直播电商运营团队的自动化协同系统：围绕直播场次管理选品，保存商品、SKU、
+库存和促销快照，并结合规则引擎、企业知识库与 RPA 完成直播前巡检、异常解释、
+人工审批、自动修复和结果留痕。
 
-除了常规的「检索 → 生成」问答，还实现了一个 **LangGraph 状态机 Agent**：
-它会先判断"这个问题要不要查库"，检索后再评估"资料够不够"，
-不够就换个关键词再查一次 —— 并把每一步的决策与耗时完整返回出来。
+当前已经完成直播业务数据底座、运营知识库、确定性巡检、人工审批、Redis 任务队列、
+Playwright RPA 执行与复检、定时监控、场次复盘和知识问答 Agent。开发环境使用仿真电商
+后台复现外部平台页面，项目边界与后续规划见[项目方案](docs/直播电商RPA智能运营Agent项目方案.md)。
 
 ---
 
@@ -13,6 +14,14 @@
 
 | 模块 | 能力 |
 |---|---|
+| 直播任务 | 创建直播场次、维护本场选品、生成可追踪版本的开播准备包 |
+| 商品与 SKU | 维护平台商品映射、SKU 规格和商品标价，作为 RPA 采集结果的本地业务镜像 |
+| 库存与促销 | 保存库存快照、直播价、满减、优惠券及有效期，按规则计算最优到手价 |
+| 运营资料 | 文档关联商品、SKU、资料类型、版本和有效期，支持后续资料完整性巡检 |
+| 直播巡检 | 按场次检查选品、商品状态、库存、活动、计划到手价和资料有效性，输出准备分、阻断项、警告项及可开播结论 |
+| 巡检规则中心 | 管理员可启停规则、调整阻断/警告/提示等级和库存时效参数；配置修改自动递增版本，巡检批次保存所用版本用于审计 |
+| 审批与 RPA | 改价、下架等写操作遵循四眼审批，通过 Redis 入队并由 Playwright 执行；保存步骤、截图、前后值、验证结果和失败原因 |
+| 监控与复盘 | 定时采集、重复告警聚合、任务成功率与耗时监控；按直播场次汇总选品、巡检、审批和 RPA 证据并导出 Markdown |
 | 认证与权限 | JWT 登录注册；角色（admin / employee）；知识库级授权（read / write / admin 三档） |
 | 知识库 | 创建、改名、公开/私有；成员授权与移除 |
 | 文档 | 上传（PDF / Word / TXT / Markdown）→ 解析 → 清洗 → 切分 → 落库；后台状态流转（pending → processing → completed / failed）。Word 解析**按文档流顺序**取段落与表格（表格转 Markdown 行）；⚠️ 页眉/页脚与文本框不解析 |
@@ -98,8 +107,6 @@ python main.py                         # 或 uvicorn main:app --reload
 
 **启动前端**（另开一个终端）：
 
-**启动前端**（另开一个终端）：
-
 ```bash
 cd frontend
 npm ci                                 # 按 lockfile 精确安装（版本已固定，可重现）
@@ -140,6 +147,15 @@ RUN_MYSQL_INTEGRATION=1  pytest tests/test_mysql_hybrid.py -v           # 关键
 # 一起开（需要两台 VM 都在跑）
 RUN_MILVUS_INTEGRATION=1 RUN_REDIS_INTEGRATION=1 RUN_MYSQL_INTEGRATION=1 pytest -v
 ```
+
+直播运营 Agent 使用固定业务评测集验证结构化动作、审批边界、目标值、风险解释与知识引用：
+
+```powershell
+.venv\Scripts\python.exe scripts\evaluate_live_agent.py             # 离线评测结构化动作，不调用模型
+.venv\Scripts\python.exe scripts\evaluate_live_agent.py --live-llm  # 真实模型评测并生成报告
+```
+
+评测集位于 `evals/live_agent_cases.json`，报告写入 `docs/evaluations/`。真实模型模式会产生 token 消耗；无巡检场景与线上一致，直接使用固定提示，不调用模型。
 
 **前端也有一条零依赖的测试链**（`node:test`，不用装任何东西，与后端测试相互独立）：
 
@@ -191,6 +207,9 @@ alembic upgrade head                                         # 把真库推到�
 | POST | `/chat` | **RAG 问答**：返回答案 + 引用来源；带 `conversation_id` 即接着上文问 |
 | POST | `/chat/stream` | **RAG 问答（SSE 流式）**：逐字返回，事件 `meta` → `delta`×N → `done`（失败给 `error`）。⚠️ 它**不走统一信封**，且准备阶段的失败仍返回普通信封 —— 见第 10 节 |
 | POST | `/agent/chat` | **Agent 问答**：额外返回执行轨迹、检索轮数与答案性质 |
+| GET | `/rpa/metrics?days=30` | **运营监控指标**：按用户可见范围汇总任务成功率、失败数、平均处理时长、审批、最新巡检状态和异常明细（`days` 为 1–365） |
+| GET · PUT | `/rpa/monitoring-plans` · `/rpa/monitoring-plans/{session_id}` | **直播定时监控**：查看本人计划；为有选品的场次启用、暂停或调整 5–1440 分钟采集间隔。调度器只创建只读采集任务 |
+| GET | `/commerce/sessions/{id}/recap` | **单场直播复盘**：汇总选品计划、最新巡检风险、RPA 成功率与耗时、任务明细和审批闭环；按场次负责人隔离，前端可导出 Markdown |
 | GET · DELETE | `/conversations` · `/conversations/{id}` | 会话列表（`?limit=` 默认 50、`?offset=` 翻页）/ 详情（默认**最新一页**：`?limit=`、`?before_id=` 往前翻，响应带 `has_more`）/ 删除。**没有"创建"接口** —— 首次提问时隐式建 |
 | GET · POST · DELETE · **PATCH** | `/memories` · `/memories/{id}` | **长期记忆**：跨会话记住的事实（列表 / 写入 / 删除 / **改内容或切换单条开关**）。`PATCH` 两个字段都可选但**至少给一个**（都不给是调用方 bug，返 40000）。`is_enabled=false` 只是不拼进提示词，数据仍在列表里 —— 要彻底不要请用 DELETE. 归属校验同会话：别人的 id 一律 404 |
 | POST | `/chat` · `/chat/stream` · `/agent/chat` · `/agent/chat/stream` | **FAQ 闸门**：四个端点进入各自流程前都先查常见问题，命中即返回标准答案（不检索、不调模型）。见「FAQ 的口径」那节 |
@@ -581,6 +600,7 @@ bcrypt 每次换盐，所以**任何**改动 `password_hash` 的路径都会让�
 │   ├── schemas/            # Pydantic 请求 / 响应模型
 │   ├── rag/                # 解析、清洗、切分、向量化、混合检索（关键词/融合）、重排、提示词、模型客户端
 │   ├── agent/              # LangGraph 状态机（state / tools / graph）
+│   ├── automation/         # RPA 执行层：页面协议 / 采集编排 / Playwright / 队列 worker / 定时调度器
 │   ├── db/                 # Engine、Session、建表与初始化
 │   ├── core/               # 配置、异常与错误码、统一响应、日志、限流
 │   └── utils/              # 文件落盘与校验
@@ -588,9 +608,10 @@ bcrypt 每次换盐，所以**任何**改动 `password_hash` 的路径都会让�
 │   ├── src/api/            #   接口封装（路径只在这里出现一次）
 │   ├── src/stores/         #   Pinia（登录态）
 │   ├── src/router/         #   路由 + 登录守卫
-│   ├── src/views/          #   登录 / 知识库 / 文档 / 智能问答
+│   ├── src/views/          #   运营工作台 / 直播任务 / 自动化任务 / 知识库 / 运营助手等
 │   ├── src/utils/          #   纯逻辑 + node:test 用例（`npm test`，见「快速开始」）
 │   └── src/layouts/        #   侧边栏 + 顶栏
+├── artifacts/rpa/          # RPA 截图证据（按任务分目录；不入库、不进 Git）
 ├── devtools/index.html     # 单文件后端调试台（开发自测）
 ├── docs/                   # 设计与实验记录（benchmarks/ 存对照实验的语料、数据与结论）
 ├── tests/                  # 单元测试 + 可选的集成测试（Milvus / Redis / MySQL）
@@ -600,6 +621,129 @@ bcrypt 每次换盐，所以**任何**改动 `password_hash` 的路径都会让�
 ├── .env.example            # 配置模板（只放占位符）
 └── requirements.txt
 ```
+
+### 「RPA 自动化」怎么跑（阶段三）
+
+四个进程/入口，调度器和 worker 通过 Redis 队列 `enterprise-agent:rpa:tasks` 解耦：
+
+```bash
+# 1) 主服务（含模拟电商后台 /mock-platform，RPA 用浏览器访问它）
+python -m uvicorn main:app --port 8000
+
+# 2) RPA worker（独立进程；首次需装浏览器二进制：playwright install chromium）
+python -m app.automation.worker
+
+# 3) 定时监控调度器（配置监控计划后必须启动；默认每 15 秒扫描到期计划）
+python -m app.automation.scheduler
+
+# 4) 前端（直播任务页可手动采集；自动化任务页配置定时监控）
+cd frontend && npm run dev
+```
+
+也可以在项目根目录用一个终端启动完整开发栈。脚本会先执行迁移，API 就绪后再启动
+Worker、Scheduler 和前端；按一次 `Ctrl+C` 会统一停止子进程：
+
+```powershell
+.venv\Scripts\python.exe scripts\start_stack.py
+```
+
+首次运行 Playwright 仍需安装浏览器：
+
+```powershell
+.venv\Scripts\python.exe -m playwright install chromium
+```
+
+设计要点（都是可被追问的）：
+- **采集编排与浏览器解耦**：`automation/collector.py` 只依赖 `page.py` 的协议，单测用 `FakePage`
+  跑完整链路（`tests/test_rpa_worker.py`，6 条），不需要真开浏览器；
+- **每一步都留证据**：`rpa_task_steps` 记步骤/时间/状态/说明 + 截图路径，
+  截图按任务分目录存 `artifacts/rpa/<task_id>/`，经**带归属校验**的端点下载
+  （不做静态目录挂载：那等于把"谁的证据"交出去）；
+- **幂等与并发**：任务有唯一 `idempotency_key`；worker 用 Redis `SET NX` 锁防多开时重复执行同一任务；
+- **定时采集可追踪**：每个场次一条监控计划；调度器锁定到期记录，以“计划 ID + 计划执行时间”生成
+  确定性幂等键，推进下次执行时间并记录最近任务；场次结束后计划自动停用；
+- **重复告警抑制**：相同场次、任务类型和失败原因的异常合并展示次数，仍保留最新任务作为处理入口；
+- **复盘口径来自真实记录**：单场报告只汇总选品、巡检、RPA 和审批表中的已有事实，并明确标注
+  尚未接入订单/退款数据；不使用装饰性成交额或虚构业务指标。直播任务详情可查看并导出 Markdown；
+- **部分成功不伪装成失败**：平台缺某个 SKU 时记失败步骤 + `result.missing_sku_codes`，
+  其余照常写快照；一个都没采到才整体失败；巡检失败不连坐采集（快照已落库）。
+- ⚠️ 包名是 `app/automation/` 而不是 `app/rpa/`：与 `app/api/rpa.py` 同名时，
+  `import app.rpa` 会在 `app` 命名空间里覆盖 `rpa` 全局名，导致 `include_router(rpa.router)`
+  在"先导入包"的进程里拿到包而不是 api 模块（pytest 与 worker 启动时会炸，单独跑服务却正常）。
+- ⚠️ **新增的 RPA 三张表最初漏了迁移**（模型写了、迁移没生成，真库 1146）。
+  已补 `e9c2b7d14a58`；`tests/test_migrations.py` 的 drift 检查现在也能跑了 ——
+  同时把 FULLTEXT ngram 索引加进了它的忽略清单（模型表达不了 `WITH PARSER ngram`）。
+
+### 运行检查、故障恢复与完整演示
+
+运行时检查会验证 HTTP 健康状态、真实数据库迁移版本、Redis 队列深度、入队失败任务、
+超过 15 分钟仍在运行的任务、过期监控计划和 Redis 过期消息。`--strict` 适合部署验收或 CI：
+
+```powershell
+.venv\Scripts\python.exe scripts\check_runtime.py
+.venv\Scripts\python.exe scripts\check_runtime.py --strict --json
+```
+
+恢复工具默认只预览。它只自动处理 Redis 入队失败任务，以及没有 Worker 锁且超时的只读采集任务；
+失败的改价/下架任务不会自动重跑。它也会清理数据库任务已结束、但 Redis 中仍残留的过期消息：
+
+```powershell
+.venv\Scripts\python.exe scripts\recover_rpa_tasks.py
+.venv\Scripts\python.exe scripts\recover_rpa_tasks.py --apply
+```
+
+首次展示前先初始化完整的旅游直播业务数据。脚本会创建演示账号、3 个知识库、10 份已处理并
+向量化的旅游资料、6 个商品、8 个 SKU，以及“可开播 / 待处理 / 已结束”三种直播场次：
+
+```powershell
+.venv\Scripts\python.exe scripts\seed_tourism_demo.py --reset --remove-legacy
+```
+
+演示账号为 `demo_operator / Demo@123456`，登录页也提供“一键填入”。脚本只清理固定标识的
+演示数据，不会删除自行录入的业务数据。若 Milvus 或 Embedding 服务暂不可用，可临时追加
+`--skip-vectors`，但此时知识问答不能展示向量召回。
+
+需要现场展示真实浏览器自动化时，再启动完整进程并运行 RPA 脚本。它会创建酒店套餐异常场次：
+计划销量 30、可售房量 8，计划价 1999 元、平台直播价 2199 元；随后由 Worker 完成浏览器采集
+和自动巡检：
+
+```powershell
+# 终端 1
+.venv\Scripts\python.exe scripts\start_stack.py
+
+# 终端 2
+.venv\Scripts\python.exe scripts\demo_live_rpa.py
+```
+
+脚本成功后，前端按“直播任务 → Agent 解释 → 生成审批草稿 → 管理员审批 → 自动化任务证据 →
+单场复盘”完成演示。演示数据写入当前 MySQL，重启后仍可继续展示。
+
+### 「高风险操作审批」怎么走（阶段四）
+
+采集是只读；**改价 / 下架是写**，必须先有审批单。完整链路：
+
+```
+巡检发现阻断（如"计算到手价与计划价不一致"）
+  → 运营发起申请（目标 SKU + 预期值 + 理由）
+  → 负责人审批（申请人不能批自己的单）
+  → 通过 = 生成**唯一** RPA 修复任务（幂等键复用审批单）
+  → worker 执行：改价 / 下架
+  → **重新读平台验证**（值不等于预期 = 失败，不是成功）
+  → 审批单 executed / failed
+```
+
+四条设计约束（都可被追问）：
+
+- **审批单绑定"目标 + 预期值 + 幂等键"**：执行前用它校验目标，执行后拿它验证结果；
+  任务表 `idempotency_key` 唯一 → 重复点通过、worker 重试都不会产生第二次改价；
+- **预期值在入口规整**：`99` / `99.0` / `"99.00"` 落库统一为 `99.00`——
+  审批时看到的数字就是执行时用的数字，两处各转一次就可能一处转错；
+- **申请人不能自批**（四眼原则，40300）；审批人是场次负责人或管理员（与巡检同口径）；
+- **"改完不算完"**：写操作后必须重新读页面按预期值比对，验证不过 → 任务 failed +
+  审批单 failed 等人接管（`tests/test_rpa_worker.py::test_repair_verification_failure_raises`
+  用 `ignore_writes` 模拟"点了保存但平台没生效"）。
+- 同对象同类型只允许一张未结单（pending/approved），已 executed/failed 的可重新申请。
+
 
 ### 7. 多轮对话：历史只带「问答对」，不带当时检索到的资料
 

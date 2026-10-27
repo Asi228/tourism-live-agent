@@ -32,12 +32,58 @@ from app.api.sse import SSE_HEADERS, iter_sse
 from app.core.response import ApiResponse, success
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.agent import AgentChatRequest, AgentChatResponse
-from app.services import agent_service, faq_service
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentChatResponse,
+    ApprovalDraftRequest,
+    ApprovalDraftResponse,
+    LiveSessionAgentRequest,
+    LiveSessionAgentResponse,
+)
+from app.services import agent_service, faq_service, live_agent_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
+
+
+@router.post(
+    "/live-sessions/{session_id}/approval-draft",
+    response_model=ApiResponse[ApprovalDraftResponse],
+    summary="根据最新巡检风险生成审批申请草稿",
+)
+def create_approval_draft(
+    session_id: int,
+    payload: ApprovalDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    data = live_agent_service.build_approval_draft(
+        db, current_user, session_id=session_id, risk_id=payload.risk_id
+    )
+    return success(data, "审批草稿已生成，请人工核对后提交")
+
+
+@router.post(
+    "/live-sessions/{session_id}/explain",
+    response_model=ApiResponse[LiveSessionAgentResponse],
+    summary="基于最新巡检解释直播风险并生成结构化处理建议",
+)
+def explain_live_session(
+    session_id: int,
+    payload: LiveSessionAgentRequest,
+    _: None = Depends(rate_limit("chat")),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    data = live_agent_service.answer_session_question(
+        db,
+        current_user,
+        session_id=session_id,
+        question=payload.question,
+        kb_ids=payload.kb_ids,
+    )
+    return success(data, "已基于最新巡检生成运营解释")
 
 
 @router.post(
