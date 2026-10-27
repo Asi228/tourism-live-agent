@@ -81,3 +81,62 @@ def test_demo_collection_task_completes_without_external_worker(
     assert [step["step_code"] for step in result["data"]["steps"]] == [
         "login", "collect", "persist", "inspect"
     ]
+
+
+def test_session_owner_can_see_and_execute_another_users_demo_approval(
+    client, make_user, monkeypatch
+):
+    admin = make_user("admin")
+    owner = make_user("employee")
+    product = client.post(
+        "/api/commerce/products",
+        json={"name": "审批演示酒店", "brand": "测试酒店", "category": "酒店套餐"},
+        headers=admin["headers"],
+    ).json()["data"]
+    sku = client.post(
+        f"/api/commerce/products/{product['id']}/skus",
+        json={"sku_code": "DEMO-APPROVAL-001", "specification": "一晚", "list_price": "599.00"},
+        headers=admin["headers"],
+    ).json()["data"]
+    session = client.post(
+        "/api/commerce/sessions",
+        json={"title": "审批互动专场", "starts_at": "2026-12-01T20:00:00"},
+        headers=owner["headers"],
+    ).json()["data"]
+    client.post(
+        f"/api/commerce/sessions/{session['id']}/items",
+        json={"sku_id": sku["id"], "planned_sales": 10, "planned_unit_price": "499.00"},
+        headers=owner["headers"],
+    )
+    approval = client.post(
+        "/api/rpa/approvals",
+        json={
+            "session_id": session["id"],
+            "task_type": "price_fix",
+            "sku_id": sku["id"],
+            "expected_value": {"live_price": "499.00"},
+            "reason": "申请同步直播价格",
+        },
+        headers=admin["headers"],
+    ).json()["data"]
+
+    visible_ids = {
+        row["id"] for row in client.get("/api/rpa/approvals", headers=owner["headers"]).json()["data"]
+    }
+    assert approval["id"] in visible_ids
+
+    monkeypatch.setattr(settings, "DEMO_READ_ONLY", True)
+    monkeypatch.setattr(settings, "DEMO_READ_ONLY_USERNAME", owner["username"])
+    decided = client.post(
+        f"/api/rpa/approvals/{approval['id']}/decision",
+        json={"approve": True, "note": "规则与供应商确认单一致"},
+        headers=owner["headers"],
+    ).json()
+    assert decided["code"] == 0
+    assert decided["data"]["status"] == "executed"
+    task = client.get(
+        f"/api/rpa/tasks/{decided['data']['task_id']}", headers=owner["headers"]
+    ).json()["data"]
+    assert task["status"] == "succeeded"
+    assert task["result"]["verified"] is True
+    assert len(task["steps"]) == 4

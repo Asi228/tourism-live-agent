@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.rpa import (
@@ -117,7 +117,12 @@ def get_approval(db: Session, approval_id: int) -> RpaApproval | None:
 def list_approvals(db: Session, owner_id: int | None = None) -> list[RpaApproval]:
     stmt = select(RpaApproval)
     if owner_id is not None:
-        stmt = stmt.where(RpaApproval.requested_by == owner_id)
+        stmt = stmt.where(
+            or_(
+                RpaApproval.requested_by == owner_id,
+                RpaApproval.session.has(owner_id=owner_id),
+            )
+        )
     return list(db.scalars(stmt.order_by(RpaApproval.id.desc()).limit(100)))
 
 
@@ -126,7 +131,12 @@ def list_approvals_since(
 ) -> list[RpaApproval]:
     stmt = select(RpaApproval).where(RpaApproval.created_at >= since)
     if owner_id is not None:
-        stmt = stmt.where(RpaApproval.requested_by == owner_id)
+        stmt = stmt.where(
+            or_(
+                RpaApproval.requested_by == owner_id,
+                RpaApproval.session.has(owner_id=owner_id),
+            )
+        )
     return list(db.scalars(stmt.order_by(RpaApproval.id.desc())))
 
 

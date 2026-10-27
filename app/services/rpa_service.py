@@ -455,7 +455,7 @@ def create_approval(
 
 
 def list_approvals(db: Session, user: User) -> list[RpaApproval]:
-    """管理员看全部；其他人只看自己发起的（审批人进的场次由场次可见性控制）。"""
+    """管理员看全部；其他人看自己发起的，以及需要自己负责场次审批的。"""
     return repo.list_approvals(db, None if user.role.code == "admin" else user.id)
 
 
