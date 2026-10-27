@@ -1,8 +1,16 @@
 services:
+  - type: keyvalue
+    name: tourism-live-agent-redis
+    plan: free
+    region: singapore
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
   - type: web
     name: tourism-live-agent
     runtime: docker
     plan: free
+    region: singapore
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
@@ -29,7 +37,10 @@ services:
       - key: MYSQL_URL
         sync: false
       - key: REDIS_URL
-        sync: false
+        fromService:
+          name: tourism-live-agent-redis
+          type: keyvalue
+          property: connectionString
       - key: MILVUS_URI
         sync: false
       - key: MILVUS_TOKEN

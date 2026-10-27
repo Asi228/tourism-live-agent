@@ -87,9 +87,7 @@ function scrollToFlow() {
               进入演示系统 <el-icon><ArrowRight /></el-icon>
             </el-button>
             <el-button size="large" @click="scrollToFlow">查看业务流程</el-button>
-            <a class="source-link" href="https://gitee.com/or-say-goodbye/enterprise_knowledge_agent" target="_blank" rel="noopener">
-              查看项目源码
-            </a>
+            <span class="source-link source-private">企业项目演示 · 源码暂不公开</span>
           </div>
           <div class="hero-notes">
             <span><el-icon><CircleCheck /></el-icon> 完整业务闭环</span>
@@ -255,6 +253,8 @@ function scrollToFlow() {
 .hero-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
 .source-link { padding: 9px 10px; color: #475569; font-size: 13px; text-decoration: none; }
 .source-link:hover { color: #2563eb; }
+.source-private { cursor: default; }
+.source-private:hover { color: #475569; }
 .hero-notes { display: flex; flex-wrap: wrap; gap: 14px 20px; margin-top: 25px; color: #64748b; font-size: 11px; }
 .hero-notes span { display: flex; align-items: center; gap: 5px; }
 .hero-notes .el-icon { color: #0f9f6e; }
