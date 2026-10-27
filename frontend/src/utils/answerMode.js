@@ -13,6 +13,8 @@ export const ANSWER_MODE = {
   grounded: { text: '依据资料', type: 'success' },
   no_evidence: { text: '无可用资料', type: 'warning' },
   smalltalk: { text: '寒暄直答', type: 'info' },
+  general: { text: '通用模型回答', type: 'primary' },
+  tool: { text: '实时工具结果', type: 'success' },
   // 命中知识库常见问题：答案来自管理端写的标准答案，**不是**模型生成的，
   // 所以既不是"依据资料"（没引文档）也不是"无可用资料"（有依据，只是依据是 FAQ）。
   faq: { text: '来自常见问题', type: 'primary' },

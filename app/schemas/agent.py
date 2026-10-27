@@ -41,12 +41,16 @@ class AgentStep(BaseModel):
 class AgentChatResponse(BaseModel):
     query: str
     answer: str
-    answer_mode: Literal["grounded", "no_evidence", "smalltalk", "faq", "catalog"] = Field(
+    answer_mode: Literal[
+        "grounded", "no_evidence", "smalltalk", "general", "tool", "faq", "catalog"
+    ] = Field(
         default="no_evidence",
         description="本次答案的**性质**，比 hit 更细："
                     "grounded=依据知识库资料作答；"
                     "no_evidence=检索过但没有可用资料（不调模型）；"
                     "smalltalk=判定不需要查库，寒暄式回应；"
+                    "general=通用模型回答，未使用企业资料；"
+                    "tool=实时工具返回的确定性结果；"
                     "faq=命中知识库常见问题，直接返回标准答案（没检索、没调模型）；"
                     "catalog=文档清单（直接列可见文档，答案来自系统元数据、未经模型生成）。"
                     "hit=false 时靠它区分「没有依据」和「本就不该有依据」。"

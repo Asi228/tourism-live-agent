@@ -66,6 +66,8 @@ def agent(monkeypatch):
             return _out(box["evaluate"])
         if system == graph_mod.DIRECT_SYSTEM:
             return _out("你好，我是企业知识库助手，请提问与公司制度相关的问题。")
+        if system == graph_mod.GENERAL_SYSTEM:
+            return _out("幂等性是指同一操作执行一次或多次，最终结果保持一致。")
         return _out("入职满一年可享受带薪年假 5 天 [1]。")
 
     def fake_search(db, user, query, kb_ids=None, top_k=None):
@@ -155,6 +157,62 @@ def test_smalltalk_still_allowed_when_no_business_word(client, make_user, agent)
     assert data["iterations"] == 0
     assert agent["searches"] == []
     assert data["answer_mode"] == "smalltalk"
+
+
+def test_general_question_uses_model_without_search(client, make_user, agent):
+    """知识库无关的通用问题由模型回答，并明确标为通用答案。"""
+    agent["analyze"] = "GENERAL"
+    admin = make_user("admin")
+
+    data = _ask(client, admin, query="请用一句话解释什么是幂等性")["data"]
+
+    assert data["answer_mode"] == "general"
+    assert data["hit"] is False
+    assert data["iterations"] == 0
+    assert data["searched_kb_ids"] == []
+    assert agent["searches"] == []
+    assert "幂等性" in data["answer"]
+    assert [step["node"] for step in data["steps"]] == ["analyze", "generate"]
+
+
+def test_current_time_uses_deterministic_tool_without_llm_or_search(client, make_user, agent):
+    """实时问题走工具，不能让模型猜，也不该检索知识库。"""
+    admin = make_user("admin")
+
+    data = _ask(client, admin, query="现在几点了")["data"]
+
+    assert data["answer_mode"] == "tool"
+    assert data["hit"] is False
+    assert data["iterations"] == 0
+    assert data["searched_kb_ids"] == []
+    assert agent["searches"] == []
+    assert agent["chat_calls"] == []
+    assert "北京时间" in data["answer"]
+    assert [step["node"] for step in data["steps"]] == ["analyze", "tool"]
+
+
+def test_general_question_words_do_not_force_business_search(client, make_user, agent):
+    """“怎么/如何”本身不是企业问题，否则普通问题永远进不了通用回答。"""
+    agent["analyze"] = "GENERAL"
+    admin = make_user("admin")
+
+    data = _ask(client, admin, query="怎么理解 Python 的装饰器")["data"]
+
+    assert data["answer_mode"] == "general"
+    assert agent["searches"] == []
+
+
+def test_high_risk_business_question_never_falls_back_to_general(client, make_user, agent):
+    """退款、价格等企业事实即使调度模型误判，也必须先查资料。"""
+    agent["analyze"] = "GENERAL"
+    agent["results"] = []
+    admin = make_user("admin")
+
+    data = _ask(client, admin, query="火星酒店套餐可以无条件退款吗")["data"]
+
+    assert data["answer_mode"] == "no_evidence"
+    assert data["iterations"] >= 1
+    assert agent["searches"]
 
 
 def test_searched_kb_ids_comes_from_retriever_not_request(client, make_user, agent):

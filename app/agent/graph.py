@@ -38,6 +38,8 @@ LangGraph 的 StateGraph 正好把这三样变成显式的东西 ——
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
@@ -86,6 +88,8 @@ ANALYZE_SYSTEM = """你是企业知识库问答系统的调度器。判断用户
   （关键词给**最有区分度的短词**，如"考勤"、"报销"；别带"制度""文档"这类通用后缀）
 · 问"有哪些文档 / 库里有什么文件 / 文档清单"这类**目录型**问题
   → 输出：LIST
+· 问通用知识、写作、翻译、编程、学习或日常常识，且不涉及公司内部事实或实时数据
+  → 输出：GENERAL
 · 问候、自我介绍、"你能做什么"这类系统性问题 → 输出：SKIP
 
 只输出上述格式之一，不要解释。"""
@@ -103,6 +107,13 @@ DIRECT_SYSTEM = """你是企业知识库问答助手。用户这句话不需要�
 请简短友好地回应，并引导用户提出与公司制度、流程、规定相关的具体问题。
 严禁编造任何公司相关的具体信息（天数、金额、人名、流程细节等）。"""
 
+GENERAL_SYSTEM = """你是企业内部智能助手。这个问题属于通用知识，不需要查询企业知识库。
+
+请直接、准确、简洁地回答用户。可以回答通用知识、写作、翻译、编程、学习与日常常识。
+不得把通用知识描述成该公司的制度或业务事实；不得编造公司的价格、库存、退款政策、
+审批规则、订单状态或人员信息。如果问题实际需要企业资料或实时业务数据，应明确说明
+需要查询相应资料或业务系统，而不是猜测。"""
+
 # 业务疑问词。命中就**不走模型判定**，直接按"需要检索"处理。
 #
 # 为什么需要这道规则：analyze 判 SKIP 时，走的是**全系统唯一允许模型在毫无资料的情况下
@@ -110,14 +121,28 @@ DIRECT_SYSTEM = """你是企业知识库问答助手。用户这句话不需要�
 # 也就是说模型一旦把业务问题误判成寒暄，**没有任何机制能纠正它**。
 # 代价不对称：多检索一次只是多花几分钱，而"年假几天"被当成寒暄答掉是产品级事故。
 BUSINESS_HINTS = (
-    "多少", "几天", "几日", "几号", "多久", "几次", "什么时候",
+    "几天", "几日", "多久", "几次",
     "流程", "规定", "制度", "政策", "标准", "额度", "比例", "条件", "要求",
     "报销", "申请", "审批", "批准", "考核", "考勤", "打卡", "加班", "调休",
     "年假", "请假", "病假", "婚假", "产假", "事假", "假期",
     "薪酬", "工资", "社保", "公积金", "补贴", "奖金", "福利",
     "入职", "离职", "转正", "试用期", "合同",
-    "怎么", "如何", "能不能", "可以吗", "是否", "允许", "禁止", "处罚", "违规",
+    "允许", "禁止", "处罚", "违规",
+    "退款", "退改", "预约", "核销", "入园", "门票", "酒店", "套餐", "库存",
+    "商品", "直播", "场次", "订单", "客服", "改价", "下架", "价格", "优惠",
 )
+
+# 实时日期时间不应交给模型猜。规则优先级高于业务词（“今天几号”会包含“几号”），
+# 直接调用本地确定性工具，既准确又把原来约 10 秒的模型等待降到毫秒级。
+_TIME_ASK_PATTERNS = (
+    "现在几点", "几点了", "当前时间", "北京时间", "现在时间",
+    "今天几号", "当前日期", "今天日期", "今天星期几", "今天周几",
+)
+
+
+def _time_task_hint(query: str) -> str | None:
+    q = (query or "").strip()
+    return next((word for word in _TIME_ASK_PATTERNS if word in q), None)
 
 
 def _business_hint(query: str) -> str | None:
@@ -173,6 +198,8 @@ def _list_task_hint(query: str) -> str | None:
 ANSWER_GROUNDED = "grounded"        # 依据知识库资料作答
 ANSWER_NO_EVIDENCE = "no_evidence"  # 检索过但没资料（含"有命中但一条都拼不进上下文"）
 ANSWER_SMALLTALK = "smalltalk"      # 判定不需要查库，寒暄式回应（唯一允许无资料发挥的口子）
+ANSWER_GENERAL = "general"          # 通用知识回答；明确没有使用企业资料
+ANSWER_TOOL = "tool"                # 确定性实时工具结果（如当前时间）
 # 文档清单：答案来自**系统元数据**（可见文档目录），未经模型生成 ——
 # 与 grounded 的区别是"没有可引用的文档正文"，与 smalltalk 的区别是"内容有据可查"。
 # ⚠️ 新增取值要同步 schemas/agent.py 的 Literal 与前端 utils/answerMode.js。
@@ -201,6 +228,8 @@ def _parse_analyze(text: str) -> tuple[str, list[str]]:
         return ("docs", names) if names else ("search", [])
 
     u = t.upper()
+    if "GENERAL" in u:
+        return "general", []
     if "SKIP" in u or u.startswith("NO"):
         return "skip", []
     if "LIST" in u:
@@ -257,6 +286,16 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
     def analyze(state: AgentState) -> dict:
         started = time.monotonic()
 
+        time_hint = _time_task_hint(state["query"])
+        if time_hint:
+            return {
+                "need_retrieval": False,
+                "mode": "tool_time",
+                "steps": state.get("steps", []) + [
+                    _step("analyze", started, decision="TOOL:TIME", rule="time:%s" % time_hint)
+                ],
+            }
+
         # 规则先手：命中业务词就不问模型了 —— 省一次调用，也堵住 SKIP 误判。
         # ⚠️ 两组例外（都不短路，交给模型区分 SEARCH 与 DOCS/LIST）：
         #   ①"对比 / 总结"这类文档任务词（_DOC_TASK_WORDS）；
@@ -283,7 +322,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             logger.warning("Agent 判定节点失败，按「需要检索」继续：%s", str(exc)[:200])
             mode, names, decision, tokens = "search", [], "(判定失败→默认检索)", {}
         return {
-            "need_retrieval": mode != "skip",
+            "need_retrieval": mode in {"search", "docs", "list"},
             "mode": mode,
             "doc_names": names,
             "steps": state.get("steps", []) + [_step("analyze", started, decision=decision)],
@@ -591,14 +630,20 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
                     "answer_mode": ANSWER_NO_EVIDENCE,
                     "steps": state.get("steps", []) + [_step("generate", started, mode="未命中")],
                 }
-            # 判定为"不需要查库"：允许寒暄式作答，但提示词已禁止编造公司信息
-            out = llm.chat(DIRECT_SYSTEM, state["query"], max_tokens=200, temperature=0.5)
+            # 通用问题允许模型用常识作答，但和企业资料答案明确分口径展示。
+            is_general = state.get("mode") == "general"
+            system = GENERAL_SYSTEM if is_general else DIRECT_SYSTEM
+            out = llm.chat(system, state["query"], max_tokens=600 if is_general else 200,
+                           temperature=0.3 if is_general else 0.5,
+                           history=state.get("history") or [])
             return {
                 "answer": out["answer"],
                 "hit": False,
                 "sources": [],
-                "answer_mode": ANSWER_SMALLTALK,
-                "steps": state.get("steps", []) + [_step("generate", started, mode="直答")],
+                "answer_mode": ANSWER_GENERAL if is_general else ANSWER_SMALLTALK,
+                "steps": state.get("steps", []) + [
+                    _step("generate", started, mode="通用回答" if is_general else "寒暄直答")
+                ],
                 "usage": _accumulate(state.get("usage"), out["usage"] or {}),
             }
 
@@ -657,11 +702,35 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         mode = state.get("mode") or ("search" if state.get("need_retrieval") else "skip")
         if mode == "skip":
             return "generate"
+        if mode == "general":
+            return "generate"
+        if mode == "tool_time":
+            return "run_time_tool"
         if mode == "docs":
             return "fetch_docs"
         if mode == "list":
             return "list_docs"
         return "retrieve"
+
+    def run_time_tool(state: AgentState) -> dict:
+        """用确定性时钟回答实时问题，避免模型用训练数据猜时间。"""
+        started = time.monotonic()
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        weekdays = "一二三四五六日"
+        answer = "当前北京时间是 %s（星期%s）。" % (
+            now.strftime("%Y年%m月%d日 %H:%M:%S"), weekdays[now.weekday()]
+        )
+        return {
+            "answer": answer,
+            "hit": False,
+            "sources": [],
+            "answer_mode": ANSWER_TOOL,
+            "fetched": False,
+            "searched_kb_ids": [],
+            "steps": state.get("steps", []) + [
+                _step("tool", started, tool="current_time", timezone="Asia/Shanghai")
+            ],
+        }
 
     def route_after_evaluate(state: AgentState) -> str:
         if state.get("sufficient"):
@@ -694,6 +763,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
     graph.add_node("list_docs", list_docs)
     graph.add_node("evaluate", evaluate)
     graph.add_node("generate", generate)
+    graph.add_node("run_time_tool", run_time_tool)
 
     graph.add_edge(START, "analyze")
     graph.add_conditional_edges(
@@ -704,6 +774,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
             "fetch_docs": "fetch_docs",
             "list_docs": "list_docs",
             "generate": "generate",
+            "run_time_tool": "run_time_tool",
         },
     )
     graph.add_edge("retrieve", "evaluate")
@@ -715,6 +786,7 @@ def build_graph(db: Session, user: User, kb_ids: list[int] | None = None, top_k:
         "evaluate", route_after_evaluate, {"retrieve": "retrieve", "generate": "generate"}
     )
     graph.add_edge("generate", END)
+    graph.add_edge("run_time_tool", END)
 
     return graph.compile()
 

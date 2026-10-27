@@ -344,6 +344,7 @@ def test_parse_analyze_formats():
     """模型输出不听话时的容错 —— 任何解析不出的形状都默认回检索，不许空转。"""
     assert graph_mod._parse_analyze("SEARCH") == ("search", [])
     assert graph_mod._parse_analyze("SKIP") == ("skip", [])
+    assert graph_mod._parse_analyze("GENERAL") == ("general", [])
     assert graph_mod._parse_analyze("") == ("search", [])
     assert graph_mod._parse_analyze("NO，这是寒暄") == ("skip", [])
     # 旧的 NEED 输出（万一模型记旧版提示词）→ 照样当检索

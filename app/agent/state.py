@@ -30,10 +30,12 @@ class AgentState(TypedDict, total=False):
     # ---------- analyze 节点（LLM 决策）----------
     # 这个问题要不要查知识库？"你好"、"你能做什么"这类不该白跑一次检索
     need_retrieval: bool
-    # 怎么取得答案 —— analyze 输出的**路由指令**（四者之一）：
+    # 怎么取得答案 —— analyze 输出的路由指令：
     #   "search"：语义检索（默认，拿不准都归它）
     #   "docs"  ：用户点名了某几份文档，走 fetch_docs 取全文再生成（总结 / 对比）
     #   "list"  ：问"有哪些文档"，走 list_docs 直接产出清单（不经模型）
+    #   "general"：通用知识，允许模型直接回答但明确标注未使用企业资料
+    #   "tool_time"：当前日期时间，走确定性工具
     #   "skip"  ：寒暄 / 系统性问题，不取数
     # need_retrieval 保留为它的粗粒度投影（mode != "skip"），旧调用方与 generate 的判断不动。
     mode: str
@@ -67,7 +69,7 @@ class AgentState(TypedDict, total=False):
     answer: str
     hit: bool
     sources: list[dict]
-    answer_mode: str          # grounded / no_evidence / smalltalk（见 graph.py 的常量）
+    answer_mode: str          # grounded / no_evidence / smalltalk / general / tool 等
     steps: list[dict]         # 轨迹：[{"node": "retrieve", "ms": 820, "iteration": 1}]
     usage: dict               # token 累计 {input_tokens, output_tokens, total_tokens}
 

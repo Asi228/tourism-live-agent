@@ -120,7 +120,15 @@ def agent_chat(
     )
     # 中性说法：不替用户猜走了哪条路（检索还是取文档）—— 真正的证据在 steps 与
     # data.iterations 里（文档任务没检索，轮数是 0，硬塞个"轮数"反而是假信息）
-    message = "已获取资料" if data["hit"] else "未使用知识库资料"
+    message_by_mode = {
+        "general": "通用模型回答（未使用企业资料）",
+        "tool": "已调用实时工具",
+        "no_evidence": "知识库中未找到可用资料",
+        "smalltalk": "未使用知识库资料",
+    }
+    message = message_by_mode.get(
+        data.get("answer_mode"), "已获取资料" if data["hit"] else "未使用知识库资料"
+    )
     return success(data, message)
 
 

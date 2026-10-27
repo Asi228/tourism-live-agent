@@ -17,7 +17,9 @@ import { ANSWER_MODE, answerModeTag } from './answerMode.js'
 // 这是刻意的：那种漂移由"界面显不显示原始串"来暴露（见第三条用例），
 // 强行让测试红会逼着每次后端加值都改前端测试，反而没人跑它。
 // （但"后端确实加了值"这个事实，应该主动把它补进这份清单。）
-const BACKEND_MODES = ['grounded', 'no_evidence', 'smalltalk', 'faq', 'catalog']
+const BACKEND_MODES = [
+  'grounded', 'no_evidence', 'smalltalk', 'general', 'tool', 'faq', 'catalog',
+]
 
 test('后端的 answer_mode 取值都有展示映射', () => {
   for (const mode of BACKEND_MODES) {
@@ -41,6 +43,11 @@ test('faq 是独立口径，不是 grounded / no_evidence 的复用', () => {
   // 三种"依据来源"的文案两两不能撞 —— 撞了说明有人图省事复用了同一句
   assert.notEqual(faq.text, ANSWER_MODE.grounded.text)
   assert.notEqual(faq.text, ANSWER_MODE.no_evidence.text)
+})
+
+test('通用模型回答和实时工具结果使用清晰来源标签', () => {
+  assert.equal(answerModeTag('general').text, '通用模型回答')
+  assert.equal(answerModeTag('tool').text, '实时工具结果')
 })
 
 test('未知取值降级显示原始串 + info 样式（不返回 undefined）', () => {
