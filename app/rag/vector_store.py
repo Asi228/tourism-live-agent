@@ -66,6 +66,16 @@ METRIC_TYPE = "COSINE"
 CONSISTENCY_LEVEL = "Strong"
 
 
+def _uses_file_backend() -> bool:
+    return settings.VECTOR_BACKEND.strip().lower() == "file"
+
+
+def _file_store():
+    from app.rag import file_vector_store
+
+    return file_vector_store
+
+
 def _connection_args(timeout: float) -> tuple[str, dict]:
     """同时兼容本地 Milvus 与 Zilliz Cloud，不把 token 写进日志。"""
     uri = settings.MILVUS_URI.strip() or f"http://{settings.MILVUS_HOST}:{settings.MILVUS_PORT}"
@@ -137,6 +147,9 @@ def probe(timeout_seconds: float) -> None:
       · 不碰共享单例（绝不能为了探活去调低全局 MILVUS_TIMEOUT，那是检索路径的超时）；
       · 调用方（api/health.py）有结果缓存，所以"每次新建客户端"的开销可以接受。
     """
+    if _uses_file_backend():
+        _file_store().probe(timeout_seconds)
+        return
     _uri, kwargs = _connection_args(timeout_seconds)
     client = MilvusClient(**kwargs)
     client.get_server_version()
@@ -148,6 +161,8 @@ def health() -> dict:
     **不返回 Milvus 地址** —— 这是给 HTTP 自检接口复用的，
     地址属于内网信息，日志里有就够了。
     """
+    if _uses_file_backend():
+        return _file_store().health(settings.MILVUS_COLLECTION)
     client = get_client()
     collections = list(client.list_collections())
     return {
@@ -187,6 +202,8 @@ def _load_into_querynode(client, name: str) -> bool:
 
 def ensure_loaded() -> bool:
     """公开入口：连上客户端再加载一次。**测试里会被哑元替掉**（见 conftest 的写操作防护）。"""
+    if _uses_file_backend():
+        return _file_store().ensure_loaded()
     return _load_into_querynode(get_client(), settings.MILVUS_COLLECTION)
 
 
@@ -218,6 +235,8 @@ def flush() -> bool:
     全是 `num_rows=0` 的段（一条数据都没落盘），flush 之后立刻出现
     `rows=37, state=Flushed` 并且进入已加载段 —— 所以这不是"以防万一"，是补上缺的那一步。
     """
+    if _uses_file_backend():
+        return _file_store().flush()
     return _flush_best_effort(get_client, settings.MILVUS_COLLECTION)
 
 
@@ -231,6 +250,8 @@ def foreign_collections() -> list[str]:
 
     单个集合 describe 失败就跳过：这是自检的附加信息，不该因为它把整个自检搞挂。
     """
+    if _uses_file_backend():
+        return []
     client = get_client()
     ours = settings.MILVUS_COLLECTION
     foreign: list[str] = []
@@ -249,6 +270,9 @@ def foreign_collections() -> list[str]:
 
 def ensure_collection() -> None:
     """建 collection + 索引并 load。**幂等**：已存在也要确保它处于可检索状态。"""
+    if _uses_file_backend():
+        _file_store().ensure_collection()
+        return
     client = get_client()
     name = settings.MILVUS_COLLECTION
 
@@ -300,6 +324,8 @@ def upsert(rows: list[ChunkVector]) -> int:
     """
     if not rows:
         return 0
+    if _uses_file_backend():
+        return _file_store().upsert(rows)
     client = get_client()
     data = [
         {
@@ -329,6 +355,8 @@ def delete_by_document(document_id: int) -> int:
     注意：Milvus 的 delete 返回的是"删除操作的统计"，不同版本给出的
     delete_count 口径不完全一致，所以这里只做日志用途，不当作强保证。
     """
+    if _uses_file_backend():
+        return _file_store().delete_by_document(document_id)
     client = get_client()
     try:
         result = client.delete(
@@ -341,6 +369,8 @@ def delete_by_document(document_id: int) -> int:
 
 
 def delete_by_kb(knowledge_base_id: int) -> int:
+    if _uses_file_backend():
+        return _file_store().delete_by_kb(knowledge_base_id)
     client = get_client()
     try:
         result = client.delete(
@@ -365,6 +395,8 @@ def count(kb_ids: list[int] | None = None) -> int:
     """
     if kb_ids is not None and not kb_ids:
         return 0
+    if _uses_file_backend():
+        return _file_store().count(kb_ids)
     expr = build_kb_filter(kb_ids)
     client = get_client()
     try:
@@ -390,6 +422,8 @@ def stats_row_count() -> int:
       · 两边都 0                →  真的没数据，该去点向量化
     这两个读数来自不同子系统，所以它们不一致本身就是最有价值的信号。
     """
+    if _uses_file_backend():
+        return _file_store().count()
     client = get_client()
     try:
         stats = client.get_collection_stats(settings.MILVUS_COLLECTION)
@@ -405,6 +439,8 @@ def list_kb_ids() -> list[int]:
     **只给维护/自检用**，不要放进请求链路：它要把行都取回来才能去重，
     数据量大时开销很高。用途是找出"MySQL 里已经没有、Milvus 里还留着"的孤儿向量。
     """
+    if _uses_file_backend():
+        return _file_store().list_kb_ids()
     client = get_client()
     try:
         rows = client.query(
@@ -430,6 +466,8 @@ def list_document_ids() -> list[int]:
     —— 它们检索不到，而从接口和列表上都看不出来。这跟孤儿向量是一对：
     孤儿是"向量多出来了"，这个是"向量缺了"，两种都会静默改变检索结果。
     """
+    if _uses_file_backend():
+        return _file_store().list_document_ids()
     client = get_client()
     try:
         rows = client.query(
@@ -492,6 +530,9 @@ def search(vector: list[float], kb_ids: list[int] | None, top_k: int) -> list[Se
         # 因为"空范围被当成不过滤"是会造成越权的错误，代价太高。
         logger.warning("search() 收到空 kb_ids，已直接返回空结果（避免退化为全库检索）")
         return []
+
+    if _uses_file_backend():
+        return [SearchHit(**row) for row in _file_store().search(vector, kb_ids, top_k)]
 
     client = get_client()
     try:

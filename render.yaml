@@ -35,31 +35,31 @@ services:
       - key: APP_RELOAD
         value: "false"
       - key: MYSQL_URL
-        sync: false
+        value: sqlite:////tmp/enterprise-agent/demo.db
+      - key: VECTOR_BACKEND
+        value: file
+      - key: FILE_VECTOR_PATH
+        value: /tmp/enterprise-agent/demo_vectors.json
       - key: REDIS_URL
         fromService:
           name: tourism-live-agent-redis
           type: keyvalue
           property: connectionString
-      - key: MILVUS_URI
-        sync: false
-      - key: MILVUS_TOKEN
-        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_USERNAME
         value: portfolio_admin
       - key: ADMIN_PASSWORD
-        sync: false
+        generateValue: true
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
-        sync: false
+        value: https://api.deepseek.com
       - key: LLM_MODEL
-        sync: false
+        value: deepseek-flash
       - key: EMBEDDING_API_KEY
         sync: false
       - key: EMBEDDING_BASE_URL
-        sync: false
+        value: https://api.siliconflow.cn/v1
       - key: EMBEDDING_MODEL
         value: BAAI/bge-m3

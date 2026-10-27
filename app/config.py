@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     MILVUS_URI: str = ""
     MILVUS_TOKEN: str = ""
     MILVUS_DB_NAME: str = "default"
+    # 公网只读演示可用轻量文件后端，避免为了十几条演示向量单独购买 Milvus。
+    # 本地与企业部署保持默认 milvus，不影响完整技术栈和生产实现。
+    VECTOR_BACKEND: str = "milvus"  # milvus / file
+    FILE_VECTOR_PATH: str = str(BASE_DIR / "data" / "demo_vectors.json")
 
     # ===== JWT =====
     JWT_SECRET: str = "change-me"

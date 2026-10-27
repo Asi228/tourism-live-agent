@@ -5,14 +5,24 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 
-engine = create_engine(
-    settings.mysql_url,
-    pool_pre_ping=True,                      # 取连接前先探活，避免 MySQL 断连后报 Lost connection
-    pool_recycle=3600,                       # 1 小时回收连接，防 MySQL 默认 8h 超时
-    pool_size=settings.DB_POOL_SIZE,         # 常驻连接数
-    max_overflow=settings.DB_MAX_OVERFLOW,   # 峰值允许临时超出的连接数
-    echo=settings.SQL_ECHO,                  # 独立开关，不跟 DEBUG 绑，避免控制台刷满 SQL
-)
+_database_url = settings.mysql_url
+if _database_url.startswith("sqlite"):
+    # 公网作品演示使用单文件 SQLite：数据量很小，而且启动脚本会幂等重建演示数据。
+    # check_same_thread=False 是 FastAPI 在线程池中使用同步 Session 的必要条件。
+    engine = create_engine(
+        _database_url,
+        connect_args={"check_same_thread": False},
+        echo=settings.SQL_ECHO,
+    )
+else:
+    engine = create_engine(
+        _database_url,
+        pool_pre_ping=True,                      # 取连接前先探活，避免 MySQL 断连后报 Lost connection
+        pool_recycle=3600,                       # 1 小时回收连接，防 MySQL 默认 8h 超时
+        pool_size=settings.DB_POOL_SIZE,         # 常驻连接数
+        max_overflow=settings.DB_MAX_OVERFLOW,   # 峰值允许临时超出的连接数
+        echo=settings.SQL_ECHO,                  # 独立开关，不跟 DEBUG 绑，避免控制台刷满 SQL
+    )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

@@ -16,8 +16,23 @@ def run(*args: str) -> None:
 
 
 def main() -> int:
-    print("[startup] 执行数据库迁移", flush=True)
-    run("-m", "alembic", "upgrade", "head")
+    from app.config import settings
+
+    if settings.mysql_url.startswith("sqlite"):
+        if not settings.DEMO_READ_ONLY:
+            raise RuntimeError("SQLite 只允许用于 DEMO_READ_ONLY 公网演示")
+        print("[startup] 创建轻量演示数据库结构", flush=True)
+        import app.models  # noqa: F401
+        from app.db.base import Base
+        from app.db.session import engine
+
+        Path(settings.mysql_url.removeprefix("sqlite:///")).parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        Base.metadata.create_all(engine)
+    else:
+        print("[startup] 执行数据库迁移", flush=True)
+        run("-m", "alembic", "upgrade", "head")
 
     print("[startup] 初始化角色与管理员", flush=True)
     from app.db.init_db import init_db

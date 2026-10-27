@@ -22,9 +22,11 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+.tmp_*/
 
 # 上传文件与向量库本地数据
 uploads/
+data/demo_vectors.json
 
 # RPA 执行截图证据（按任务分目录；属运行产物，不进仓库）
 artifacts/
