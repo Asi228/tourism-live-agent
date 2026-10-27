@@ -1,0 +1,83 @@
+"""公网互动沙箱：只放行业务闭环，并让轻量 RPA 留下完整执行证据。"""
+
+from datetime import datetime, timedelta
+
+import pytest
+
+from app import _demo_sandbox_write_allowed
+from app.config import settings
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/commerce/sessions"),
+        ("POST", "/api/commerce/sessions/12/items"),
+        ("POST", "/api/commerce/sessions/12/inspections"),
+        ("POST", "/api/rpa/tasks"),
+        ("POST", "/api/rpa/approvals/7/decision"),
+        ("POST", "/api/agent/live-sessions/3/explain"),
+        ("DELETE", "/api/conversations/9"),
+    ],
+)
+def test_demo_sandbox_allows_operational_workflow(method, path):
+    assert _demo_sandbox_write_allowed(method, path)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/users"),
+        ("PATCH", "/api/users/1/role"),
+        ("DELETE", "/api/knowledge/1"),
+        ("POST", "/api/commerce/products"),
+        ("PUT", "/api/rpa/mock-platform/skus/1"),
+    ],
+)
+def test_demo_sandbox_protects_accounts_and_base_data(method, path):
+    assert not _demo_sandbox_write_allowed(method, path)
+
+
+def test_demo_collection_task_completes_without_external_worker(
+    client, make_user, monkeypatch
+):
+    admin = make_user("admin")
+    operator = make_user("employee")
+    product = client.post(
+        "/api/commerce/products",
+        json={"name": "演示门票", "brand": "测试景区", "category": "景区门票"},
+        headers=admin["headers"],
+    ).json()["data"]
+    sku = client.post(
+        f"/api/commerce/products/{product['id']}/skus",
+        json={"sku_code": "DEMO-SANDBOX-001", "specification": "成人票", "list_price": "99.00"},
+        headers=admin["headers"],
+    ).json()["data"]
+    session = client.post(
+        "/api/commerce/sessions",
+        json={
+            "title": "互动沙箱专场",
+            "starts_at": (datetime.now() + timedelta(days=1)).isoformat(),
+        },
+        headers=operator["headers"],
+    ).json()["data"]
+    client.post(
+        f"/api/commerce/sessions/{session['id']}/items",
+        json={"sku_id": sku["id"], "planned_sales": 20, "planned_unit_price": "79.00"},
+        headers=operator["headers"],
+    )
+
+    monkeypatch.setattr(settings, "DEMO_READ_ONLY", True)
+    monkeypatch.setattr(settings, "DEMO_READ_ONLY_USERNAME", operator["username"])
+    result = client.post(
+        "/api/rpa/tasks",
+        json={"session_id": session["id"]},
+        headers=operator["headers"],
+    ).json()
+
+    assert result["code"] == 0
+    assert result["data"]["status"] == "succeeded"
+    assert result["data"]["result"]["verified"] is True
+    assert [step["step_code"] for step in result["data"]["steps"]] == [
+        "login", "collect", "persist", "inspect"
+    ]

@@ -443,7 +443,9 @@ def _create_workflows(db, admin: User, owner: User, skus: dict[str, ProductSku],
         expected_value={"live_price": "1999.00"},
         idempotency_key="demo-tourism-pending-price-fix",
         status=APPROVAL_PENDING,
-        requested_by=owner.id,
+        # 由另一名员工（这里复用管理员种子账号）发起，场次负责人登录演示账号后
+        # 可以真实体验“四眼原则”下的审批；自己新建的申请仍不能自批。
+        requested_by=admin.id,
         reason="平台直播价 2199 元与场次计划价 1999 元不一致，请审批改价。",
         source_inspection_result_id=price_result.id,
         source_snapshot={"planned": "1999.00", "platform": "2199.00", "risk": price_result.message},

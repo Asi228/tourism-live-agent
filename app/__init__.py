@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -43,9 +44,34 @@ _DEMO_ALLOWED_WRITES = (
     "/api/feedback",
 )
 
+_DEMO_SANDBOX_WRITE_ROUTES = (
+    ("POST", re.compile(r"^/api/commerce/sessions$")),
+    ("POST", re.compile(r"^/api/commerce/sessions/\d+/(?:items|packages|inspections)$")),
+    ("POST", re.compile(r"^/api/commerce/price-preview$")),
+    ("PUT", re.compile(r"^/api/rpa/monitoring-plans/\d+$")),
+    ("POST", re.compile(r"^/api/rpa/tasks$")),
+    ("POST", re.compile(r"^/api/rpa/tasks/\d+/requeue$")),
+    ("POST", re.compile(r"^/api/rpa/approvals$")),
+    ("POST", re.compile(r"^/api/rpa/approvals/\d+/decision$")),
+    ("POST", re.compile(r"^/api/agent/live-sessions/\d+/(?:explain|approval-draft)$")),
+    ("POST", re.compile(r"^/api/memories$")),
+    ("PATCH", re.compile(r"^/api/memories/\d+$")),
+    ("DELETE", re.compile(r"^/api/memories/\d+$")),
+    ("DELETE", re.compile(r"^/api/conversations/\d+$")),
+)
+
+
+def _demo_sandbox_write_allowed(method: str, path: str) -> bool:
+    if path.startswith(_DEMO_ALLOWED_WRITES):
+        return True
+    return any(
+        method == allowed_method and pattern.fullmatch(path)
+        for allowed_method, pattern in _DEMO_SANDBOX_WRITE_ROUTES
+    )
+
 
 def _install_demo_read_only_guard(app: FastAPI) -> None:
-    """公网展示时阻止访客账号改业务数据，同时保留 RAG/Agent 体验。"""
+    """公网展示仅开放业务沙箱写操作，保护账号、权限和基础知识数据。"""
     if not settings.DEMO_READ_ONLY:
         return
 
@@ -54,7 +80,9 @@ def _install_demo_read_only_guard(app: FastAPI) -> None:
         if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return await call_next(request)
         path = request.url.path
-        if path == f"{settings.API_PREFIX}/auth/login" or path.startswith(_DEMO_ALLOWED_WRITES):
+        if path == f"{settings.API_PREFIX}/auth/login" or _demo_sandbox_write_allowed(
+            request.method, path
+        ):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
         if authorization.lower().startswith("bearer "):
@@ -65,7 +93,11 @@ def _install_demo_read_only_guard(app: FastAPI) -> None:
                 if payload.get("username") == settings.DEMO_READ_ONLY_USERNAME:
                     return JSONResponse(
                         status_code=200,
-                        content={"code": 40300, "message": "公开演示账号为只读模式，请使用现有演示数据体验", "data": None},
+                        content={
+                            "code": 40300,
+                            "message": "互动演示仅开放直播运营、审批、自动化和知识问答；账号、权限与基础资料受保护",
+                            "data": None,
+                        },
                     )
             except Exception:  # 令牌是否合法仍交给正常鉴权链路处理
                 pass

@@ -81,6 +81,15 @@ async function handleLogout() {
       </el-header>
 
       <el-main class="main">
+        <el-alert
+          v-if="user.displayName === 'demo_operator'"
+          class="sandbox-alert"
+          type="success"
+          :closable="false"
+          show-icon
+          title="互动演示沙箱"
+          description="可创建直播场次、运行开播检查、提交或处理审批、执行自动化任务并进行知识问答；账号权限与基础知识数据保持保护。"
+        />
         <!-- 子页面用 v-loading 各自控制自己的加载态，这里只做容器 -->
         <router-view v-slot="{ Component }">
           <component :is="Component" />
@@ -209,6 +218,9 @@ async function handleLogout() {
   max-width: 1600px;
   margin-right: auto;
   margin-left: auto;
+}
+.sandbox-alert {
+  margin-bottom: 14px;
 }
 
 @media (max-width: 900px) {

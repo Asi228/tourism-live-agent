@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.exceptions import AppException
 from app.core.redis_client import get_client
 from app.core.response import ErrorCode
@@ -51,6 +52,89 @@ def _get_task_for_user(db: Session, user: User, task_id: int) -> RpaTask:
 
 def _push_task(task_id: int) -> None:
     get_client().rpush(RPA_QUEUE_KEY, str(task_id))
+
+
+def _is_demo_sandbox_user(user: User) -> bool:
+    return settings.DEMO_READ_ONLY and user.username == settings.DEMO_READ_ONLY_USERNAME
+
+
+def _complete_demo_task(
+    db: Session, task: RpaTask, *, approval: RpaApproval | None = None
+) -> RpaTask:
+    """在轻量公网沙箱中模拟外部平台执行，并保留完整步骤和核验结果。
+
+    正式环境仍由 Redis + 独立 Playwright worker 执行。Render 免费实例没有常驻
+    worker 和浏览器进程，因此演示账号走同一任务状态机，但用本地模拟平台即时收尾。
+    """
+    now = datetime.now()
+    task.status = TASK_RUNNING
+    task.started_at = now
+    task.attempt_count = (task.attempt_count or 0) + 1
+    db.commit()
+
+    if task.task_type == TASK_COLLECT:
+        sku_codes = list((task.payload or {}).get("sku_codes") or [])
+        task.result = {
+            "collected": [{"sku_code": code, "source": "demo_mock_platform"} for code in sku_codes],
+            "missing_sku_codes": [],
+            "inspection": {"status": "completed", "conclusion": "ready"},
+            "verified": True,
+        }
+        steps = (
+            ("login", "登录模拟平台", "演示平台登录成功"),
+            ("collect", "采集商品数据", f"已采集 {len(sku_codes)} 个 SKU 的价格、库存和活动"),
+            ("persist", "保存业务快照", "结构化快照已保存"),
+            ("inspect", "执行开播检查", "价格、库存、活动和商品状态检查完成"),
+        )
+    else:
+        payload = task.payload or {}
+        sku_code = str(payload.get("sku_code") or "")
+        expected = dict(payload.get("expected") or {})
+        platform_sku = repo.get_mock_sku_by_code(db, sku_code)
+        before = {}
+        if platform_sku is not None:
+            before = {
+                "live_price": str(platform_sku.live_price) if platform_sku.live_price is not None else None,
+                "platform_status": platform_sku.platform_status,
+            }
+            if "live_price" in expected:
+                platform_sku.live_price = Decimal(str(expected["live_price"]))
+            if "platform_status" in expected:
+                platform_sku.platform_status = str(expected["platform_status"])
+        task.result = {
+            "sku_code": sku_code,
+            "before": before,
+            "actual": expected,
+            "verified": True,
+            "source": "demo_mock_platform",
+        }
+        steps = (
+            ("login", "登录模拟平台", "演示平台登录成功"),
+            ("locate", "定位目标商品", f"已定位 {sku_code}"),
+            ("execute", "执行审批操作", "目标值已写入模拟平台"),
+            ("verify", "回读核验结果", "平台回读结果与审批目标一致"),
+        )
+
+    for index, (code, name, message) in enumerate(steps):
+        started = now + timedelta(seconds=index)
+        repo.create_step(
+            db,
+            task_id=task.id,
+            step_code=code,
+            step_name=name,
+            status=TASK_SUCCEEDED,
+            message=message,
+            screenshot_path=None,
+            started_at=started,
+            completed_at=started + timedelta(milliseconds=500),
+        )
+    task.status = TASK_SUCCEEDED
+    task.completed_at = now + timedelta(seconds=len(steps))
+    task.error_message = None
+    if approval is not None:
+        approval.status = APPROVAL_EXECUTED
+    db.commit()
+    return repo.get_task(db, task.id)
 
 
 def list_monitoring_plans(db: Session, user: User):
@@ -161,6 +245,8 @@ def create_collection_task(
         payload={"session_id": session.id, "sku_codes": [item.sku.sku_code for item in session.items]},
     )
     db.commit()
+    if _is_demo_sandbox_user(user):
+        return _complete_demo_task(db, row)
     try:
         _push_task(row.id)
     except Exception as exc:  # Redis 故障不丢任务，保留为可重新入队状态。
@@ -549,6 +635,10 @@ def decide_approval(
     )
     row.task_id = task.id
     db.commit()
+    if _is_demo_sandbox_user(user):
+        _complete_demo_task(db, task, approval=row)
+        logger.info("演示沙箱审批已模拟执行 approval=%s task=%s", row.id, task.id)
+        return repo.get_approval(db, row.id)
     try:
         _push_task(task.id)
     except Exception as exc:  # Redis 故障：保留可重新入队状态，审批本身仍算通过
