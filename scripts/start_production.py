@@ -9,6 +9,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    # 直接执行 scripts/start_production.py 时，Python 默认只把 scripts/
+    # 放进模块搜索路径。容器入口需要显式加入项目根目录才能导入 app。
+    sys.path.insert(0, str(ROOT))
 
 
 def run(*args: str) -> None:

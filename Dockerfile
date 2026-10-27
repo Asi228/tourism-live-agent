@@ -24,4 +24,4 @@ RUN useradd --create-home --uid 10001 appuser \
 
 USER appuser
 EXPOSE 8000
-CMD ["python", "scripts/start_production.py"]
+CMD ["python", "-m", "scripts.start_production"]
