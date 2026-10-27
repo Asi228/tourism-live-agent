@@ -118,7 +118,7 @@ const mockToolsOpen = ref(false)
 
 const emptyHint = computed(() => {
   const base = mode.value === 'agent'
-    ? '系统会自动理解问题、查找相关业务资料，并给出带来源的处理建议。'
+    ? '企业问题优先查询知识库；通用问题由大模型回答；时间等实时问题调用工具。每条答案都会标明来源。'
     : '适合快速查询明确的商品规则、使用说明、直播话术和售后政策。'
   // mock 模式下必须让人看见"现在连的不是真后端"，否则会误以为系统坏了
   return MOCK_MODE ? `⚠️ SSE 故障模拟中（${MOCK_MODE}）—— 这条请求不会打到后端。${base}` : base
@@ -828,7 +828,7 @@ onBeforeUnmount(() => abortStream())
           <div v-if="!messages.length" class="empty-state">
             <div class="assistant-mark">旅</div>
             <h2>旅游业务知识助手</h2>
-            <p>直接询问景区门票、酒店套餐、预约方式、使用限制和售后政策，答案会标明资料来源。</p>
+            <p>既能查询景区、酒店和售后规则，也能回答通用问题；实时信息会调用工具，每条答案都标明来源。</p>
             <div class="starter-grid">
               <button v-for="item in starterPrompts" :key="item" @click="choosePrompt(item)">
                 {{ item }}
