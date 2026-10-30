@@ -1,4 +1,5 @@
 import http from './http'
+import { apiUrl } from './url'
 
 // 把接口包成语义化函数：页面里写 `knowledgeApi.list()` 比写 http.get('/knowledge') 好读，
 // 而且**接口路径只在这一个文件里出现** —— 后端改路径时只改这里。
@@ -102,7 +103,7 @@ export const rpaApi = {
   createCollect: (sessionId) => http.post('/rpa/tasks', { session_id: sessionId }),
   requeue: (id) => http.post(`/rpa/tasks/${id}/requeue`),
   // 截图走带鉴权的端点（静态目录挂载会把"谁的证据"交出去）
-  screenshotUrl: (taskId, stepId) => `/api/rpa/tasks/${taskId}/steps/${stepId}/screenshot`,
+  screenshotUrl: (taskId, stepId) => apiUrl(`/rpa/tasks/${taskId}/steps/${stepId}/screenshot`),
   mockSkus: () => http.get('/rpa/mock-platform/skus'),
   initMock: () => http.post('/rpa/mock-platform/initialize'),
   updateMockSku: (rowId, payload) => http.put(`/rpa/mock-platform/skus/${rowId}`, payload),

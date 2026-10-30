@@ -1,10 +1,12 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+import { API_BASE_URL } from './url'
+
 // 后端约定：HTTP 状态码恒为 200，**真实业务码在 body 里**（code / message / data）。
 // 所以"请求成功"不等于"业务成功"—— 判断业务成败必须看 body.code。
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   // Agent 一次问答可能调 3 次大模型（判定 + 评估 + 生成），比纯 RAG 慢得多，
   // 后端单次 LLM 超时是 60s，所以这里要留够；默认的 0（不超时）会一直转圈。
   timeout: 180000,
@@ -69,7 +71,9 @@ http.interceptors.response.use(
     const msg =
       err.code === 'ECONNABORTED'
         ? '请求超时：这个操作比较慢，请稍后重试'
-        : '无法连接后端服务，请确认 uvicorn 已启动（127.0.0.1:8000）'
+        : import.meta.env.DEV
+          ? '无法连接后端服务，请确认 uvicorn 已启动（127.0.0.1:8000）'
+          : '暂时无法连接演示服务，请稍后重试'
     ElMessage.error(msg)
     return Promise.reject(err)
   }

@@ -13,6 +13,7 @@
  */
 
 import { getToken, setToken } from './http'
+import { apiUrl } from './url'
 
 /**
  * 发一次流式问答。
@@ -27,7 +28,7 @@ import { getToken, setToken } from './http'
  *   流被掐断（没等到 done 就关闭）都 reject
  */
 export async function streamChat(payload, handlers = {}, { signal, url } = {}) {
-  const resp = await fetch(url || '/api/chat/stream', {
+  const resp = await fetch(apiUrl(url || '/chat/stream'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

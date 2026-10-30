@@ -1,4 +1,5 @@
 <script setup>
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowRight,
@@ -16,8 +17,13 @@ import {
 } from '@element-plus/icons-vue'
 
 import { getToken } from '../api/http'
+import { wakeDemoBackend } from '../api/demoBackend'
 
 const router = useRouter()
+const backendStatus = ref('idle')
+const startupDialog = ref(false)
+const wakeError = ref('')
+let wakeTask = null
 
 const features = [
   { icon: ShoppingBag, title: '旅游产品管理', text: '维护景区门票、酒店套餐、售卖规格、价格与可售库存。' },
@@ -46,13 +52,46 @@ const stack = [
   ['工程保障', 'JWT/RBAC · Alembic · SSE · Docker · 自动化测试'],
 ]
 
-function enterSystem() {
+function ensureBackend() {
+  if (backendStatus.value === 'ready') return Promise.resolve(true)
+  if (wakeTask) return wakeTask
+
+  backendStatus.value = 'waking'
+  wakeError.value = ''
+  wakeTask = wakeDemoBackend()
+    .then(() => {
+      backendStatus.value = 'ready'
+      return true
+    })
+    .catch((error) => {
+      backendStatus.value = 'error'
+      wakeError.value = error?.name === 'AbortError'
+        ? '演示服务启动超时，请稍后重试。'
+        : '暂时无法连接演示服务，请点击重试。'
+      return false
+    })
+    .finally(() => {
+      wakeTask = null
+    })
+  return wakeTask
+}
+
+async function enterSystem() {
+  startupDialog.value = true
+  const ready = await ensureBackend()
+  if (!ready) return
+  startupDialog.value = false
   router.push(getToken() ? '/dashboard' : '/login')
 }
 
 function scrollToFlow() {
   document.querySelector('#workflow')?.scrollIntoView({ behavior: 'smooth' })
 }
+
+// 用户阅读介绍页时就开始冷启动。这里不阻塞首屏，静态内容会立即展示。
+onMounted(() => {
+  ensureBackend()
+})
 </script>
 
 <template>
@@ -68,7 +107,7 @@ function scrollToFlow() {
         <a href="#features">核心功能</a>
         <a href="#technology">技术实现</a>
       </nav>
-      <el-button type="primary" @click="enterSystem">
+      <el-button type="primary" :loading="startupDialog && backendStatus === 'waking'" @click="enterSystem">
         {{ getToken() ? '返回工作台' : '进入演示系统' }}
       </el-button>
     </header>
@@ -83,11 +122,20 @@ function scrollToFlow() {
             风险审批和自动化任务，减少规则分散、人工核对和操作留痕不足带来的运营风险。
           </p>
           <div class="hero-actions">
-            <el-button type="primary" size="large" @click="enterSystem">
+            <el-button type="primary" size="large" :loading="startupDialog && backendStatus === 'waking'" @click="enterSystem">
               进入演示系统 <el-icon><ArrowRight /></el-icon>
             </el-button>
             <el-button size="large" @click="scrollToFlow">查看业务流程</el-button>
             <span class="source-link source-private">企业项目演示 · 源码暂不公开</span>
+          </div>
+          <div class="service-status" :class="`is-${backendStatus}`">
+            <span class="status-dot" />
+            <template v-if="backendStatus === 'ready'">演示服务已就绪，点击即可进入</template>
+            <template v-else-if="backendStatus === 'error'">
+              演示服务暂未就绪
+              <button type="button" @click="ensureBackend">重新唤醒</button>
+            </template>
+            <template v-else>正在后台启动演示服务，您可以继续浏览项目介绍</template>
           </div>
           <div class="hero-notes">
             <span><el-icon><CircleCheck /></el-icon> 完整业务闭环</span>
@@ -224,6 +272,36 @@ function scrollToFlow() {
       <div><strong>旅播智营</strong><span>旅游直播电商智能运营管理平台</span></div>
       <p>企业级场景实践项目 · 页面中的公司、商品及业务数据均为模拟数据</p>
     </footer>
+
+    <el-dialog
+      v-model="startupDialog"
+      width="min(430px, calc(100vw - 28px))"
+      :show-close="backendStatus === 'error'"
+      :close-on-click-modal="backendStatus === 'error'"
+      :close-on-press-escape="backendStatus === 'error'"
+      align-center
+    >
+      <div class="startup-panel">
+        <div class="startup-icon" :class="{ ready: backendStatus === 'ready', error: backendStatus === 'error' }">
+          {{ backendStatus === 'error' ? '!' : backendStatus === 'ready' ? '✓' : '旅' }}
+        </div>
+        <h3>{{ backendStatus === 'error' ? '演示服务暂未启动' : '正在启动演示系统' }}</h3>
+        <p v-if="backendStatus === 'error'">{{ wakeError }}</p>
+        <p v-else>免费演示后端正在从休眠中恢复，通常需要 30～60 秒。启动完成后将自动进入。</p>
+        <el-progress
+          v-if="backendStatus === 'waking'"
+          :percentage="70"
+          :show-text="false"
+          :stroke-width="6"
+          :duration="2"
+          indeterminate
+        />
+        <div v-if="backendStatus === 'error'" class="startup-actions">
+          <el-button @click="startupDialog = false">稍后体验</el-button>
+          <el-button type="primary" @click="enterSystem">重新启动</el-button>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -251,6 +329,17 @@ function scrollToFlow() {
 .hero h1 em { color: #2563eb; font-style: normal; }
 .hero-copy > p { max-width: 590px; margin: 0; color: #64748b; font-size: 16px; line-height: 1.95; }
 .hero-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+.service-status { display: flex; align-items: center; gap: 8px; min-height: 24px; margin-top: 12px; color: #64748b; font-size: 11px; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 4px rgb(245 158 11 / 12%); animation: pulse 1.5s infinite; }
+.service-status.is-ready { color: #047857; }.service-status.is-ready .status-dot { background: #10b981; box-shadow: 0 0 0 4px rgb(16 185 129 / 12%); animation: none; }
+.service-status.is-error { color: #b45309; }.service-status.is-error .status-dot { background: #f59e0b; animation: none; }
+.service-status button { padding: 0; border: 0; color: #2563eb; background: transparent; cursor: pointer; font: inherit; }
+.startup-panel { padding: 6px 10px 10px; text-align: center; }
+.startup-icon { display: grid; place-items: center; width: 54px; height: 54px; margin: 0 auto 16px; border-radius: 17px; color: #fff; background: linear-gradient(145deg, #2563eb, #0891b2); font-size: 20px; font-weight: 700; }
+.startup-icon.ready { background: #10b981; }.startup-icon.error { background: #f59e0b; }
+.startup-panel h3 { margin: 0; color: #0f172a; font-size: 20px; }.startup-panel p { margin: 10px auto 22px; color: #64748b; font-size: 13px; line-height: 1.75; }
+.startup-actions { display: flex; justify-content: center; gap: 10px; margin-top: 8px; }
+@keyframes pulse { 50% { opacity: .45; transform: scale(.8); } }
 .source-link { padding: 9px 10px; color: #475569; font-size: 13px; text-decoration: none; }
 .source-link:hover { color: #2563eb; }
 .source-private { cursor: default; }
